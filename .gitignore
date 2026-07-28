@@ -1,0 +1,40 @@
+# dependencies
+node_modules/
+.pnp
+.pnp.js
+
+# next.js
+.next/
+out/
+build/
+next-env.d.ts
+
+# local database — this is your personal data, it must never be committed
+*.db
+*.db-journal
+*.db-shm
+*.db-wal
+prisma/dev.db*
+
+# env
+.env
+.env.local
+.env*.local
+!.env.example
+
+# testing
+coverage/
+
+# misc
+.DS_Store
+*.pem
+.vercel
+.idea/
+.vscode/
+*.tsbuildinfo
+
+# logs
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+.pnpm-debug.log*

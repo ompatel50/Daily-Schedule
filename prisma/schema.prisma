@@ -1,0 +1,644 @@
+// Personal OS — local-first schema.
+//
+// Design notes:
+//  * SQLite has no enum or array support, so "enum-like" fields are stored as
+//    TEXT and validated in the app layer (see src/lib/enums.ts). This keeps the
+//    schema portable — swapping `provider` to postgres later needs no rewrite.
+//  * Dates that represent a *calendar day* are stored as `YYYY-MM-DD` strings
+//    (`date` fields). Dates that represent an *instant* use DateTime. This
+//    avoids the classic timezone drift where "today" shifts at UTC midnight.
+//  * Every user-visible record carries createdAt/updatedAt so backups, sync and
+//    "what changed this week" views are possible without extra bookkeeping.
+//  * `externalId` + `source` columns exist on the health/workout tables so an
+//    Apple Health / watch import can upsert idempotently later without a
+//    migration.
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "sqlite"
+  url      = env("DATABASE_URL")
+}
+
+// ---------------------------------------------------------------------------
+// User & settings
+// ---------------------------------------------------------------------------
+
+model User {
+  id        String   @id @default(cuid())
+  name      String
+  email     String?  @unique
+  timezone  String   @default("America/New_York")
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  // Personal context used by nutrition / health calculations.
+  birthDate     String? // YYYY-MM-DD
+  heightCm      Float?
+  sex           String? // male | female | other
+  activityLevel String  @default("moderate") // sedentary | light | moderate | active | athlete
+
+  // UI preferences
+  theme          String @default("system") // light | dark | system
+  weekStartsOn   Int    @default(1) // 0 = Sunday, 1 = Monday
+  unitSystem     String @default("imperial") // imperial | metric
+  dayStartHour   Int    @default(6)
+  dayEndHour     Int    @default(22)
+
+  scheduleItems     ScheduleItem[]
+  scheduleTemplates ScheduleTemplate[]
+  habits            Habit[]
+  habitLogs         HabitLog[]
+  foodItems         FoodItem[]
+  meals             Meal[]
+  mealTemplates     MealTemplate[]
+  workouts          Workout[]
+  workoutTemplates  WorkoutTemplate[]
+  healthMetrics     HealthMetric[]
+  goals             Goal[]
+  daySummaries      CalendarDaySummary[]
+  journalEntries    JournalEntry[]
+  reminders         Reminder[]
+  favorites         FavoriteItem[]
+  tags              Tag[]
+}
+
+// ---------------------------------------------------------------------------
+// Tags — shared across planner items, habits, workouts and journal entries.
+// ---------------------------------------------------------------------------
+
+model Tag {
+  id     String @id @default(cuid())
+  userId String
+  user   User   @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  name  String
+  color String @default("slate")
+
+  createdAt DateTime @default(now())
+
+  scheduleItems ScheduleItemTag[]
+
+  @@unique([userId, name])
+  @@index([userId])
+}
+
+model ScheduleItemTag {
+  scheduleItemId String
+  tagId          String
+
+  scheduleItem ScheduleItem @relation(fields: [scheduleItemId], references: [id], onDelete: Cascade)
+  tag          Tag          @relation(fields: [tagId], references: [id], onDelete: Cascade)
+
+  @@id([scheduleItemId, tagId])
+  @@index([tagId])
+}
+
+// ---------------------------------------------------------------------------
+// Planner
+// ---------------------------------------------------------------------------
+
+model ScheduleItem {
+  id     String @id @default(cuid())
+  userId String
+  user   User   @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  title String
+  notes String?
+
+  /// Calendar day this item lives on, `YYYY-MM-DD`.
+  date String
+
+  /// Minutes from midnight. Null on both when the item is all-day.
+  startMinute Int?
+  endMinute   Int?
+  allDay      Boolean @default(false)
+
+  category String  @default("personal") // work | personal | health | fitness | meal | learning | admin | social | rest
+  priority String  @default("medium") // low | medium | high | urgent
+  status   String  @default("planned") // planned | done | skipped
+  color    String? // optional per-item accent override
+
+  /// Manual ordering within a day (drag & drop).
+  sortOrder Int @default(0)
+
+  completedAt DateTime?
+
+  // --- recurrence -----------------------------------------------------------
+  /// Recurrence rule on the *series parent*. See src/lib/logic/recurrence.ts.
+  /// e.g. { freq: "weekly", interval: 1, byWeekday: [1,3,5], until: "2026-12-31" }
+  recurrenceRule String?
+  /// When set, this row is a materialised occurrence of `seriesId`.
+  seriesId       String?
+  series         ScheduleItem?  @relation("Series", fields: [seriesId], references: [id], onDelete: Cascade)
+  occurrences    ScheduleItem[] @relation("Series")
+  /// Occurrence was detached from the series and edited independently.
+  isException    Boolean        @default(false)
+
+  // --- links to other domains ----------------------------------------------
+  habitId   String?
+  habit     Habit?   @relation(fields: [habitId], references: [id], onDelete: SetNull)
+  workoutId String?  @unique
+  workout   Workout? @relation(fields: [workoutId], references: [id], onDelete: SetNull)
+  mealId    String?  @unique
+  meal      Meal?    @relation(fields: [mealId], references: [id], onDelete: SetNull)
+
+  templateId String?
+  template   ScheduleTemplate? @relation(fields: [templateId], references: [id], onDelete: SetNull)
+
+  tags      ScheduleItemTag[]
+  reminders Reminder[]
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([userId, date])
+  @@index([userId, status])
+  @@index([seriesId])
+}
+
+/// A reusable block (or whole routine) that can be stamped onto any day.
+model ScheduleTemplate {
+  id     String @id @default(cuid())
+  userId String
+  user   User   @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  name        String
+  description String?
+  category    String  @default("personal")
+  /// JSON array of template items: [{ title, startMinute, endMinute, category, priority, notes }]
+  items       String  @default("[]")
+  icon        String?
+
+  useCount Int      @default(0)
+  lastUsed DateTime?
+
+  scheduleItems ScheduleItem[]
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([userId])
+}
+
+// ---------------------------------------------------------------------------
+// Habits
+// ---------------------------------------------------------------------------
+
+model Habit {
+  id     String @id @default(cuid())
+  userId String
+  user   User   @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  name        String
+  description String?
+  category    String  @default("health") // health | productivity | learning | hygiene | mindfulness | personal
+  icon        String  @default("Check")
+  color       String  @default("emerald")
+
+  /// morning | afternoon | evening | before_bed | anytime
+  timeOfDay String @default("anytime")
+
+  // --- recurrence -----------------------------------------------------------
+  frequency String @default("daily") // daily | weekly | custom
+  /// For `custom`: JSON array of weekday numbers, 0=Sun … 6=Sat.
+  weekdays  String @default("[0,1,2,3,4,5,6]")
+  /// For `weekly`: how many times per week counts as a success.
+  targetPerWeek Int @default(7)
+
+  /// Optional numeric target, e.g. "8" glasses of water.
+  targetValue Float?
+  unit        String?
+
+  archived  Boolean @default(false)
+  sortOrder Int     @default(0)
+
+  startDate String // YYYY-MM-DD
+  endDate   String?
+
+  logs          HabitLog[]
+  scheduleItems ScheduleItem[]
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([userId, archived])
+}
+
+model HabitLog {
+  id      String @id @default(cuid())
+  habitId String
+  habit   Habit  @relation(fields: [habitId], references: [id], onDelete: Cascade)
+  userId  String
+  user    User   @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  date   String // YYYY-MM-DD
+  status String @default("done") // done | skipped | missed
+  value  Float?
+  notes  String?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@unique([habitId, date])
+  @@index([userId, date])
+}
+
+// ---------------------------------------------------------------------------
+// Nutrition
+// ---------------------------------------------------------------------------
+
+/// A food in the local database. Nutrition values are always **per 100 g** for
+/// weight-based foods, or per `servingSize` `servingUnit` for count-based ones
+/// (`basis` tells you which). Keeping one canonical basis makes serving math
+/// trivial and prevents the classic "per serving vs per 100g" bug.
+model FoodItem {
+  id     String  @id @default(cuid())
+  userId String?
+  user   User?   @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  name  String
+  brand String?
+
+  /// "per_100g" | "per_serving"
+  basis String @default("per_100g")
+
+  /// Default serving used when logging, expressed in grams for per_100g foods.
+  servingSize Float  @default(100)
+  servingUnit String @default("g")
+  servingLabel String? // "1 medium (118 g)"
+
+  calories Float
+  protein  Float @default(0)
+  carbs    Float @default(0)
+  fat      Float @default(0)
+  fiber    Float @default(0)
+  sugar    Float @default(0)
+  sodium   Float @default(0) // mg
+
+  category String  @default("other") // protein | grain | vegetable | fruit | dairy | fat | snack | beverage | supplement | prepared | other
+  isCustom Boolean @default(false)
+  verified Boolean @default(false)
+  /// Free-text search helper: lowercase name + brand + aliases.
+  searchKey String @default("")
+
+  entries      MealEntry[]
+  templateRows MealTemplateItem[]
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([searchKey])
+  @@index([userId])
+}
+
+model Meal {
+  id     String @id @default(cuid())
+  userId String
+  user   User   @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  date String // YYYY-MM-DD
+  /// breakfast | lunch | dinner | snack | custom
+  type  String @default("breakfast")
+  /// Free label for `custom` (e.g. "Pre-workout").
+  label String?
+  time  String? // HH:mm
+  notes String?
+
+  entries      MealEntry[]
+  scheduleItem ScheduleItem?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([userId, date])
+}
+
+model MealEntry {
+  id     String @id @default(cuid())
+  mealId String
+  meal   Meal   @relation(fields: [mealId], references: [id], onDelete: Cascade)
+
+  foodItemId String
+  foodItem   FoodItem @relation(fields: [foodItemId], references: [id], onDelete: Restrict)
+
+  /// Quantity in `unit`. For per_100g foods the unit is grams unless the user
+  /// picks "serving", in which case quantity is multiplied by servingSize.
+  quantity Float  @default(1)
+  unit     String @default("serving") // serving | g | ml | oz | piece
+
+  /// Denormalised macros at log time so editing a food later never rewrites
+  /// history. Computed by src/lib/logic/nutrition.ts.
+  calories Float
+  protein  Float
+  carbs    Float
+  fat      Float
+  fiber    Float @default(0)
+  sugar    Float @default(0)
+  sodium   Float @default(0)
+
+  sortOrder Int @default(0)
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([mealId])
+}
+
+model MealTemplate {
+  id     String @id @default(cuid())
+  userId String
+  user   User   @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  name     String
+  mealType String @default("breakfast")
+  notes    String?
+
+  items MealTemplateItem[]
+
+  useCount Int       @default(0)
+  lastUsed DateTime?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([userId])
+}
+
+model MealTemplateItem {
+  id         String       @id @default(cuid())
+  templateId String
+  template   MealTemplate @relation(fields: [templateId], references: [id], onDelete: Cascade)
+
+  foodItemId String
+  foodItem   FoodItem @relation(fields: [foodItemId], references: [id], onDelete: Cascade)
+
+  quantity Float  @default(1)
+  unit     String @default("serving")
+
+  @@index([templateId])
+}
+
+// ---------------------------------------------------------------------------
+// Workouts
+// ---------------------------------------------------------------------------
+
+model Workout {
+  id     String @id @default(cuid())
+  userId String
+  user   User   @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  date String // YYYY-MM-DD
+  time String? // HH:mm
+
+  name String
+  /// strength | cardio | walking | running | cycling | swimming | yoga | mobility | sport | hiit | custom
+  type String @default("strength")
+
+  durationMin    Int     @default(0)
+  intensity      String  @default("moderate") // easy | moderate | hard | max
+  caloriesBurned Int?
+  avgHeartRate   Int?
+  maxHeartRate   Int?
+  distanceKm     Float?
+  elevationM     Float?
+  perceivedEffort Int?   // RPE 1-10
+  notes          String?
+
+  status String @default("completed") // planned | completed | skipped
+
+  // Import-friendly: an Apple Health / watch export can upsert on
+  // (source, externalId) without touching manual rows.
+  source     String  @default("manual") // manual | apple_health | import
+  externalId String?
+
+  sets         WorkoutSet[]
+  scheduleItem ScheduleItem?
+
+  templateId String?
+  template   WorkoutTemplate? @relation(fields: [templateId], references: [id], onDelete: SetNull)
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@unique([source, externalId])
+  @@index([userId, date])
+  @@index([userId, type])
+}
+
+model WorkoutSet {
+  id        String  @id @default(cuid())
+  workoutId String
+  workout   Workout @relation(fields: [workoutId], references: [id], onDelete: Cascade)
+
+  exercise  String
+  setNumber Int    @default(1)
+
+  reps       Int?
+  weightKg   Float?
+  durationSec Int?
+  distanceM  Float?
+  restSec    Int?
+  rpe        Float?
+  notes      String?
+  completed  Boolean @default(true)
+
+  sortOrder Int @default(0)
+
+  @@index([workoutId])
+}
+
+model WorkoutTemplate {
+  id     String @id @default(cuid())
+  userId String
+  user   User   @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  name        String
+  type        String  @default("strength")
+  description String?
+  durationMin Int     @default(45)
+  intensity   String  @default("moderate")
+  /// JSON array: [{ exercise, sets, reps, weightKg, restSec, notes }]
+  exercises   String  @default("[]")
+
+  useCount Int       @default(0)
+  lastUsed DateTime?
+
+  workouts Workout[]
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([userId])
+}
+
+// ---------------------------------------------------------------------------
+// Health
+// ---------------------------------------------------------------------------
+
+/// One metric reading. Deliberately generic (EAV-ish) so new metric types need
+/// no migration and an Apple Health export maps 1:1 onto rows.
+model HealthMetric {
+  id     String @id @default(cuid())
+  userId String
+  user   User   @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  date String // YYYY-MM-DD
+  /// steps | active_calories | resting_calories | sleep_hours | resting_hr |
+  /// hrv | body_weight | body_fat | hydration_ml | blood_pressure | mood | energy | stress
+  type  String
+  value Float
+  unit  String @default("")
+
+  /// Optional secondary value, e.g. diastolic for blood pressure.
+  secondaryValue Float?
+  notes          String?
+
+  /// Instant of the reading when known; otherwise the day is enough.
+  recordedAt DateTime?
+
+  source     String  @default("manual") // manual | apple_health | import
+  externalId String?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@unique([userId, date, type, source])
+  @@index([userId, type, date])
+}
+
+// ---------------------------------------------------------------------------
+// Goals, summaries, journal, reminders, favorites
+// ---------------------------------------------------------------------------
+
+model Goal {
+  id     String @id @default(cuid())
+  userId String
+  user   User   @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  /// nutrition | workout | habit | health | planner
+  domain String
+  /// e.g. "calories", "protein", "workouts_per_week", "steps", "body_weight"
+  metric String
+  label  String
+
+  target    Float
+  unit      String @default("")
+  /// gte | lte | eq  — how to score progress against the target.
+  direction String @default("gte")
+  /// daily | weekly | monthly
+  period    String @default("daily")
+
+  active    Boolean @default(true)
+  sortOrder Int     @default(0)
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@unique([userId, domain, metric, period])
+  @@index([userId, active])
+}
+
+/// Precomputed per-day rollup that powers the calendar heatmap and insights
+/// without scanning every table. Recomputed on write (see server/actions).
+model CalendarDaySummary {
+  id     String @id @default(cuid())
+  userId String
+  user   User   @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  date String // YYYY-MM-DD
+
+  plannedCount   Int @default(0)
+  completedCount Int @default(0)
+  skippedCount   Int @default(0)
+
+  habitsDue  Int @default(0)
+  habitsDone Int @default(0)
+
+  calories Float @default(0)
+  protein  Float @default(0)
+  carbs    Float @default(0)
+  fat      Float @default(0)
+
+  workoutCount    Int @default(0)
+  workoutMinutes  Int @default(0)
+  caloriesBurned  Int @default(0)
+
+  steps      Float?
+  sleepHours Float?
+  bodyWeight Float?
+
+  /// 0–100 blended consistency score for the heatmap.
+  score Int @default(0)
+
+  updatedAt DateTime @updatedAt
+
+  @@unique([userId, date])
+  @@index([userId, date])
+}
+
+model JournalEntry {
+  id     String @id @default(cuid())
+  userId String
+  user   User   @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  date    String // YYYY-MM-DD
+  title   String?
+  content String  @default("")
+  mood    Int? // 1–5
+  energy  Int? // 1–5
+  /// JSON array of free-text tags.
+  tags    String  @default("[]")
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@unique([userId, date])
+  @@index([userId, date])
+}
+
+model Reminder {
+  id     String @id @default(cuid())
+  userId String
+  user   User   @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  title   String
+  message String?
+  /// Local wall-clock instant the reminder should fire.
+  remindAt DateTime
+  /// none | daily | weekdays | weekly
+  repeat   String   @default("none")
+
+  scheduleItemId String?
+  scheduleItem   ScheduleItem? @relation(fields: [scheduleItemId], references: [id], onDelete: Cascade)
+
+  enabled     Boolean   @default(true)
+  lastFiredAt DateTime?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([userId, enabled])
+}
+
+/// Generic "pin this" across domains — foods, workouts, templates, habits.
+model FavoriteItem {
+  id     String @id @default(cuid())
+  userId String
+  user   User   @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  /// food | workout_template | meal_template | schedule_template | habit
+  kind       String
+  refId      String
+  label      String
+  sortOrder  Int    @default(0)
+  useCount   Int    @default(0)
+  lastUsedAt DateTime?
+
+  createdAt DateTime @default(now())
+
+  @@unique([userId, kind, refId])
+  @@index([userId, kind])
+}

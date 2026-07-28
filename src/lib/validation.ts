@@ -1,0 +1,265 @@
+import { z } from "zod";
+import {
+  FOOD_CATEGORIES,
+  GOAL_DOMAINS,
+  HABIT_CATEGORIES,
+  HABIT_STATUSES,
+  HEALTH_METRIC_TYPES,
+  INTENSITIES,
+  ITEM_STATUSES,
+  MEAL_TYPES,
+  PRIORITIES,
+  SCHEDULE_CATEGORIES,
+  SERVING_UNITS,
+  TIMES_OF_DAY,
+  WORKOUT_TYPES,
+} from "./enums";
+
+/** Every server action validates its input through one of these schemas. */
+
+const dayKey = z
+  .string()
+  .regex(/^\d{4}-\d{2}-\d{2}$/, "Expected a YYYY-MM-DD date");
+
+const minute = z.number().int().min(0).max(1439);
+const optionalMinute = minute.nullable().optional();
+
+export const scheduleItemSchema = z
+  .object({
+    id: z.string().optional(),
+    title: z.string().trim().min(1, "Title is required").max(200),
+    notes: z.string().max(5000).nullable().optional(),
+    date: dayKey,
+    startMinute: optionalMinute,
+    endMinute: optionalMinute,
+    allDay: z.boolean().default(false),
+    category: z.enum(SCHEDULE_CATEGORIES).default("personal"),
+    priority: z.enum(PRIORITIES).default("medium"),
+    status: z.enum(ITEM_STATUSES).default("planned"),
+    recurrenceRule: z.string().nullable().optional(),
+    tagIds: z.array(z.string()).default([]),
+    habitId: z.string().nullable().optional(),
+  })
+  .refine(
+    (value) =>
+      value.allDay ||
+      value.startMinute === null ||
+      value.startMinute === undefined ||
+      value.endMinute === null ||
+      value.endMinute === undefined ||
+      value.endMinute >= value.startMinute,
+    { message: "End time must be after the start time", path: ["endMinute"] },
+  );
+
+export type ScheduleItemInput = z.infer<typeof scheduleItemSchema>;
+
+export const quickAddSchema = z.object({
+  text: z.string().trim().min(1).max(300),
+  date: dayKey,
+});
+
+export const scheduleTemplateSchema = z.object({
+  id: z.string().optional(),
+  name: z.string().trim().min(1).max(120),
+  description: z.string().max(1000).nullable().optional(),
+  category: z.enum(SCHEDULE_CATEGORIES).default("personal"),
+  items: z
+    .array(
+      z.object({
+        title: z.string().trim().min(1).max(200),
+        startMinute: optionalMinute,
+        endMinute: optionalMinute,
+        allDay: z.boolean().default(false),
+        category: z.enum(SCHEDULE_CATEGORIES).default("personal"),
+        priority: z.enum(PRIORITIES).default("medium"),
+        notes: z.string().max(2000).nullable().optional(),
+      }),
+    )
+    .min(1, "Add at least one item"),
+});
+
+export const habitSchema = z.object({
+  id: z.string().optional(),
+  name: z.string().trim().min(1, "Name is required").max(120),
+  description: z.string().max(1000).nullable().optional(),
+  category: z.enum(HABIT_CATEGORIES).default("health"),
+  timeOfDay: z.enum(TIMES_OF_DAY).default("anytime"),
+  frequency: z.enum(["daily", "weekly", "custom"]).default("daily"),
+  weekdays: z.array(z.number().int().min(0).max(6)).default([0, 1, 2, 3, 4, 5, 6]),
+  targetPerWeek: z.number().int().min(1).max(7).default(7),
+  targetValue: z.number().positive().nullable().optional(),
+  unit: z.string().max(20).nullable().optional(),
+  color: z.string().max(20).default("emerald"),
+  icon: z.string().max(40).default("Check"),
+  startDate: dayKey,
+  archived: z.boolean().default(false),
+});
+
+export const habitLogSchema = z.object({
+  habitId: z.string().min(1),
+  date: dayKey,
+  status: z.enum(HABIT_STATUSES),
+  value: z.number().nullable().optional(),
+  notes: z.string().max(1000).nullable().optional(),
+});
+
+export const foodItemSchema = z.object({
+  id: z.string().optional(),
+  name: z.string().trim().min(1, "Name is required").max(160),
+  brand: z.string().max(120).nullable().optional(),
+  basis: z.enum(["per_100g", "per_serving"]).default("per_100g"),
+  servingSize: z.number().positive("Serving size must be greater than 0").default(100),
+  servingUnit: z.string().max(20).default("g"),
+  servingLabel: z.string().max(80).nullable().optional(),
+  calories: z.number().min(0).max(10000),
+  protein: z.number().min(0).max(1000).default(0),
+  carbs: z.number().min(0).max(1000).default(0),
+  fat: z.number().min(0).max(1000).default(0),
+  fiber: z.number().min(0).max(1000).default(0),
+  sugar: z.number().min(0).max(1000).default(0),
+  sodium: z.number().min(0).max(100000).default(0),
+  category: z.enum(FOOD_CATEGORIES).default("other"),
+});
+
+export const mealEntrySchema = z.object({
+  date: dayKey,
+  mealType: z.enum(MEAL_TYPES),
+  mealLabel: z.string().max(60).nullable().optional(),
+  foodItemId: z.string().min(1),
+  quantity: z.number().positive("Quantity must be greater than 0").max(10000),
+  unit: z.enum(SERVING_UNITS).default("serving"),
+});
+
+export const updateMealEntrySchema = z.object({
+  id: z.string().min(1),
+  quantity: z.number().positive().max(10000),
+  unit: z.enum(SERVING_UNITS),
+});
+
+export const workoutSetSchema = z.object({
+  id: z.string().optional(),
+  exercise: z.string().trim().min(1).max(120),
+  setNumber: z.number().int().min(1).default(1),
+  reps: z.number().int().min(0).max(1000).nullable().optional(),
+  weightKg: z.number().min(0).max(2000).nullable().optional(),
+  durationSec: z.number().int().min(0).max(86400).nullable().optional(),
+  distanceM: z.number().min(0).max(1000000).nullable().optional(),
+  restSec: z.number().int().min(0).max(3600).nullable().optional(),
+  rpe: z.number().min(0).max(10).nullable().optional(),
+  notes: z.string().max(500).nullable().optional(),
+  completed: z.boolean().default(true),
+});
+
+export const workoutSchema = z.object({
+  id: z.string().optional(),
+  date: dayKey,
+  time: z
+    .string()
+    .regex(/^\d{2}:\d{2}$/)
+    .nullable()
+    .optional(),
+  name: z.string().trim().min(1, "Name is required").max(160),
+  type: z.enum(WORKOUT_TYPES).default("strength"),
+  durationMin: z.number().int().min(0).max(1440).default(0),
+  intensity: z.enum(INTENSITIES).default("moderate"),
+  caloriesBurned: z.number().int().min(0).max(20000).nullable().optional(),
+  avgHeartRate: z.number().int().min(0).max(250).nullable().optional(),
+  distanceKm: z.number().min(0).max(1000).nullable().optional(),
+  perceivedEffort: z.number().int().min(1).max(10).nullable().optional(),
+  notes: z.string().max(5000).nullable().optional(),
+  status: z.enum(["planned", "completed", "skipped"]).default("completed"),
+  sets: z.array(workoutSetSchema).default([]),
+  addToPlanner: z.boolean().default(true),
+});
+
+export const workoutTemplateSchema = z.object({
+  id: z.string().optional(),
+  name: z.string().trim().min(1).max(120),
+  type: z.enum(WORKOUT_TYPES).default("strength"),
+  description: z.string().max(1000).nullable().optional(),
+  durationMin: z.number().int().min(0).max(1440).default(45),
+  intensity: z.enum(INTENSITIES).default("moderate"),
+  exercises: z
+    .array(
+      z.object({
+        exercise: z.string().trim().min(1).max(120),
+        sets: z.number().int().min(1).max(30).default(3),
+        reps: z.number().int().min(0).max(1000).optional(),
+        weightKg: z.number().min(0).max(2000).optional(),
+        restSec: z.number().int().min(0).max(3600).optional(),
+        notes: z.string().max(300).optional(),
+      }),
+    )
+    .default([]),
+});
+
+export const healthMetricSchema = z.object({
+  date: dayKey,
+  type: z.enum(HEALTH_METRIC_TYPES),
+  value: z.number().min(0).max(1000000),
+  secondaryValue: z.number().min(0).max(1000).nullable().optional(),
+  notes: z.string().max(500).nullable().optional(),
+});
+
+export const goalSchema = z.object({
+  id: z.string().optional(),
+  domain: z.enum(GOAL_DOMAINS),
+  metric: z.string().min(1).max(60),
+  label: z.string().min(1).max(120),
+  target: z.number().min(0).max(1000000),
+  unit: z.string().max(20).default(""),
+  direction: z.enum(["gte", "lte", "eq"]).default("gte"),
+  period: z.enum(["daily", "weekly", "monthly"]).default("daily"),
+  active: z.boolean().default(true),
+});
+
+export const journalSchema = z.object({
+  date: dayKey,
+  title: z.string().max(200).nullable().optional(),
+  content: z.string().max(50000).default(""),
+  mood: z.number().int().min(1).max(5).nullable().optional(),
+  energy: z.number().int().min(1).max(5).nullable().optional(),
+});
+
+export const reminderSchema = z.object({
+  id: z.string().optional(),
+  title: z.string().trim().min(1).max(160),
+  message: z.string().max(500).nullable().optional(),
+  remindAt: z.string().min(1),
+  repeat: z.enum(["none", "daily", "weekdays", "weekly"]).default("none"),
+  enabled: z.boolean().default(true),
+});
+
+export const settingsSchema = z.object({
+  name: z.string().trim().min(1).max(80),
+  timezone: z.string().max(60),
+  birthDate: z.string().nullable().optional(),
+  heightCm: z.number().min(0).max(300).nullable().optional(),
+  sex: z.enum(["male", "female", "other"]).nullable().optional(),
+  activityLevel: z.enum(["sedentary", "light", "moderate", "active", "athlete"]),
+  weekStartsOn: z.number().int().min(0).max(1),
+  unitSystem: z.enum(["imperial", "metric"]),
+  dayStartHour: z.number().int().min(0).max(23),
+  dayEndHour: z.number().int().min(1).max(24),
+});
+
+/** Standard action result — every server action returns this shape. */
+export type ActionResult<T = unknown> =
+  | { ok: true; data: T }
+  | { ok: false; error: string; fieldErrors?: Record<string, string[]> };
+
+export function fail(error: string, fieldErrors?: Record<string, string[]>): ActionResult<never> {
+  return { ok: false, error, fieldErrors };
+}
+
+export function succeed<T>(data: T): ActionResult<T> {
+  return { ok: true, data };
+}
+
+/** Turn a Zod failure into an ActionResult without repeating boilerplate. */
+export function fromZod(error: z.ZodError): ActionResult<never> {
+  const flat = error.flatten();
+  const first =
+    Object.values(flat.fieldErrors).flat()[0] ?? flat.formErrors[0] ?? "Invalid input";
+  return fail(first, flat.fieldErrors as Record<string, string[]>);
+}
