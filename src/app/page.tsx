@@ -49,7 +49,8 @@ export default async function DashboardPage() {
     getWindowStats(shiftDay(date, -13), shiftDay(date, -7)),
   ]);
 
-  const { user, schedule, nutrition, workouts, dueHabits, habitsDone, goals, metrics } = overview;
+  const { user, schedule, nutrition, workouts, dueHabits, restingHabits, habitsDone, goals, metrics } =
+    overview;
 
   const calorieGoal = goals.get("calories")?.target ?? 0;
   const stepGoal = goals.get("steps")?.target ?? 0;
@@ -129,7 +130,7 @@ export default async function DashboardPage() {
         <StatCard
           label="Habits today"
           value={`${habitsDone}/${dueHabits.length}`}
-          hint={dueHabits.length === 0 ? "none due" : "due today"}
+          hint={dueHabits.length === 0 ? "rest day" : "due today"}
           icon={Repeat}
           accent="text-domain-habit"
           progress={pct(habitsDone, dueHabits.length)}
@@ -291,7 +292,11 @@ export default async function DashboardPage() {
             title="Habits"
             icon={Repeat}
             accent="text-domain-habit"
-            description={`${habitsDone} of ${dueHabits.length} done`}
+            description={
+              dueHabits.length === 0
+                ? "Nothing scheduled today"
+                : `${habitsDone} of ${dueHabits.length} done`
+            }
             action={
               <Button asChild variant="ghost" size="sm">
                 <Link href="/habits">
@@ -300,7 +305,7 @@ export default async function DashboardPage() {
               </Button>
             }
           >
-            <HabitChecklist habits={dueHabits.slice(0, 8)} date={date} />
+            <HabitChecklist habits={dueHabits.slice(0, 8)} restingHabits={restingHabits} date={date} />
           </SectionCard>
 
           <SectionCard

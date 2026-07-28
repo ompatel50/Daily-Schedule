@@ -85,15 +85,12 @@ export const habitSchema = z.object({
   name: z.string().trim().min(1, "Name is required").max(120),
   description: z.string().max(1000).nullable().optional(),
   category: z.enum(HABIT_CATEGORIES).default("health"),
-  timeOfDay: z.enum(TIMES_OF_DAY).default("anytime"),
-  frequency: z.enum(["daily", "weekly", "custom"]).default("daily"),
-  weekdays: z.array(z.number().int().min(0).max(6)).default([0, 1, 2, 3, 4, 5, 6]),
-  targetPerWeek: z.number().int().min(1).max(7).default(7),
   targetValue: z.number().positive().nullable().optional(),
   unit: z.string().max(20).nullable().optional(),
   color: z.string().max(20).default("emerald"),
   icon: z.string().max(40).default("Check"),
   startDate: dayKey,
+  endDate: dayKey.nullable().optional(),
   archived: z.boolean().default(false),
 });
 
@@ -255,6 +252,13 @@ export const goalSchema = z.object({
 /** Goal creation/editing including its schedule — one atomic submission. */
 export const goalWithScheduleSchema = z.object({
   goal: goalSchema,
+  schedule: scheduleInputSchema,
+  apply: scheduleApplySchema.optional(),
+});
+
+/** Habit creation/editing including its schedule — one atomic submission. */
+export const habitWithScheduleSchema = z.object({
+  habit: habitSchema,
   schedule: scheduleInputSchema,
   apply: scheduleApplySchema.optional(),
 });

@@ -55,8 +55,12 @@ export default async function InsightsPage() {
 
   const ranked = habits.slice().sort((a, b) => b.streak - a.streak);
   const bestHabit = ranked[0];
+  // Only habits that have actually had a scheduled opportunity can be "weak" —
+  // a habit with nothing scheduled yet reports null, not 0%.
   const weakestHabit = habits
-    .slice()
+    .filter((habit): habit is typeof habit & { completionRate: number } =>
+      habit.completionRate !== null,
+    )
     .sort((a, b) => a.completionRate - b.completionRate)
     .find((habit) => habit.completionRate < 60);
 

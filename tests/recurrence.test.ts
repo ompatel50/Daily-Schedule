@@ -3,7 +3,6 @@ import { describe, expect, it } from "vitest";
 import {
   describeRule,
   expandRule,
-  isHabitDue,
   matchesRule,
   parseRule,
   serializeRule,
@@ -119,30 +118,5 @@ describe("describeRule", () => {
       "Every weekday",
     );
     expect(describeRule({ freq: "weekly", interval: 1, byWeekday: [1, 3] })).toBe("Every Mon, Wed");
-  });
-});
-
-describe("isHabitDue", () => {
-  const base = { startDate: "2026-03-01", endDate: null };
-
-  it("is due every day for daily habits", () => {
-    expect(isHabitDue({ ...base, frequency: "daily", weekdays: [] }, "2026-03-05")).toBe(true);
-  });
-
-  it("is not due before the start date", () => {
-    expect(isHabitDue({ ...base, frequency: "daily", weekdays: [] }, "2026-02-28")).toBe(false);
-  });
-
-  it("is not due after the end date", () => {
-    expect(
-      isHabitDue({ ...base, endDate: "2026-03-03", frequency: "daily", weekdays: [] }, "2026-03-04"),
-    ).toBe(false);
-  });
-
-  it("respects selected weekdays for custom habits", () => {
-    // 2026-03-02 is a Monday, 2026-03-03 a Tuesday.
-    const habit = { ...base, frequency: "custom", weekdays: [1, 3, 5] };
-    expect(isHabitDue(habit, "2026-03-02")).toBe(true);
-    expect(isHabitDue(habit, "2026-03-03")).toBe(false);
   });
 });

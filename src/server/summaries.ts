@@ -2,9 +2,10 @@ import "server-only";
 
 import { prisma } from "@/lib/db";
 import { type DayKey, dayRange, daysBetween, weekRange } from "@/lib/date";
-import { isHabitDue } from "@/lib/logic/recurrence";
 import { scoreDay } from "@/lib/logic/scoring";
-import { parseJson, round, sum } from "@/lib/utils";
+import { round, sum } from "@/lib/utils";
+import { getHabitDayTotals } from "@/server/habits";
+import { scheduleSettingsFor } from "@/server/schedule";
 
 /**
  * `CalendarDaySummary` is a cache, not a source of truth. Anything that writes
@@ -16,13 +17,17 @@ import { parseJson, round, sum } from "@/lib/utils";
  */
 
 export async function recomputeDay(userId: string, date: DayKey): Promise<void> {
-  const [items, habits, habitLogs, meals, workouts, metrics, goals] = await Promise.all([
+  const user = await prisma.user.findUnique({
+    where: { id: userId },
+    select: { weekStartsOn: true, timezone: true },
+  });
+  const settings = scheduleSettingsFor(user ?? { weekStartsOn: 1, timezone: "UTC" });
+
+  const [items, habitTotals, meals, workouts, metrics, goals] = await Promise.all([
     prisma.scheduleItem.findMany({ where: { userId, date }, select: { status: true } }),
-    prisma.habit.findMany({
-      where: { userId, archived: false },
-      select: { id: true, frequency: true, weekdays: true, startDate: true, endDate: true },
-    }),
-    prisma.habitLog.findMany({ where: { userId, date }, select: { habitId: true, status: true } }),
+    // Habit due-ness comes from the shared schedule engine, so a weekday habit
+    // contributes nothing on a Saturday rather than counting as unmet.
+    getHabitDayTotals(userId, date, settings),
     prisma.meal.findMany({ where: { userId, date }, select: { entries: true } }),
     prisma.workout.findMany({
       where: { userId, date, status: "completed" },
@@ -36,26 +41,10 @@ export async function recomputeDay(userId: string, date: DayKey): Promise<void> 
   const completedCount = items.filter((item) => item.status === "done").length;
   const skippedCount = items.filter((item) => item.status === "skipped").length;
 
-  const doneHabitIds = new Set(
-    habitLogs.filter((log) => log.status === "done").map((log) => log.habitId),
-  );
-  const skippedHabitIds = new Set(
-    habitLogs.filter((log) => log.status === "skipped").map((log) => log.habitId),
-  );
-  const dueHabits = habits.filter((habit) =>
-    isHabitDue(
-      {
-        frequency: habit.frequency,
-        weekdays: parseJson<number[]>(habit.weekdays, []),
-        startDate: habit.startDate,
-        endDate: habit.endDate,
-      },
-      date,
-    ),
-  );
-  // Deliberate skips shouldn't count against the day.
-  const habitsDue = dueHabits.filter((habit) => !skippedHabitIds.has(habit.id)).length;
-  const habitsDone = dueHabits.filter((habit) => doneHabitIds.has(habit.id)).length;
+  // Excused days leave the denominator entirely; a deliberate skip stays in it,
+  // because the occurrence really was scheduled and really was not done.
+  const habitsDue = habitTotals.due;
+  const habitsDone = habitTotals.done;
 
   const entries = meals.flatMap((meal) => meal.entries);
   const calories = round(sum(entries, (entry) => entry.calories), 0);

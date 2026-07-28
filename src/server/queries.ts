@@ -11,11 +11,15 @@ import {
 } from "@/lib/date";
 import { MEAL_TYPE_META, type MealType } from "@/lib/enums";
 import { describeGoalTarget } from "@/lib/logic/goals";
-import { isHabitDue } from "@/lib/logic/recurrence";
-import { describeSchedule, resolveEffectiveSchedule, type ScheduleMode } from "@/lib/logic/schedule";
-import { computeStreaks, weeklyProgress } from "@/lib/logic/streaks";
+import {
+  describeSchedule,
+  resolveEffectiveSchedule,
+  type DayStatus,
+  type ScheduleMode,
+} from "@/lib/logic/schedule";
 import { totalMacros } from "@/lib/logic/nutrition";
 import { parseJson, sum } from "@/lib/utils";
+import { getHabitViews } from "@/server/habits";
 import { loadSchedules, scheduleSettingsFor, toSchedulable } from "@/server/schedule";
 import { getSummaries } from "@/server/summaries";
 
@@ -81,85 +85,115 @@ export interface HabitWithStats {
   description: string | null;
   category: string;
   timeOfDay: string;
-  frequency: string;
-  weekdays: number[];
-  targetPerWeek: number;
   targetValue: number | null;
   unit: string | null;
   color: string;
   icon: string;
   startDate: string;
+  endDate: string | null;
   archived: boolean;
   sortOrder: number;
+
+  /** True only when the habit places a real requirement on this date. */
   dueToday: boolean;
+  /** True for a times-per-week habit — available today, judged weekly. */
+  flexibleToday: boolean;
   todayStatus: string | null;
+  /** Resolved status: completed / missed / pending / rest / not_scheduled … */
+  status: DayStatus;
+  statusLabel: string;
+
   streak: number;
   longestStreak: number;
-  completionRate: number;
+  streakUnit: "occurrences" | "weeks";
+  /** Null when the window contained no scheduled opportunity at all. */
+  completionRate: number | null;
+  opportunities: number;
+
   weekDone: number;
   weekTarget: number;
+  scheduleSummary: string;
+  schedule: ScheduleDraftShape;
+
   recentLogs: Array<{ date: string; status: string }>;
+  dayStates: Array<{ date: string; status: DayStatus; label: string }>;
 }
 
-/** Habits with their stats for `date`, ready to render. */
+/** The schedule fields the habit editor round-trips. */
+export interface ScheduleDraftShape {
+  mode: ScheduleMode;
+  weekdays: number[];
+  interval: number;
+  timesPerWeek: number | null;
+  monthDay: number | null;
+  enabled: boolean;
+  daypart: string;
+  timeMinute: number | null;
+  reminderEnabled: boolean;
+  reminderMinute: number | null;
+}
+
+/**
+ * Habits with their stats for `date`, ready to render.
+ *
+ * A thin adapter over `getHabitViews` so every caller shares the one schedule
+ * engine. It used to compute due-ness and streaks here directly, which is how
+ * a "3 times per week" habit ended up marked missed four days a week.
+ */
 export async function getHabitsWithStats(
   date: DayKey = today(),
-  options: { includeArchived?: boolean; historyDays?: number } = {},
+  options: { includeArchived?: boolean; historyDays?: number; stripDays?: number } = {},
 ): Promise<HabitWithStats[]> {
   const user = await getCurrentUser();
-  const historyDays = options.historyDays ?? 90;
-  const from = shiftDay(date, -historyDays);
+  const settings = scheduleSettingsFor(user);
+  const views = await getHabitViews(user.id, date, settings, options);
 
-  const habits = await prisma.habit.findMany({
-    where: { userId: user.id, ...(options.includeArchived ? {} : { archived: false }) },
-    orderBy: [{ sortOrder: "asc" }, { createdAt: "asc" }],
-    include: {
-      logs: { where: { date: { gte: from, lte: date } }, orderBy: { date: "asc" } },
+  return views.map((view) => ({
+    id: view.id,
+    name: view.name,
+    description: view.description,
+    category: view.category,
+    timeOfDay: view.daypart,
+    targetValue: view.targetValue,
+    unit: view.unit,
+    color: view.color,
+    icon: view.icon,
+    startDate: view.startDate,
+    endDate: view.endDate,
+    archived: view.archived,
+    sortOrder: view.sortOrder,
+
+    dueToday: view.dueToday,
+    flexibleToday: view.flexibleToday,
+    todayStatus: view.loggedStatus,
+    status: view.status,
+    statusLabel: view.statusLabel,
+
+    streak: view.streak,
+    longestStreak: view.longestStreak,
+    streakUnit: view.streakUnit,
+    completionRate: view.completionRate,
+    opportunities: view.opportunities,
+
+    weekDone: view.weekly.done,
+    weekTarget: view.weekly.target,
+    scheduleSummary: view.scheduleSummary,
+    schedule: {
+      mode: (view.rule?.mode ?? "every_day") as ScheduleMode,
+      weekdays: view.rule?.weekdays ?? [],
+      interval: view.rule?.interval ?? 1,
+      timesPerWeek: view.rule?.timesPerWeek ?? null,
+      monthDay: view.rule?.monthDay ?? null,
+      enabled: view.rule?.enabled ?? true,
+      daypart: view.rule?.daypart ?? view.daypart,
+      timeMinute: view.rule?.timeMinute ?? null,
+      reminderEnabled: view.rule?.reminderEnabled ?? false,
+      reminderMinute: view.rule?.reminderMinute ?? null,
     },
-  });
 
-  const weekStartsOn = user.weekStartsOn === 0 ? 0 : 1;
-
-  return habits.map((habit) => {
-    const weekdays = parseJson<number[]>(habit.weekdays, [0, 1, 2, 3, 4, 5, 6]);
-    const shape = {
-      id: habit.id,
-      frequency: habit.frequency,
-      weekdays,
-      targetPerWeek: habit.targetPerWeek,
-      startDate: habit.startDate,
-      endDate: habit.endDate,
-    };
-    const logs = habit.logs.map((log) => ({ date: log.date, status: log.status }));
-    const stats = computeStreaks(shape, logs, { from, to: date });
-    const week = weeklyProgress(shape, logs, date, weekStartsOn);
-
-    return {
-      id: habit.id,
-      name: habit.name,
-      description: habit.description,
-      category: habit.category,
-      timeOfDay: habit.timeOfDay,
-      frequency: habit.frequency,
-      weekdays,
-      targetPerWeek: habit.targetPerWeek,
-      targetValue: habit.targetValue,
-      unit: habit.unit,
-      color: habit.color,
-      icon: habit.icon,
-      startDate: habit.startDate,
-      archived: habit.archived,
-      sortOrder: habit.sortOrder,
-      dueToday: isHabitDue(shape, date),
-      todayStatus: habit.logs.find((log) => log.date === date)?.status ?? null,
-      streak: stats.current,
-      longestStreak: stats.longest,
-      completionRate: stats.completionRate,
-      weekDone: week.done,
-      weekTarget: week.target,
-      recentLogs: logs,
-    };
-  });
+    recentLogs: view.recentLogs,
+    dayStates: view.dayStates,
+  }));
 }
 
 export async function getHabitLogs(from: DayKey, to: DayKey) {
@@ -483,7 +517,11 @@ export async function getDayOverview(date: DayKey = today()) {
       getSummaries(user.id, weekStart, weekEnd),
     ]);
 
-  const dueHabits = habits.filter((habit) => habit.dueToday);
+  // "Due" is a schedule question, answered by the engine. A times-per-week
+  // habit is available today rather than required, and habits that are not
+  // scheduled are separated out so a rest day never renders as pending work.
+  const dueHabits = habits.filter((habit) => habit.dueToday || habit.flexibleToday);
+  const restingHabits = habits.filter((habit) => !habit.dueToday && !habit.flexibleToday);
   const planned = schedule.length;
   const completed = schedule.filter((item) => item.status === "done").length;
 
@@ -498,6 +536,7 @@ export async function getDayOverview(date: DayKey = today()) {
     skipped: schedule.filter((item) => item.status === "skipped").length,
     habits,
     dueHabits,
+    restingHabits,
     habitsDone: dueHabits.filter((habit) => habit.todayStatus === "done").length,
     nutrition,
     workouts,

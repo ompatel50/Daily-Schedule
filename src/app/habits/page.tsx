@@ -10,9 +10,10 @@ import { PageHeader } from "@/components/shared/page-header";
 import { SectionCard } from "@/components/shared/section-card";
 import { StatCard } from "@/components/shared/stat-card";
 import { Skeleton } from "@/components/ui/skeleton";
-import { formatDay, isDayKey, lastNDays, shiftDay, today } from "@/lib/date";
+import { formatDay, isDayKey, lastNDays, shiftDay } from "@/lib/date";
 import { average, formatNumber, pct } from "@/lib/utils";
 import { getHabitsWithStats, getUser } from "@/server/queries";
+import { scheduleSettingsFor } from "@/server/schedule";
 import { getSummaries } from "@/server/summaries";
 
 export const metadata: Metadata = { title: "Habits" };
@@ -24,20 +25,30 @@ export default async function HabitsPage({
   searchParams: Promise<{ date?: string; new?: string }>;
 }) {
   const params = await searchParams;
-  const date = params.date && isDayKey(params.date) ? params.date : today();
-
   const user = await getUser();
+  const settings = scheduleSettingsFor(user);
+  const date = params.date && isDayKey(params.date) ? params.date : settings.today;
+
   const [habits, summaries] = await Promise.all([
     getHabitsWithStats(date, { includeArchived: true, historyDays: 90 }),
     getSummaries(user.id, shiftDay(date, -29), date),
   ]);
 
   const active = habits.filter((habit) => !habit.archived);
-  const due = active.filter((habit) => habit.dueToday);
+  // "Due" means the schedule places a real requirement today. A times-per-week
+  // habit is available rather than required, and a habit that is not scheduled
+  // at all is neither.
+  const due = active.filter((habit) => habit.dueToday || habit.flexibleToday);
+  const resting = active.filter((habit) => !habit.dueToday && !habit.flexibleToday);
   const doneToday = due.filter((habit) => habit.todayStatus === "done").length;
 
   const bestStreak = active.reduce((best, habit) => Math.max(best, habit.streak), 0);
-  const avgRate = average(active.map((habit) => habit.completionRate));
+  // Habits with no scheduled opportunity yet report null, not 0% — averaging
+  // them in would drag consistency down for a habit that has not come due.
+  const rates = active
+    .map((habit) => habit.completionRate)
+    .filter((rate): rate is number => rate !== null);
+  const avgRate = rates.length === 0 ? 0 : average(rates);
 
   const summaryByDate = new Map(summaries.map((summary) => [summary.date, summary]));
   const trend = lastNDays(30, date).map((day) => {
@@ -54,19 +65,23 @@ export default async function HabitsPage({
     description: habit.description,
     category: habit.category,
     timeOfDay: habit.timeOfDay,
-    frequency: habit.frequency,
-    weekdays: habit.weekdays,
-    targetPerWeek: habit.targetPerWeek,
     startDate: habit.startDate,
+    endDate: habit.endDate,
     archived: habit.archived,
+    schedule: habit.schedule,
     dueToday: habit.dueToday,
+    flexibleToday: habit.flexibleToday,
     todayStatus: habit.todayStatus,
     streak: habit.streak,
     longestStreak: habit.longestStreak,
+    streakUnit: habit.streakUnit,
     completionRate: habit.completionRate,
+    opportunities: habit.opportunities,
     weekDone: habit.weekDone,
     weekTarget: habit.weekTarget,
+    scheduleSummary: habit.scheduleSummary,
     recentLogs: habit.recentLogs,
+    dayStates: habit.dayStates,
   }));
 
   return (
@@ -81,7 +96,7 @@ export default async function HabitsPage({
         <StatCard
           label="Due today"
           value={`${doneToday}/${due.length}`}
-          hint={due.length === 0 ? "nothing due" : "completed"}
+          hint={due.length === 0 ? "rest day — nothing scheduled" : "completed"}
           icon={CheckCircle2}
           accent="text-domain-habit"
           progress={pct(doneToday, due.length)}
@@ -115,7 +130,7 @@ export default async function HabitsPage({
       <div className="grid gap-6 lg:grid-cols-4">
         <div className="lg:col-span-3">
           <Suspense fallback={<Skeleton className="h-96 w-full" />}>
-            <HabitBoard habits={boardItems} date={date} />
+            <HabitBoard habits={boardItems} date={date} weekStartsOn={settings.weekStartsOn} />
           </Suspense>
         </div>
 
@@ -124,9 +139,11 @@ export default async function HabitsPage({
             title="Today"
             icon={CheckCircle2}
             accent="text-domain-habit"
-            description={`${doneToday} of ${due.length} done`}
+            description={
+              due.length === 0 ? "Nothing scheduled today" : `${doneToday} of ${due.length} done`
+            }
           >
-            <HabitChecklist habits={due} date={date} />
+            <HabitChecklist habits={due} restingHabits={resting} date={date} />
           </SectionCard>
 
           <SectionCard

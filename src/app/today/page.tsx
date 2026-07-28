@@ -32,7 +32,8 @@ export default async function TodayPage({
   const date = params.date && isDayKey(params.date) ? params.date : today();
 
   const overview = await getDayOverview(date);
-  const { user, schedule, nutrition, workouts, dueHabits, habitsDone, goals } = overview;
+  const { user, schedule, nutrition, workouts, dueHabits, restingHabits, habitsDone, goals } =
+    overview;
 
   const calorieGoal = goals.get("calories")?.target ?? 0;
   const proteinGoal = goals.get("protein")?.target ?? 0;
@@ -81,7 +82,7 @@ export default async function TodayPage({
         <StatCard
           label="Habits"
           value={`${habitsDone}/${dueHabits.length}`}
-          hint={dueHabits.length === 0 ? "None due today" : "due today"}
+          hint={dueHabits.length === 0 ? "Rest day — none scheduled" : "due today"}
           icon={Repeat}
           accent="text-domain-habit"
           progress={pct(habitsDone, dueHabits.length)}
@@ -205,9 +206,13 @@ export default async function TodayPage({
             title="Habits"
             icon={Repeat}
             accent="text-domain-habit"
-            description={`${habitsDone} of ${dueHabits.length} done`}
+            description={
+              dueHabits.length === 0
+                ? "Nothing scheduled today"
+                : `${habitsDone} of ${dueHabits.length} done`
+            }
           >
-            <HabitChecklist habits={dueHabits} date={date} />
+            <HabitChecklist habits={dueHabits} restingHabits={restingHabits} date={date} />
           </SectionCard>
 
           {workouts.length > 0 && (
