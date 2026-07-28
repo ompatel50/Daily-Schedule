@@ -12,8 +12,8 @@
 > All work therefore lives on the designated branch, which serves the same
 > purpose (an isolated feature branch off `main`).
 
-**Last stable commit:** `6fdd87b` — Phase 6: make the calendar and insights agree
-with the score service.
+**Last stable commit:** `dc7fb92` — Extend backups to cover the new scheduling
+tables.
 
 ---
 
@@ -29,6 +29,7 @@ with the score service.
 | 5  | Explainable day-score engine                       | ✅ done |
 | 6  | Calendar & insights corrections                    | ✅ done |
 | 7  | Planner duplicate prevention & recurrence          | ⬜ **next** |
+| 15a| Backup coverage for the new tables (pulled forward) | ✅ done |
 | 8  | Dashboard / Today / Planner separation             | ⬜ not started |
 | 9  | Nutrition provider architecture & food search      | ⬜ not started |
 | 10 | Workout session system                             | ⬜ not started |
@@ -243,14 +244,14 @@ npx prisma db push        # additive; verified no data loss
 npm run db:migrate        # twice — second run is a no-op
 npm run db:seed
 npm run typecheck         # PASS
-npm test                  # PASS 213/213
+npm test                  # PASS 225/225
 npm run build             # PASS
 npm run start             # all 9 routes 200, no server errors
 ```
 
 ## Tests passing
 
-213 tests across 9 files. 133 of them are new and cover business behaviour, not
+225 tests across 10 files. 145 of them are new and cover business behaviour, not
 rendering:
 
 * `tests/schedule.test.ts` (68) — every schedule mode; both week starts; DST;
@@ -265,6 +266,9 @@ rendering:
 * `tests/day-score.test.ts` (25) — only applicable items in the denominator;
   rest days excluded; empty day scores null not zero; no divide-by-zero; partial
   progress capped; category and overall totals agreeing; weight validation.
+* `tests/backup.test.ts` (12) — format validation, checksums, older/newer format
+  handling, and an assertion that export and import both cover every table in
+  `BACKUP_TABLES` (so adding a table cannot silently skip one side).
 
 ## Tests failing
 
@@ -286,11 +290,26 @@ Run against the seeded database with `npm run build && npm run start`.
 | 6 — Workout session | ❌ Not addressed yet — Phase 10. |
 | 7 — Score consistency | ✅ Dashboard, Today and the calendar detail render byte-identical explanations for the same date (`43% — 7 of 22 applicable opportunities met`, 3 exclusions). Insights reports the same window in scheduled opportunities. |
 | 8 — Demo data removal | ❌ Not addressed yet — Phase 12. |
-| 9 — Backup round-trip | ❌ Not addressed yet — Phase 15. Backup still works but does **not** include the new schedule tables. |
+| 9 — Backup round-trip | ⚠️ **Partly.** Export verified in a real browser: format v2 with `scheduleRules=15`, `scheduleRuleDays=21`, a checksum, the app version and the user's timezone. A full export→modify→restore-into-a-clean-database round trip has **not** been executed end to end. |
 
-Browser console was not inspected — verification was done by fetching rendered
-HTML and reading the server log (0 errors across all nine routes). A real
-in-browser console check is still outstanding.
+### Browser verification (Playwright + Chromium)
+
+Driven against the running production build:
+
+* All nine routes load with **zero console errors and zero console warnings**,
+  and no uncaught page errors.
+* Creating a Mon/Tue/Thu/Fri goal through the real UI: the schedule preview and
+  the saved row both read "Mon, Tue, Thu, Fri".
+* **Scenario 1 confirmed in the browser** — on Wednesday 2026-07-29 that goal
+  appears in the calendar detail under "Rest day for:", and does *not* render as
+  "Missed".
+* The weekday picker exposes distinct accessible names for both ambiguous
+  initials (Tuesday/Thursday, Saturday/Sunday each resolve uniquely).
+* The score explanation dialog renders its categories, exclusions and formula;
+  focus moves into it on open, stays trapped across 12 tabs, Escape closes it,
+  and focus returns to the "Why this score?" trigger.
+* Today has **0px horizontal overflow** at a 900px viewport.
+* Backup export produces format v2 with the scheduling tables populated.
 
 ---
 
@@ -303,11 +322,13 @@ These are stated plainly so nothing reads as finished when it is not:
    there is no ESLint config committed. Linting has therefore **not** been run.
    Setting it up is a judgement call left for Phase 16/17 because a fresh strict
    config will flag pre-existing code across the whole repo.
-2. **Backups do not yet include the new tables.** `ScheduleRule`,
-   `ScheduleRuleDay`, `ScheduleOverride`, `GoalEntry`, `SeedBatch`, `SeedRecord`
-   and the new `Goal`/`User` columns are missing from the export. Restoring a
-   backup taken now would lose every schedule. **This is the highest-priority
-   remaining item after Phase 7.**
+2. ~~Backups do not yet include the new tables.~~ **Fixed** — backup format v2
+   covers `ScheduleRule`, `ScheduleRuleDay`, `ScheduleOverride`, `GoalEntry`,
+   `SeedBatch` and `SeedRecord`, with metadata and a checksum. Still outstanding
+   from Phase 15: the *import UI* does not yet show the preview that
+   `previewBackup()` now returns, there is no automatic pre-import backup, and
+   the restore is not wrapped in a single transaction. A full
+   export→modify→restore round trip has not been executed end to end.
 3. **Routine/template application still duplicates** (`applyScheduleTemplate`).
 4. **`SeedBatch`/`SeedRecord` exist but nothing writes to them**, so "remove demo
    data" is not yet possible.
