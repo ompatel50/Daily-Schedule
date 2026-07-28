@@ -36,6 +36,18 @@ export async function getUser() {
   return getCurrentUser();
 }
 
+/**
+ * "Today" in the user's configured timezone.
+ *
+ * Pages must use this rather than the host clock: a user whose Settings
+ * timezone differs from the machine's would otherwise be shown the wrong day
+ * around midnight, which silently shifts every score and streak by one date.
+ */
+export async function getToday(): Promise<DayKey> {
+  const user = await getCurrentUser();
+  return scheduleSettingsFor(user).today;
+}
+
 export async function getWeekStart(): Promise<0 | 1> {
   const user = await getCurrentUser();
   return user.weekStartsOn === 0 ? 0 : 1;

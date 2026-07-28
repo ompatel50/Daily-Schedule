@@ -36,12 +36,13 @@ import {
 } from "@/lib/date";
 import { trendDelta } from "@/lib/logic/scoring";
 import { cn, formatNumber, pct, sum } from "@/lib/utils";
-import { getConsistencyWindow, getDayOverview, getWindowStats } from "@/server/queries";
+import { getConsistencyWindow, getDayOverview, getToday, getWindowStats } from "@/server/queries";
 
 export const dynamic = "force-dynamic";
 
 export default async function DashboardPage() {
-  const date = today();
+  // The user's configured timezone decides what "today" is, not the host clock.
+  const date = await getToday();
 
   const [overview, window, thisWeek, lastWeek] = await Promise.all([
     getDayOverview(date),

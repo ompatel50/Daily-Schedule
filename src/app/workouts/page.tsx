@@ -9,10 +9,11 @@ import { StatCard } from "@/components/shared/stat-card";
 import { Skeleton } from "@/components/ui/skeleton";
 import { WorkoutManager, type WorkoutView } from "@/components/workouts/workout-manager";
 import { WORKOUT_TYPE_META, type WorkoutType } from "@/lib/enums";
-import { formatDay, formatDuration, isDayKey, lastNDays, shiftDay, today } from "@/lib/date";
+import { formatDay, formatDuration, isDayKey, lastNDays, shiftDay } from "@/lib/date";
 import { personalRecords } from "@/lib/logic/workouts";
 import { formatNumber, groupBy, pct, sum } from "@/lib/utils";
 import {
+  getToday,
   getExerciseNames,
   getGoalMap,
   getRecentWorkouts,
@@ -32,7 +33,8 @@ export default async function WorkoutsPage({
   searchParams: Promise<{ date?: string; new?: string }>;
 }) {
   const params = await searchParams;
-  const date = params.date && isDayKey(params.date) ? params.date : today();
+  const todayKey = await getToday();
+  const date = params.date && isDayKey(params.date) ? params.date : todayKey;
 
   const user = await getUser();
   const [recent, templates, exerciseNames, goals, thisWeek, historyWorkouts, summaries] =
@@ -41,15 +43,15 @@ export default async function WorkoutsPage({
       getWorkoutTemplates(),
       getExerciseNames(),
       getGoalMap(),
-      getWindowStats(shiftDay(today(), -6), today()),
-      getWorkouts(shiftDay(today(), -89), today()),
-      getSummaries(user.id, shiftDay(today(), -27), today()),
+      getWindowStats(shiftDay(todayKey, -6), todayKey),
+      getWorkouts(shiftDay(todayKey, -89), todayKey),
+      getSummaries(user.id, shiftDay(todayKey, -27), todayKey),
     ]);
 
   const workoutGoal = goals.get("workouts_per_week")?.target ?? 0;
   const summaryByDate = new Map(summaries.map((summary) => [summary.date, summary]));
 
-  const trend = lastNDays(28, today()).map((day) => ({
+  const trend = lastNDays(28, todayKey).map((day) => ({
     label: formatDay(day, "M/d"),
     minutes: summaryByDate.get(day)?.workoutMinutes ?? 0,
     day,
@@ -175,7 +177,7 @@ export default async function WorkoutsPage({
               height={180}
               unit=" min"
               color="hsl(var(--domain-workout))"
-              highlight={today()}
+              highlight={todayKey}
             />
           </SectionCard>
 

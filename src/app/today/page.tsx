@@ -15,9 +15,10 @@ import { EmptyState } from "@/components/shared/empty-state";
 import { Badge } from "@/components/ui/badge";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { MEAL_TYPE_META, WORKOUT_TYPE_META, type MealType, type WorkoutType } from "@/lib/enums";
-import { formatDuration, isDayKey, relativeDayLabel, today } from "@/lib/date";
+import { formatDuration, isDayKey, relativeDayLabel } from "@/lib/date";
 import { cn, formatNumber, pct } from "@/lib/utils";
-import { getDayOverview } from "@/server/queries";
+import {
+  getToday, getDayOverview } from "@/server/queries";
 import { toScheduleRowItems } from "@/lib/serializers";
 
 export const metadata: Metadata = { title: "Today" };
@@ -29,7 +30,8 @@ export default async function TodayPage({
   searchParams: Promise<{ date?: string }>;
 }) {
   const params = await searchParams;
-  const date = params.date && isDayKey(params.date) ? params.date : today();
+  const todayKey = await getToday();
+  const date = params.date && isDayKey(params.date) ? params.date : todayKey;
 
   const overview = await getDayOverview(date);
   const { user, schedule, nutrition, workouts, dueHabits, restingHabits, habitsDone, goals } =
