@@ -14,6 +14,8 @@ import {
   TIMES_OF_DAY,
   WORKOUT_TYPES,
 } from "./enums";
+import { GOAL_COMPARISONS, GOAL_SOURCES } from "./logic/goals";
+import { DAYPARTS, OVERRIDE_KINDS, SCHEDULE_MODES } from "./logic/schedule";
 
 /** Every server action validates its input through one of these schemas. */
 
@@ -201,16 +203,78 @@ export const healthMetricSchema = z.object({
   notes: z.string().max(500).nullable().optional(),
 });
 
+/** The schedule half of a goal or habit form. Shared so both stay in step. */
+export const scheduleInputSchema = z
+  .object({
+    mode: z.enum(SCHEDULE_MODES).default("every_day"),
+    weekdays: z.array(z.number().int().min(0).max(6)).default([]),
+    interval: z.number().int().min(1).max(365).default(1),
+    timesPerWeek: z.number().int().min(1).max(7).nullable().default(null),
+    monthDay: z.number().int().min(1).max(31).nullable().default(null),
+    enabled: z.boolean().default(true),
+    daypart: z.enum(DAYPARTS).default("anytime"),
+    timeMinute: optionalMinute,
+    reminderEnabled: z.boolean().default(false),
+    reminderMinute: optionalMinute,
+  })
+  .refine((value) => value.mode !== "weekdays" || value.weekdays.length > 0, {
+    message: "Pick at least one day",
+    path: ["weekdays"],
+  })
+  .refine((value) => value.mode !== "times_per_week" || (value.timesPerWeek ?? 0) > 0, {
+    message: "Choose how many times per week",
+    path: ["timesPerWeek"],
+  });
+
+export type ScheduleFormInput = z.infer<typeof scheduleInputSchema>;
+
+/** How a schedule change should treat already-scored history. */
+export const scheduleApplySchema = z.object({
+  mode: z.enum(["forward", "from", "all"]).default("forward"),
+  from: dayKey.optional(),
+});
+
 export const goalSchema = z.object({
   id: z.string().optional(),
   domain: z.enum(GOAL_DOMAINS),
   metric: z.string().min(1).max(60),
-  label: z.string().min(1).max(120),
+  label: z.string().trim().min(1, "Name is required").max(120),
+  description: z.string().max(1000).nullable().optional(),
   target: z.number().min(0).max(1000000),
+  targetMax: z.number().min(0).max(1000000).nullable().optional(),
   unit: z.string().max(20).default(""),
-  direction: z.enum(["gte", "lte", "eq"]).default("gte"),
+  direction: z.enum(GOAL_COMPARISONS).default("gte"),
   period: z.enum(["daily", "weekly", "monthly"]).default("daily"),
+  source: z.enum(GOAL_SOURCES).default("manual"),
+  sourceRef: z.string().max(60).nullable().optional(),
+  startDate: dayKey.nullable().optional(),
+  endDate: dayKey.nullable().optional(),
   active: z.boolean().default(true),
+});
+
+/** Goal creation/editing including its schedule — one atomic submission. */
+export const goalWithScheduleSchema = z.object({
+  goal: goalSchema,
+  schedule: scheduleInputSchema,
+  apply: scheduleApplySchema.optional(),
+});
+
+export const goalEntrySchema = z.object({
+  goalId: z.string().min(1),
+  date: dayKey,
+  status: z.enum(["done", "skipped", "excused"]),
+  value: z.number().nullable().optional(),
+  notes: z.string().max(1000).nullable().optional(),
+});
+
+export const dateOverrideSchema = z.object({
+  ownerType: z.enum(["goal", "habit"]),
+  ownerId: z.string().min(1),
+  date: dayKey,
+  kind: z.enum(OVERRIDE_KINDS),
+  movedToDate: dayKey.nullable().optional(),
+  timeMinute: optionalMinute,
+  note: z.string().max(500).nullable().optional(),
 });
 
 export const journalSchema = z.object({

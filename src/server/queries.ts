@@ -10,10 +10,13 @@ import {
   weekRange,
 } from "@/lib/date";
 import { MEAL_TYPE_META, type MealType } from "@/lib/enums";
+import { describeGoalTarget } from "@/lib/logic/goals";
 import { isHabitDue } from "@/lib/logic/recurrence";
+import { describeSchedule, resolveEffectiveSchedule, type ScheduleMode } from "@/lib/logic/schedule";
 import { computeStreaks, weeklyProgress } from "@/lib/logic/streaks";
 import { totalMacros } from "@/lib/logic/nutrition";
 import { parseJson, sum } from "@/lib/utils";
+import { loadSchedules, scheduleSettingsFor, toSchedulable } from "@/server/schedule";
 import { getSummaries } from "@/server/summaries";
 
 /**
@@ -355,8 +358,79 @@ export async function getLatestMetrics() {
 export async function getGoals() {
   const user = await getCurrentUser();
   return prisma.goal.findMany({
-    where: { userId: user.id },
+    where: { userId: user.id, archivedAt: null },
     orderBy: [{ domain: "asc" }, { sortOrder: "asc" }],
+  });
+}
+
+/** Habit names for the "which habit completes this goal?" picker. */
+export async function getHabitOptions() {
+  const user = await getCurrentUser();
+  return prisma.habit.findMany({
+    where: { userId: user.id, archived: false },
+    select: { id: true, name: true },
+    orderBy: { name: "asc" },
+  });
+}
+
+/** Goals plus their resolved schedule — the shape the Goals editor renders. */
+export async function getGoalRows() {
+  const user = await getCurrentUser();
+  const settings = scheduleSettingsFor(user);
+
+  const goals = await prisma.goal.findMany({
+    where: { userId: user.id },
+    orderBy: [{ sortOrder: "asc" }, { createdAt: "asc" }],
+  });
+
+  const schedules = await loadSchedules(
+    user.id,
+    "goal",
+    goals.map((goal) => goal.id),
+  );
+
+  return goals.map((goal) => {
+    const item = toSchedulable(
+      { id: goal.id, startDate: goal.startDate, endDate: goal.endDate, enabled: goal.active },
+      schedules.get(goal.id),
+    );
+    const rule = resolveEffectiveSchedule(item, settings.today);
+    const like = {
+      id: goal.id,
+      label: goal.label,
+      description: goal.description,
+      domain: goal.domain,
+      metric: goal.metric,
+      target: goal.target,
+      targetMax: goal.targetMax,
+      unit: goal.unit,
+      direction: goal.direction,
+      period: goal.period,
+      source: goal.source,
+      sourceRef: goal.sourceRef,
+    };
+
+    return {
+      ...like,
+      startDate: goal.startDate,
+      endDate: goal.endDate,
+      active: goal.active,
+      archived: goal.archivedAt !== null,
+      scheduleSummary: describeSchedule(rule),
+      targetSummary: describeGoalTarget(like),
+      schedule: {
+        mode: (rule?.mode ?? "every_day") as ScheduleMode,
+        weekdays: rule?.weekdays ?? [],
+        interval: rule?.interval ?? 1,
+        timesPerWeek: rule?.timesPerWeek ?? null,
+        monthDay: rule?.monthDay ?? null,
+        enabled: rule?.enabled ?? true,
+        daypart: rule?.daypart ?? "anytime",
+        timeMinute: rule?.timeMinute ?? null,
+        reminderEnabled: rule?.reminderEnabled ?? false,
+        reminderMinute: rule?.reminderMinute ?? null,
+      },
+    };
   });
 }
 

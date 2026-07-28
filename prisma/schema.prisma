@@ -719,6 +719,8 @@ model Goal {
 
   archivedAt DateTime?
 
+  entries GoalEntry[]
+
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
@@ -727,6 +729,31 @@ model Goal {
   // legitimate simultaneous goals over the same metric.
   @@index([userId, domain, metric])
   @@index([userId, active])
+}
+
+/// A user-recorded outcome for one goal on one date.
+///
+/// Only needed for goals the app cannot prove from data it already has
+/// (`source = "manual"`), and for recording a deliberate skip or an excuse
+/// against a goal that otherwise scores automatically. Goals with a real
+/// completion source are never asked to be ticked by hand.
+model GoalEntry {
+  id     String @id @default(cuid())
+  goalId String
+  goal   Goal   @relation(fields: [goalId], references: [id], onDelete: Cascade)
+  userId String
+
+  date String // YYYY-MM-DD
+  /// done | skipped | excused
+  status String @default("done")
+  value  Float?
+  notes  String?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@unique([goalId, date])
+  @@index([userId, date])
 }
 
 /// Precomputed per-day rollup that powers the calendar heatmap and insights

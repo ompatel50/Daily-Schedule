@@ -8,13 +8,20 @@ import { NotificationsPanel } from "@/components/settings/notifications-panel";
 import { PageHeader } from "@/components/shared/page-header";
 import { SectionCard } from "@/components/shared/section-card";
 import { KEYBOARD_SHORTCUTS } from "@/lib/navigation";
-import { getGoals, getLatestMetrics, getUser } from "@/server/queries";
+import { getGoalRows, getHabitOptions, getLatestMetrics, getUser } from "@/server/queries";
+import { scheduleSettingsFor } from "@/server/schedule";
 
 export const metadata: Metadata = { title: "Settings" };
 export const dynamic = "force-dynamic";
 
 export default async function SettingsPage() {
-  const [user, goals, latest] = await Promise.all([getUser(), getGoals(), getLatestMetrics()]);
+  const user = await getUser();
+  const settings = scheduleSettingsFor(user);
+  const [goals, habits, latest] = await Promise.all([
+    getGoalRows(),
+    getHabitOptions(),
+    getLatestMetrics(),
+  ]);
   const weight = latest.get("body_weight");
 
   return (
@@ -42,16 +49,10 @@ export default async function SettingsPage() {
         />
 
         <GoalsPanel
-          goals={goals.map((goal) => ({
-            id: goal.id,
-            domain: goal.domain,
-            metric: goal.metric,
-            label: goal.label,
-            target: goal.target,
-            unit: goal.unit,
-            period: goal.period,
-            active: goal.active,
-          }))}
+          goals={goals}
+          habits={habits}
+          weekStartsOn={settings.weekStartsOn}
+          today={settings.today}
         />
 
         <NotificationsPanel />
