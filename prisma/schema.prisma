@@ -162,11 +162,15 @@ model ScheduleOverride {
   date      String // YYYY-MM-DD
 
   /// rest      — scheduled day converted to a rest day (neutral, no penalty)
-  /// skip      — deliberately not doing it (counts as a miss for streaks)
-  /// excused   — legitimately prevented (neutral, protects the streak)
+  /// excused   — legitimately prevented; also the "skip without penalty"
+  ///             action. Neutral: no credit, but the streak survives.
   /// activate  — force-active on an otherwise unscheduled date
   /// cancel    — this occurrence does not exist at all
   /// reschedule— this occurrence moved to `movedToDate`
+  ///
+  /// Note: a *penalised* skip is not an override. It is a completion record
+  /// (HabitLog.status = "skipped"), because the occurrence really was
+  /// scheduled and really was not done.
   kind String
 
   movedToDate String?
