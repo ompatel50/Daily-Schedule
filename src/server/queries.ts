@@ -10,10 +10,19 @@ import {
   weekRange,
 } from "@/lib/date";
 import { MEAL_TYPE_META, type MealType } from "@/lib/enums";
-import { isHabitDue } from "@/lib/logic/recurrence";
-import { computeStreaks, weeklyProgress } from "@/lib/logic/streaks";
+import { describeGoalTarget } from "@/lib/logic/goals";
+import {
+  describeSchedule,
+  resolveEffectiveSchedule,
+  type DayStatus,
+  type ScheduleMode,
+} from "@/lib/logic/schedule";
 import { totalMacros } from "@/lib/logic/nutrition";
 import { parseJson, sum } from "@/lib/utils";
+import { getDayScore, scoreOptionsFor } from "@/server/day-score";
+import { evaluateGoalsForDate } from "@/server/goals";
+import { getHabitViews } from "@/server/habits";
+import { loadSchedules, scheduleSettingsFor, toSchedulable } from "@/server/schedule";
 import { getSummaries } from "@/server/summaries";
 
 /**
@@ -25,6 +34,18 @@ export type CurrentUser = Awaited<ReturnType<typeof getCurrentUser>>;
 
 export async function getUser() {
   return getCurrentUser();
+}
+
+/**
+ * "Today" in the user's configured timezone.
+ *
+ * Pages must use this rather than the host clock: a user whose Settings
+ * timezone differs from the machine's would otherwise be shown the wrong day
+ * around midnight, which silently shifts every score and streak by one date.
+ */
+export async function getToday(): Promise<DayKey> {
+  const user = await getCurrentUser();
+  return scheduleSettingsFor(user).today;
 }
 
 export async function getWeekStart(): Promise<0 | 1> {
@@ -78,85 +99,115 @@ export interface HabitWithStats {
   description: string | null;
   category: string;
   timeOfDay: string;
-  frequency: string;
-  weekdays: number[];
-  targetPerWeek: number;
   targetValue: number | null;
   unit: string | null;
   color: string;
   icon: string;
   startDate: string;
+  endDate: string | null;
   archived: boolean;
   sortOrder: number;
+
+  /** True only when the habit places a real requirement on this date. */
   dueToday: boolean;
+  /** True for a times-per-week habit — available today, judged weekly. */
+  flexibleToday: boolean;
   todayStatus: string | null;
+  /** Resolved status: completed / missed / pending / rest / not_scheduled … */
+  status: DayStatus;
+  statusLabel: string;
+
   streak: number;
   longestStreak: number;
-  completionRate: number;
+  streakUnit: "occurrences" | "weeks";
+  /** Null when the window contained no scheduled opportunity at all. */
+  completionRate: number | null;
+  opportunities: number;
+
   weekDone: number;
   weekTarget: number;
+  scheduleSummary: string;
+  schedule: ScheduleDraftShape;
+
   recentLogs: Array<{ date: string; status: string }>;
+  dayStates: Array<{ date: string; status: DayStatus; label: string }>;
 }
 
-/** Habits with their stats for `date`, ready to render. */
+/** The schedule fields the habit editor round-trips. */
+export interface ScheduleDraftShape {
+  mode: ScheduleMode;
+  weekdays: number[];
+  interval: number;
+  timesPerWeek: number | null;
+  monthDay: number | null;
+  enabled: boolean;
+  daypart: string;
+  timeMinute: number | null;
+  reminderEnabled: boolean;
+  reminderMinute: number | null;
+}
+
+/**
+ * Habits with their stats for `date`, ready to render.
+ *
+ * A thin adapter over `getHabitViews` so every caller shares the one schedule
+ * engine. It used to compute due-ness and streaks here directly, which is how
+ * a "3 times per week" habit ended up marked missed four days a week.
+ */
 export async function getHabitsWithStats(
   date: DayKey = today(),
-  options: { includeArchived?: boolean; historyDays?: number } = {},
+  options: { includeArchived?: boolean; historyDays?: number; stripDays?: number } = {},
 ): Promise<HabitWithStats[]> {
   const user = await getCurrentUser();
-  const historyDays = options.historyDays ?? 90;
-  const from = shiftDay(date, -historyDays);
+  const settings = scheduleSettingsFor(user);
+  const views = await getHabitViews(user.id, date, settings, options);
 
-  const habits = await prisma.habit.findMany({
-    where: { userId: user.id, ...(options.includeArchived ? {} : { archived: false }) },
-    orderBy: [{ sortOrder: "asc" }, { createdAt: "asc" }],
-    include: {
-      logs: { where: { date: { gte: from, lte: date } }, orderBy: { date: "asc" } },
+  return views.map((view) => ({
+    id: view.id,
+    name: view.name,
+    description: view.description,
+    category: view.category,
+    timeOfDay: view.daypart,
+    targetValue: view.targetValue,
+    unit: view.unit,
+    color: view.color,
+    icon: view.icon,
+    startDate: view.startDate,
+    endDate: view.endDate,
+    archived: view.archived,
+    sortOrder: view.sortOrder,
+
+    dueToday: view.dueToday,
+    flexibleToday: view.flexibleToday,
+    todayStatus: view.loggedStatus,
+    status: view.status,
+    statusLabel: view.statusLabel,
+
+    streak: view.streak,
+    longestStreak: view.longestStreak,
+    streakUnit: view.streakUnit,
+    completionRate: view.completionRate,
+    opportunities: view.opportunities,
+
+    weekDone: view.weekly.done,
+    weekTarget: view.weekly.target,
+    scheduleSummary: view.scheduleSummary,
+    schedule: {
+      mode: (view.rule?.mode ?? "every_day") as ScheduleMode,
+      weekdays: view.rule?.weekdays ?? [],
+      interval: view.rule?.interval ?? 1,
+      timesPerWeek: view.rule?.timesPerWeek ?? null,
+      monthDay: view.rule?.monthDay ?? null,
+      enabled: view.rule?.enabled ?? true,
+      daypart: view.rule?.daypart ?? view.daypart,
+      timeMinute: view.rule?.timeMinute ?? null,
+      reminderEnabled: view.rule?.reminderEnabled ?? false,
+      reminderMinute: view.rule?.reminderMinute ?? null,
     },
-  });
 
-  const weekStartsOn = user.weekStartsOn === 0 ? 0 : 1;
-
-  return habits.map((habit) => {
-    const weekdays = parseJson<number[]>(habit.weekdays, [0, 1, 2, 3, 4, 5, 6]);
-    const shape = {
-      id: habit.id,
-      frequency: habit.frequency,
-      weekdays,
-      targetPerWeek: habit.targetPerWeek,
-      startDate: habit.startDate,
-      endDate: habit.endDate,
-    };
-    const logs = habit.logs.map((log) => ({ date: log.date, status: log.status }));
-    const stats = computeStreaks(shape, logs, { from, to: date });
-    const week = weeklyProgress(shape, logs, date, weekStartsOn);
-
-    return {
-      id: habit.id,
-      name: habit.name,
-      description: habit.description,
-      category: habit.category,
-      timeOfDay: habit.timeOfDay,
-      frequency: habit.frequency,
-      weekdays,
-      targetPerWeek: habit.targetPerWeek,
-      targetValue: habit.targetValue,
-      unit: habit.unit,
-      color: habit.color,
-      icon: habit.icon,
-      startDate: habit.startDate,
-      archived: habit.archived,
-      sortOrder: habit.sortOrder,
-      dueToday: isHabitDue(shape, date),
-      todayStatus: habit.logs.find((log) => log.date === date)?.status ?? null,
-      streak: stats.current,
-      longestStreak: stats.longest,
-      completionRate: stats.completionRate,
-      weekDone: week.done,
-      weekTarget: week.target,
-      recentLogs: logs,
-    };
-  });
+    recentLogs: view.recentLogs,
+    dayStates: view.dayStates,
+  }));
 }
 
 export async function getHabitLogs(from: DayKey, to: DayKey) {
@@ -355,8 +406,79 @@ export async function getLatestMetrics() {
 export async function getGoals() {
   const user = await getCurrentUser();
   return prisma.goal.findMany({
-    where: { userId: user.id },
+    where: { userId: user.id, archivedAt: null },
     orderBy: [{ domain: "asc" }, { sortOrder: "asc" }],
+  });
+}
+
+/** Habit names for the "which habit completes this goal?" picker. */
+export async function getHabitOptions() {
+  const user = await getCurrentUser();
+  return prisma.habit.findMany({
+    where: { userId: user.id, archived: false },
+    select: { id: true, name: true },
+    orderBy: { name: "asc" },
+  });
+}
+
+/** Goals plus their resolved schedule — the shape the Goals editor renders. */
+export async function getGoalRows() {
+  const user = await getCurrentUser();
+  const settings = scheduleSettingsFor(user);
+
+  const goals = await prisma.goal.findMany({
+    where: { userId: user.id },
+    orderBy: [{ sortOrder: "asc" }, { createdAt: "asc" }],
+  });
+
+  const schedules = await loadSchedules(
+    user.id,
+    "goal",
+    goals.map((goal) => goal.id),
+  );
+
+  return goals.map((goal) => {
+    const item = toSchedulable(
+      { id: goal.id, startDate: goal.startDate, endDate: goal.endDate, enabled: goal.active },
+      schedules.get(goal.id),
+    );
+    const rule = resolveEffectiveSchedule(item, settings.today);
+    const like = {
+      id: goal.id,
+      label: goal.label,
+      description: goal.description,
+      domain: goal.domain,
+      metric: goal.metric,
+      target: goal.target,
+      targetMax: goal.targetMax,
+      unit: goal.unit,
+      direction: goal.direction,
+      period: goal.period,
+      source: goal.source,
+      sourceRef: goal.sourceRef,
+    };
+
+    return {
+      ...like,
+      startDate: goal.startDate,
+      endDate: goal.endDate,
+      active: goal.active,
+      archived: goal.archivedAt !== null,
+      scheduleSummary: describeSchedule(rule),
+      targetSummary: describeGoalTarget(like),
+      schedule: {
+        mode: (rule?.mode ?? "every_day") as ScheduleMode,
+        weekdays: rule?.weekdays ?? [],
+        interval: rule?.interval ?? 1,
+        timesPerWeek: rule?.timesPerWeek ?? null,
+        monthDay: rule?.monthDay ?? null,
+        enabled: rule?.enabled ?? true,
+        daypart: rule?.daypart ?? "anytime",
+        timeMinute: rule?.timeMinute ?? null,
+        reminderEnabled: rule?.reminderEnabled ?? false,
+        reminderMinute: rule?.reminderMinute ?? null,
+      },
+    };
   });
 }
 
@@ -391,25 +513,45 @@ export async function getReminders() {
 /** Everything the Today page and dashboard need, in one round of queries. */
 export async function getDayOverview(date: DayKey = today()) {
   const user = await getCurrentUser();
-  const weekStartsOn = user.weekStartsOn === 0 ? 0 : 1;
+  const settings = scheduleSettingsFor(user);
+  const weekStartsOn = settings.weekStartsOn;
   const { start: weekStart, end: weekEnd } = weekRange(date, weekStartsOn);
 
-  const [schedule, habits, nutrition, workouts, metrics, goals, journal, weekSummaries] =
-    await Promise.all([
-      getDaySchedule(date),
-      getHabitsWithStats(date),
-      getDayNutrition(date),
-      prisma.workout.findMany({
-        where: { userId: user.id, date },
-        include: { sets: { orderBy: { sortOrder: "asc" } } },
-      }),
-      prisma.healthMetric.findMany({ where: { userId: user.id, date } }),
-      getGoalMap(),
-      getJournalEntry(date),
-      getSummaries(user.id, weekStart, weekEnd),
-    ]);
+  const [
+    schedule,
+    habits,
+    nutrition,
+    workouts,
+    metrics,
+    goals,
+    goalEvaluations,
+    journal,
+    weekSummaries,
+    // One score, from the one service. The Dashboard and Today used to each
+    // call scoreDay() with their own inputs and could show different numbers
+    // for the same date.
+    score,
+  ] = await Promise.all([
+    getDaySchedule(date),
+    getHabitsWithStats(date),
+    getDayNutrition(date),
+    prisma.workout.findMany({
+      where: { userId: user.id, date },
+      include: { sets: { orderBy: { sortOrder: "asc" } } },
+    }),
+    prisma.healthMetric.findMany({ where: { userId: user.id, date } }),
+    getGoalMap(),
+    evaluateGoalsForDate(user.id, date, settings),
+    getJournalEntry(date),
+    getSummaries(user.id, weekStart, weekEnd),
+    getDayScore(user.id, date, settings, scoreOptionsFor(user)),
+  ]);
 
-  const dueHabits = habits.filter((habit) => habit.dueToday);
+  // "Due" is a schedule question, answered by the engine. A times-per-week
+  // habit is available today rather than required, and habits that are not
+  // scheduled are separated out so a rest day never renders as pending work.
+  const dueHabits = habits.filter((habit) => habit.dueToday || habit.flexibleToday);
+  const restingHabits = habits.filter((habit) => !habit.dueToday && !habit.flexibleToday);
   const planned = schedule.length;
   const completed = schedule.filter((item) => item.status === "done").length;
 
@@ -424,7 +566,11 @@ export async function getDayOverview(date: DayKey = today()) {
     skipped: schedule.filter((item) => item.status === "skipped").length,
     habits,
     dueHabits,
+    restingHabits,
     habitsDone: dueHabits.filter((habit) => habit.todayStatus === "done").length,
+    score,
+    goalEvaluations,
+    settings,
     nutrition,
     workouts,
     metrics,
@@ -508,6 +654,9 @@ export async function searchEverything(query: string, limit = 8) {
 export async function getWindowStats(from: DayKey, to: DayKey) {
   const user = await getCurrentUser();
   const summaries = await getSummaries(user.id, from, to);
+  // Only days that had an applicable opportunity carry a score. Days with
+  // nothing scheduled are not failures and must not be averaged in as zero.
+  const scored = summaries.filter((summary) => summary.scoreApplicable > 0);
   const active = summaries.filter(
     (summary) => summary.plannedCount > 0 || summary.habitsDue > 0 || summary.calories > 0,
   );
@@ -527,8 +676,12 @@ export async function getWindowStats(from: DayKey, to: DayKey) {
     protein: sum(summaries, (s) => s.protein),
     loggedDays: summaries.filter((s) => s.calories > 0).length,
     activeDays: active.length,
+    scoredDays: scored.length,
+    scheduledOpportunities: sum(summaries, (s) => s.scoreApplicable),
+    metOpportunities: sum(summaries, (s) => s.scoreCompleted),
+    missedOpportunities: sum(summaries, (s) => s.scoreMissed),
     averageScore:
-      active.length === 0 ? 0 : Math.round(sum(active, (s) => s.score) / active.length),
+      scored.length === 0 ? 0 : Math.round(sum(scored, (s) => s.score) / scored.length),
   };
 }
 

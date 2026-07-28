@@ -10,10 +10,11 @@ import { DateNav } from "@/components/shared/date-nav";
 import { PageHeader } from "@/components/shared/page-header";
 import { SectionCard } from "@/components/shared/section-card";
 import { StatCard } from "@/components/shared/stat-card";
-import { formatDay, isDayKey, lastNDays, shiftDay, today } from "@/lib/date";
+import { formatDay, isDayKey, lastNDays, shiftDay } from "@/lib/date";
 import { macroSplit, totalMacros } from "@/lib/logic/nutrition";
 import { average, formatNumber, pct } from "@/lib/utils";
 import {
+  getToday,
   getDayNutrition,
   getFoodShortcuts,
   getGoalMap,
@@ -69,7 +70,8 @@ export default async function NutritionPage({
   searchParams: Promise<{ date?: string }>;
 }) {
   const params = await searchParams;
-  const date = params.date && isDayKey(params.date) ? params.date : today();
+  const todayKey = await getToday();
+  const date = params.date && isDayKey(params.date) ? params.date : todayKey;
 
   const user = await getUser();
   const [{ meals, totals }, shortcuts, templates, goals, weekSummaries] = await Promise.all([

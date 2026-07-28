@@ -11,6 +11,15 @@ import { cn, formatNumber } from "@/lib/utils";
 export interface HeatDay {
   date: string;
   score: number;
+  /**
+   * Opportunities that actually applied. Zero means the day had nothing to
+   * miss, so `score` is meaningless there and must be treated as "open day"
+   * rather than as a zero.
+   */
+  scoreApplicable: number;
+  scoreCompleted: number;
+  scoreMissed: number;
+  scoreExcluded: number;
   plannedCount: number;
   completedCount: number;
   habitsDue: number;
@@ -131,6 +140,8 @@ function metricFor(summary: HeatDay | undefined, filter: HeatFilter): { value: n
         hasData: summary.workoutCount > 0,
       };
     default:
-      return { value: summary.score, hasData: summary.score > 0 };
+      // A day with nothing applicable has no score. Treating its 0 as data
+      // would paint every rest day as a bad day.
+      return { value: summary.score, hasData: summary.scoreApplicable > 0 };
   }
 }

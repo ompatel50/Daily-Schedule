@@ -63,6 +63,161 @@ model User {
   reminders         Reminder[]
   favorites         FavoriteItem[]
   tags              Tag[]
+  scheduleRules     ScheduleRule[]
+  scheduleOverrides ScheduleOverride[]
+  seedBatches       SeedBatch[]
+
+  // --- day score configuration ----------------------------------------------
+  /// JSON map of category → weight, e.g. {"planner":30,"habits":30,"goals":40}.
+  /// Null/empty means "weight every applicable category equally", which is the
+  /// default and needs no explanation beyond that sentence.
+  scoreWeights String?
+  /// Whether low-priority planner items count toward the day score.
+  scoreOptionalTasks Boolean @default(false)
+  /// JSON blob backing the dismissible onboarding checklist.
+  onboardingState String @default("{}")
+}
+
+// ---------------------------------------------------------------------------
+// Scheduling — one shared engine for goals and habits
+// ---------------------------------------------------------------------------
+
+/// An effective-dated schedule version. Changing a schedule never edits a row:
+/// it closes the current rule (`effectiveTo` = the day before the change) and
+/// opens a new one, so a date in the past keeps resolving against the rule that
+/// was actually in force then and historical scores stay stable.
+///
+/// `ownerType` + `ownerId` is a deliberate polymorphic link rather than two
+/// parallel table families: goals and habits answer "does this apply on this
+/// date?" identically, and one table is what makes one authoritative engine
+/// possible. See src/lib/logic/schedule.ts.
+model ScheduleRule {
+  id     String @id @default(cuid())
+  userId String
+  user   User   @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  /// goal | habit
+  ownerType String
+  ownerId   String
+
+  /// Inclusive first day this version applies, `YYYY-MM-DD`.
+  effectiveFrom String
+  /// Inclusive last day this version applies. Null = still in force.
+  effectiveTo   String?
+
+  /// every_day | weekdays | times_per_week | one_time | interval_days |
+  /// interval_weeks | monthly
+  mode String @default("every_day")
+
+  /// For interval_days / interval_weeks: repeat every N, anchored on
+  /// `effectiveFrom`.
+  interval Int @default(1)
+  /// For times_per_week: how many completions in the week count as success.
+  timesPerWeek Int?
+  /// For monthly: day-of-month, clamped to the last day of short months.
+  monthDay Int?
+
+  enabled Boolean @default(true)
+
+  /// morning | afternoon | evening | before_bed | anytime
+  daypart String @default("anytime")
+  /// Optional explicit time, minutes from midnight.
+  timeMinute Int?
+
+  reminderEnabled Boolean @default(false)
+  /// Minutes from midnight the reminder should fire.
+  reminderMinute  Int?
+
+  /// Selected weekdays for `weekdays` mode — rows, not a comma-separated list,
+  /// so "which goals apply on Wednesday?" is a real query.
+  days ScheduleRuleDay[]
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([userId, ownerType, ownerId, effectiveFrom])
+  @@index([ownerType, ownerId])
+}
+
+model ScheduleRuleDay {
+  ruleId String
+  rule   ScheduleRule @relation(fields: [ruleId], references: [id], onDelete: Cascade)
+
+  /// 0 = Sunday … 6 = Saturday.
+  weekday Int
+
+  @@id([ruleId, weekday])
+  @@index([weekday])
+}
+
+/// A one-date exception that never touches the repeating schedule.
+model ScheduleOverride {
+  id     String @id @default(cuid())
+  userId String
+  user   User   @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  /// goal | habit
+  ownerType String
+  ownerId   String
+  date      String // YYYY-MM-DD
+
+  /// rest      — scheduled day converted to a rest day (neutral, no penalty)
+  /// excused   — legitimately prevented; also the "skip without penalty"
+  ///             action. Neutral: no credit, but the streak survives.
+  /// activate  — force-active on an otherwise unscheduled date
+  /// cancel    — this occurrence does not exist at all
+  /// reschedule— this occurrence moved to `movedToDate`
+  ///
+  /// Note: a *penalised* skip is not an override. It is a completion record
+  /// (HabitLog.status = "skipped"), because the occurrence really was
+  /// scheduled and really was not done.
+  kind String
+
+  movedToDate String?
+  timeMinute  Int?
+  note        String?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@unique([ownerType, ownerId, date])
+  @@index([userId, date])
+}
+
+// ---------------------------------------------------------------------------
+// Demo / seed data identification
+// ---------------------------------------------------------------------------
+
+/// Demo records are identified by relationship, never by guessing at their
+/// names, so "remove sample data" can delete exactly what it created and
+/// nothing a real user typed.
+model SeedBatch {
+  id     String @id @default(cuid())
+  userId String
+  user   User   @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  label String
+  /// demo | starter
+  kind  String @default("demo")
+
+  records SeedRecord[]
+
+  createdAt DateTime @default(now())
+
+  @@index([userId, kind])
+}
+
+model SeedRecord {
+  id      String    @id @default(cuid())
+  batchId String
+  batch   SeedBatch @relation(fields: [batchId], references: [id], onDelete: Cascade)
+
+  /// Prisma model name, e.g. "ScheduleItem".
+  model    String
+  recordId String
+
+  @@unique([model, recordId])
+  @@index([batchId])
 }
 
 // ---------------------------------------------------------------------------
@@ -201,7 +356,11 @@ model Habit {
   /// morning | afternoon | evening | before_bed | anytime
   timeOfDay String @default("anytime")
 
-  // --- recurrence -----------------------------------------------------------
+  // --- recurrence (LEGACY MIRROR) -------------------------------------------
+  // `ScheduleRule` (ownerType = "habit") is the authoritative schedule and the
+  // only thing the engine reads. These three columns are kept, and rewritten on
+  // every save, so that backups taken before the upgrade still restore and the
+  // raw database stays readable on its own. Never read them for scheduling.
   frequency String @default("daily") // daily | weekly | custom
   /// For `custom`: JSON array of weekday numbers, 0=Sun … 6=Sat.
   weekdays  String @default("[0,1,2,3,4,5,6]")
@@ -235,7 +394,11 @@ model HabitLog {
   user    User   @relation(fields: [userId], references: [id], onDelete: Cascade)
 
   date   String // YYYY-MM-DD
-  status String @default("done") // done | skipped | missed
+  /// done    — completed (counts positively, extends the streak)
+  /// skipped — deliberately not done (breaks the streak, like a miss)
+  /// excused — legitimately prevented (neutral: no credit, no broken streak)
+  /// missed  — explicitly recorded as missed
+  status String @default("done")
   value  Float?
   notes  String?
 
@@ -524,21 +687,73 @@ model Goal {
   metric String
   label  String
 
+  description String?
+
   target    Float
+  /// Upper bound for `range` comparisons ("2,000–2,300 kcal"). Null otherwise.
+  targetMax Float?
   unit      String @default("")
-  /// gte | lte | eq  — how to score progress against the target.
+  /// gte | lte | eq | range | boolean — how to score progress against target.
+  /// (`boolean` = done / not done, no numeric target.)
   direction String @default("gte")
-  /// daily | weekly | monthly
+  /// daily | weekly | monthly. A `times_per_week` schedule always evaluates
+  /// weekly regardless of this field; see resolveGoalPeriod().
   period    String @default("daily")
+
+  /// Where the number comes from. The app fills goals in from data it already
+  /// has rather than asking the user to tick a box it can already prove:
+  /// manual | workout_count | workout_minutes | workout_distance | steps |
+  /// active_calories | sleep_hours | hydration | calories | protein | carbs |
+  /// fat | fiber | habit | planner_required
+  source String @default("manual")
+  /// For `habit` goals: the habit id. Otherwise null.
+  sourceRef String?
+
+  /// The goal's own lifespan. Distinct from a ScheduleRule's effective window,
+  /// which versions the *schedule* rather than the goal.
+  startDate String?
+  endDate   String?
 
   active    Boolean @default(true)
   sortOrder Int     @default(0)
 
+  archivedAt DateTime?
+
+  entries GoalEntry[]
+
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
-  @@unique([userId, domain, metric, period])
+  // NOTE: deliberately *not* unique on (userId, domain, metric, period).
+  // "Complete a workout on Mon/Tue/Thu/Fri" and "4 workouts per week" are two
+  // legitimate simultaneous goals over the same metric.
+  @@index([userId, domain, metric])
   @@index([userId, active])
+}
+
+/// A user-recorded outcome for one goal on one date.
+///
+/// Only needed for goals the app cannot prove from data it already has
+/// (`source = "manual"`), and for recording a deliberate skip or an excuse
+/// against a goal that otherwise scores automatically. Goals with a real
+/// completion source are never asked to be ticked by hand.
+model GoalEntry {
+  id     String @id @default(cuid())
+  goalId String
+  goal   Goal   @relation(fields: [goalId], references: [id], onDelete: Cascade)
+  userId String
+
+  date String // YYYY-MM-DD
+  /// done | skipped | excused
+  status String @default("done")
+  value  Float?
+  notes  String?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@unique([goalId, date])
+  @@index([userId, date])
 }
 
 /// Precomputed per-day rollup that powers the calendar heatmap and insights
@@ -570,8 +785,21 @@ model CalendarDaySummary {
   sleepHours Float?
   bodyWeight Float?
 
-  /// 0–100 blended consistency score for the heatmap.
+  /// 0–100 day score for the heatmap, produced by src/server/day-score.ts.
+  ///
+  /// Read it together with `scoreApplicable`: when that is 0 the day had no
+  /// applicable opportunity at all, and this column's 0 means "open day", not
+  /// "scored zero". Averaging those days in as zero is exactly the bug this
+  /// pair of columns exists to prevent.
   score Int @default(0)
+
+  /// Opportunities that actually applied on this day.
+  scoreApplicable Int @default(0)
+  scoreCompleted  Int @default(0)
+  scoreMissed     Int @default(0)
+  scorePending    Int @default(0)
+  /// Records excluded with a reason (rest day, not scheduled, optional…).
+  scoreExcluded   Int @default(0)
 
   updatedAt DateTime @updatedAt
 

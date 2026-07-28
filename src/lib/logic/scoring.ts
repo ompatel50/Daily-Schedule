@@ -1,78 +1,13 @@
-import { clamp } from "@/lib/utils";
-
 /**
- * The single "how did today go?" number, 0–100, used by the calendar heatmap,
- * the dashboard ring and the weekly review.
+ * Presentation and statistics helpers for scores.
  *
- * Weighting rationale: the app is a *planner first*, so finishing what you
- * planned and holding your habits matter most. Nutrition and training are
- * scored as "did you log and hit roughly the right range", because logging
- * itself is the behaviour worth reinforcing.
+ * The day score itself is *not* computed here — it lives in
+ * src/lib/logic/day-score.ts, which returns the full explanation alongside the
+ * number. This file used to hold a second, opaque `scoreDay()` with hard-coded
+ * category weights that the Dashboard, Today and the seed script each called
+ * with their own inputs; that is exactly the disagreement the central service
+ * removed.
  */
-export interface DayInputs {
-  plannedCount: number;
-  completedCount: number;
-  habitsDue: number;
-  habitsDone: number;
-  calories: number;
-  calorieGoal: number;
-  workoutMinutes: number;
-  /** Weekly workout target expressed as an average daily minute goal. */
-  workoutMinuteGoal: number;
-  /** True when the day has any food logged at all. */
-  loggedNutrition: boolean;
-}
-
-export const SCORE_WEIGHTS = {
-  planner: 0.35,
-  habits: 0.35,
-  nutrition: 0.15,
-  training: 0.15,
-} as const;
-
-export function scoreDay(input: DayInputs): number {
-  const parts: Array<{ weight: number; value: number }> = [];
-
-  if (input.plannedCount > 0) {
-    parts.push({
-      weight: SCORE_WEIGHTS.planner,
-      value: input.completedCount / input.plannedCount,
-    });
-  }
-
-  if (input.habitsDue > 0) {
-    parts.push({ weight: SCORE_WEIGHTS.habits, value: input.habitsDone / input.habitsDue });
-  }
-
-  if (input.loggedNutrition && input.calorieGoal > 0) {
-    parts.push({ weight: SCORE_WEIGHTS.nutrition, value: calorieAccuracy(input.calories, input.calorieGoal) });
-  }
-
-  if (input.workoutMinuteGoal > 0) {
-    parts.push({
-      weight: SCORE_WEIGHTS.training,
-      value: clamp(input.workoutMinutes / input.workoutMinuteGoal, 0, 1),
-    });
-  }
-
-  if (parts.length === 0) return 0;
-
-  const totalWeight = parts.reduce((sum, part) => sum + part.weight, 0);
-  const weighted = parts.reduce((sum, part) => sum + part.weight * clamp(part.value, 0, 1), 0);
-  return Math.round((weighted / totalWeight) * 100);
-}
-
-/**
- * 1.0 when within 10% of the goal, tapering to 0 at ±50%. Both over- and
- * under-eating reduce the score, which is what makes it useful as a signal.
- */
-export function calorieAccuracy(actual: number, goal: number): number {
-  if (goal <= 0 || actual <= 0) return 0;
-  const deviation = Math.abs(actual - goal) / goal;
-  if (deviation <= 0.1) return 1;
-  if (deviation >= 0.5) return 0;
-  return 1 - (deviation - 0.1) / 0.4;
-}
 
 /** Heatmap bucket for a 0–100 score. */
 export type HeatLevel = 0 | 1 | 2 | 3 | 4;

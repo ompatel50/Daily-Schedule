@@ -2,36 +2,48 @@
 
 import * as React from "react";
 import { useRouter } from "next/navigation";
-import { Check, Flame, MinusCircle, Repeat } from "lucide-react";
+import { Check, Flame, MinusCircle, Moon, Repeat, ShieldCheck } from "lucide-react";
 import { toast } from "sonner";
 
 import { EmptyState } from "@/components/shared/empty-state";
 import { TIME_OF_DAY_META, type TimeOfDay } from "@/lib/enums";
+import type { DayStatus } from "@/lib/logic/schedule";
 import { cn } from "@/lib/utils";
 import { cycleHabitLog } from "@/server/actions/habits";
-import type { HabitWithStats } from "@/server/queries";
 
 export interface ChecklistHabit {
   id: string;
   name: string;
   timeOfDay: string;
   todayStatus: string | null;
+  status: DayStatus;
+  statusLabel: string;
   streak: number;
-  frequency: string;
+  streakUnit?: "occurrences" | "weeks";
+  dueToday: boolean;
+  flexibleToday: boolean;
   weekDone: number;
   weekTarget: number;
+  scheduleSummary: string;
 }
 
 /**
  * Today's habits, grouped by part of day. One click cycles
  * unlogged → done → skipped → unlogged, with optimistic feedback.
+ *
+ * Habits that are not scheduled today are not mixed in with the ones that are.
+ * They sit in a collapsed, low-emphasis section, because a rest day is not a
+ * pending task and should not look like one.
  */
 export function HabitChecklist({
   habits,
   date,
+  restingHabits = [],
 }: {
-  habits: Array<ChecklistHabit | HabitWithStats>;
+  habits: ChecklistHabit[];
   date: string;
+  /** Habits whose schedule does not place a requirement today. */
+  restingHabits?: ChecklistHabit[];
 }) {
   const router = useRouter();
   const [optimistic, setOptimistic] = React.useState<Record<string, string | null>>({});
@@ -61,11 +73,11 @@ export function HabitChecklist({
     });
   }
 
-  if (habits.length === 0) {
+  if (habits.length === 0 && restingHabits.length === 0) {
     return (
       <EmptyState
         icon={Repeat}
-        title="No habits due"
+        title="No habits yet"
         description="Create habits to build daily consistency."
         className="py-6"
       />
@@ -85,6 +97,12 @@ export function HabitChecklist({
 
   return (
     <div className="space-y-3">
+      {habits.length === 0 && (
+        <p className="rounded-lg border border-dashed px-3 py-4 text-center text-sm text-muted-foreground">
+          Nothing scheduled today. That is a rest day, not a missed one.
+        </p>
+      )}
+
       {ordered.map(([timeOfDay, group]) => (
         <div key={timeOfDay} className="space-y-1">
           {ordered.length > 1 && (
@@ -96,44 +114,55 @@ export function HabitChecklist({
             const status = statusOf(habit);
             const done = status === "done";
             const skipped = status === "skipped";
+            const excused = status === "excused";
 
             return (
               <button
                 key={habit.id}
                 type="button"
                 onClick={() => cycle(habit)}
+                aria-pressed={done}
+                aria-label={`${habit.name} — ${done ? "completed" : habit.statusLabel}`}
                 className={cn(
                   "flex w-full items-center gap-2.5 rounded-lg border px-2.5 py-2 text-left transition-colors",
+                  "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring",
                   done
                     ? "border-emerald-500/30 bg-emerald-500/10"
-                    : skipped
+                    : skipped || excused
                       ? "border-dashed opacity-60"
                       : "hover:bg-accent/50",
                 )}
               >
                 <span
+                  aria-hidden="true"
                   className={cn(
                     "flex h-5 w-5 shrink-0 items-center justify-center rounded-md border transition-colors",
                     done && "border-emerald-500 bg-emerald-500 text-white",
-                    skipped && "border-dashed text-muted-foreground",
+                    (skipped || excused) && "border-dashed text-muted-foreground",
                   )}
                 >
                   {done && <Check className="h-3 w-3" strokeWidth={3} />}
                   {skipped && <MinusCircle className="h-3 w-3" />}
+                  {excused && <ShieldCheck className="h-3 w-3" />}
                 </span>
 
-                <span className={cn("min-w-0 flex-1 truncate text-sm", done && "line-through opacity-70")}>
+                <span
+                  className={cn("min-w-0 flex-1 truncate text-sm", done && "line-through opacity-70")}
+                >
                   {habit.name}
                 </span>
 
-                {habit.frequency === "weekly" ? (
+                {habit.flexibleToday ? (
                   <span className="tabular shrink-0 text-xs text-muted-foreground">
-                    {habit.weekDone}/{habit.weekTarget}
+                    {habit.weekDone}/{habit.weekTarget} this week
                   </span>
                 ) : habit.streak > 0 ? (
                   <span className="inline-flex shrink-0 items-center gap-0.5 text-xs font-medium text-orange-500">
-                    <Flame className="h-3 w-3" />
+                    <Flame className="h-3 w-3" aria-hidden="true" />
                     {habit.streak}
+                    <span className="sr-only">
+                      {habit.streakUnit === "weeks" ? " week streak" : " in a row"}
+                    </span>
                   </span>
                 ) : null}
               </button>
@@ -141,6 +170,26 @@ export function HabitChecklist({
           })}
         </div>
       ))}
+
+      {restingHabits.length > 0 && (
+        <details className="rounded-lg border border-dashed">
+          <summary className="cursor-pointer px-2.5 py-1.5 text-xs text-muted-foreground">
+            <Moon className="mr-1 inline h-3 w-3" aria-hidden="true" />
+            Not scheduled today ({restingHabits.length})
+          </summary>
+          <ul className="space-y-1 border-t px-2.5 py-2">
+            {restingHabits.map((habit) => (
+              <li
+                key={habit.id}
+                className="flex items-center justify-between gap-2 text-xs text-muted-foreground"
+              >
+                <span className="truncate">{habit.name}</span>
+                <span className="shrink-0">{habit.scheduleSummary}</span>
+              </li>
+            ))}
+          </ul>
+        </details>
+      )}
     </div>
   );
 }

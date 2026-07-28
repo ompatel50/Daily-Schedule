@@ -20,9 +20,11 @@
     "db:studio": "prisma studio",
     "predb:seed": "node scripts/ensure-env.mjs",
     "db:seed": "tsx prisma/seed.ts",
+    "predb:migrate": "node scripts/ensure-env.mjs",
+    "db:migrate": "tsx prisma/migrate-data.ts",
     "db:reset": "prisma db push --force-reset && npm run db:seed",
     "presetup": "node scripts/ensure-env.mjs",
-    "setup": "prisma generate && prisma db push && npm run db:seed"
+    "setup": "prisma generate && prisma db push && npm run db:migrate && npm run db:seed"
   },
   "prisma": {
     "seed": "tsx prisma/seed.ts"

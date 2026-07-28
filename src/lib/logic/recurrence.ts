@@ -167,29 +167,8 @@ export function describeRule(rule: RecurrenceRule | null, anchor?: DayKey): stri
   return base;
 }
 
-// --- habit recurrence -------------------------------------------------------
-
-/**
- * Habits use a simpler shape than planner items: daily, N-times-per-week, or a
- * fixed set of weekdays. `isHabitDue` answers "should this show up today?".
- */
-export function isHabitDue(
-  habit: { frequency: string; weekdays: number[]; startDate: DayKey; endDate?: string | null },
-  day: DayKey,
-): boolean {
-  if (daysBetween(habit.startDate, day) < 0) return false;
-  if (habit.endDate && daysBetween(habit.endDate, day) > 0) return false;
-
-  switch (habit.frequency) {
-    case "daily":
-      return true;
-    case "custom":
-      return habit.weekdays.includes(weekdayOf(day));
-    case "weekly":
-      // Flexible weekly habits are "due" every day until the weekly target is
-      // hit; the dashboard shows progress rather than a hard pass/fail.
-      return true;
-    default:
-      return true;
-  }
-}
+// NOTE: habit recurrence used to live here as `isHabitDue`. It has moved to
+// src/lib/logic/schedule.ts, which resolves goals and habits through one
+// effective-dated engine. What remains in this file is planner-item recurrence
+// only — a different problem (materialised occurrences on a timeline) with a
+// different shape.

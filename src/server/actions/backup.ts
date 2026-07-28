@@ -2,11 +2,20 @@
 
 import { revalidatePath } from "next/cache";
 
-import { BACKUP_VERSION, type BackupFile, type CsvTable } from "@/lib/backup-format";
+import {
+  BACKUP_VERSION,
+  checksumOf,
+  inspectBackup,
+  type BackupFile,
+  type CsvTable,
+} from "@/lib/backup-format";
 import { getCurrentUser, prisma } from "@/lib/db";
 import { fail, succeed, type ActionResult } from "@/lib/validation";
 import { rebuildSummaries } from "@/server/summaries";
 import { today } from "@/lib/date";
+
+/** Recorded in backup metadata so a file says which app version wrote it. */
+const APP_VERSION = "1.1.0";
 
 export async function exportBackup(): Promise<ActionResult<BackupFile>> {
   const user = await getCurrentUser();
@@ -27,10 +36,16 @@ export async function exportBackup(): Promise<ActionResult<BackupFile>> {
     workoutTemplates,
     healthMetrics,
     goals,
+    goalEntries,
+    scheduleRules,
+    scheduleRuleDays,
+    scheduleOverrides,
     journalEntries,
     reminders,
     favorites,
     tags,
+    seedBatches,
+    seedRecords,
   ] = await Promise.all([
     prisma.scheduleItem.findMany({ where: { userId: user.id } }),
     prisma.scheduleItemTag.findMany({ where: { scheduleItem: { userId: user.id } } }),
@@ -47,39 +62,76 @@ export async function exportBackup(): Promise<ActionResult<BackupFile>> {
     prisma.workoutTemplate.findMany({ where: { userId: user.id } }),
     prisma.healthMetric.findMany({ where: { userId: user.id } }),
     prisma.goal.findMany({ where: { userId: user.id } }),
+    prisma.goalEntry.findMany({ where: { userId: user.id } }),
+    // The scheduling tables are what make a goal or habit mean anything. A
+    // backup without them would restore records that apply on no date at all.
+    prisma.scheduleRule.findMany({ where: { userId: user.id } }),
+    prisma.scheduleRuleDay.findMany({ where: { rule: { userId: user.id } } }),
+    prisma.scheduleOverride.findMany({ where: { userId: user.id } }),
     prisma.journalEntry.findMany({ where: { userId: user.id } }),
     prisma.reminder.findMany({ where: { userId: user.id } }),
     prisma.favoriteItem.findMany({ where: { userId: user.id } }),
     prisma.tag.findMany({ where: { userId: user.id } }),
+    prisma.seedBatch.findMany({ where: { userId: user.id } }),
+    prisma.seedRecord.findMany({ where: { batch: { userId: user.id } } }),
   ]);
+
+  const data = {
+    users: [user],
+    tags,
+    scheduleItems,
+    scheduleItemTags,
+    scheduleTemplates,
+    habits,
+    habitLogs,
+    foodItems,
+    meals,
+    mealEntries,
+    mealTemplates,
+    mealTemplateItems,
+    workouts,
+    workoutSets,
+    workoutTemplates,
+    healthMetrics,
+    goals,
+    goalEntries,
+    scheduleRules,
+    scheduleRuleDays,
+    scheduleOverrides,
+    journalEntries,
+    reminders,
+    favorites,
+    seedBatches,
+    seedRecords,
+  };
+
+  const recordCounts = Object.fromEntries(
+    Object.entries(data).map(([table, rows]) => [table, rows.length]),
+  );
+  const exportedAt = new Date().toISOString();
 
   return succeed({
     version: BACKUP_VERSION,
-    exportedAt: new Date().toISOString(),
-    app: "personal-os",
-    data: {
-      users: [user],
-      tags,
-      scheduleItems,
-      scheduleItemTags,
-      scheduleTemplates,
-      habits,
-      habitLogs,
-      foodItems,
-      meals,
-      mealEntries,
-      mealTemplates,
-      mealTemplateItems,
-      workouts,
-      workoutSets,
-      workoutTemplates,
-      healthMetrics,
-      goals,
-      journalEntries,
-      reminders,
-      favorites,
+    exportedAt,
+    app: "personal-os" as const,
+    meta: {
+      version: BACKUP_VERSION,
+      appVersion: APP_VERSION,
+      exportedAt,
+      timezone: user.timezone,
+      recordCounts,
+      checksum: checksumOf(JSON.stringify(data)),
     },
+    data,
   });
+}
+
+/**
+ * Inspect a backup without importing it, so the UI can show what is in the file
+ * and whether it is compatible *before* anything is written.
+ */
+export async function previewBackup(payload: unknown) {
+  return succeed(inspectBackup(payload));
 }
 
 /** CSV export of the flat, spreadsheet-friendly tables. */
@@ -200,15 +252,10 @@ export async function importBackup(
   payload: unknown,
   mode: "merge" | "replace" = "merge",
 ): Promise<ActionResult<{ imported: number; tables: string[] }>> {
-  const file = payload as BackupFile;
-  if (!file || typeof file !== "object" || file.app !== "personal-os") {
-    return fail("That doesn't look like a Personal OS backup file");
-  }
-  if (file.version > BACKUP_VERSION) {
-    return fail(`Backup version ${file.version} is newer than this app supports`);
-  }
-  if (!file.data || typeof file.data !== "object") return fail("Backup file has no data");
+  const inspection = inspectBackup(payload);
+  if (!inspection.ok) return fail(inspection.error ?? "That backup file cannot be imported");
 
+  const file = payload as BackupFile;
   const user = await getCurrentUser();
   const data = file.data;
 
@@ -229,7 +276,15 @@ export async function importBackup(
     await prisma.journalEntry.deleteMany({ where: { userId: user.id } });
     await prisma.reminder.deleteMany({ where: { userId: user.id } });
     await prisma.favoriteItem.deleteMany({ where: { userId: user.id } });
+    await prisma.goalEntry.deleteMany({ where: { userId: user.id } });
     await prisma.goal.deleteMany({ where: { userId: user.id } });
+    // Schedules are polymorphic, so they are cleared explicitly rather than
+    // cascading from the goal/habit rows.
+    await prisma.scheduleRuleDay.deleteMany({ where: { rule: { userId: user.id } } });
+    await prisma.scheduleRule.deleteMany({ where: { userId: user.id } });
+    await prisma.scheduleOverride.deleteMany({ where: { userId: user.id } });
+    await prisma.seedRecord.deleteMany({ where: { batch: { userId: user.id } } });
+    await prisma.seedBatch.deleteMany({ where: { userId: user.id } });
     await prisma.tag.deleteMany({ where: { userId: user.id } });
     await prisma.foodItem.deleteMany({ where: { userId: user.id } });
     await prisma.calendarDaySummary.deleteMany({ where: { userId: user.id } });
@@ -352,6 +407,31 @@ export async function importBackup(
     return prisma.goal.upsert({ where: { id: row.id }, create: value, update: value });
   });
 
+  await restore<{ id: string }>("goalEntries", (row) => {
+    const value = own(dates(row)) as never;
+    return prisma.goalEntry.upsert({ where: { id: row.id }, create: value, update: value });
+  });
+
+  // Schedules come after their owners so the polymorphic ownerId always points
+  // at a row that exists by the time the engine reads it.
+  await restore<{ id: string }>("scheduleRules", (row) => {
+    const value = own(dates(row)) as never;
+    return prisma.scheduleRule.upsert({ where: { id: row.id }, create: value, update: value });
+  });
+
+  await restore<{ ruleId: string; weekday: number }>("scheduleRuleDays", (row) =>
+    prisma.scheduleRuleDay.upsert({
+      where: { ruleId_weekday: { ruleId: row.ruleId, weekday: row.weekday } },
+      create: row as never,
+      update: {},
+    }),
+  );
+
+  await restore<{ id: string }>("scheduleOverrides", (row) => {
+    const value = own(dates(row)) as never;
+    return prisma.scheduleOverride.upsert({ where: { id: row.id }, create: value, update: value });
+  });
+
   await restore<{ id: string }>("journalEntries", (row) => {
     const value = own(dates(row)) as never;
     return prisma.journalEntry.upsert({ where: { id: row.id }, create: value, update: value });
@@ -367,6 +447,25 @@ export async function importBackup(
     return prisma.favoriteItem.upsert({ where: { id: row.id }, create: value, update: value });
   });
 
+  await restore<{ id: string }>("seedBatches", (row) => {
+    const value = own(dates(row)) as never;
+    return prisma.seedBatch.upsert({ where: { id: row.id }, create: value, update: value });
+  });
+
+  await restore<{ id: string; model: string; recordId: string }>("seedRecords", (row) => {
+    const value = dates(row) as never;
+    return prisma.seedRecord.upsert({
+      where: { model_recordId: { model: row.model, recordId: row.recordId } },
+      create: value,
+      update: value,
+    });
+  });
+
+  // A v1 backup carries no schedules. Anything that arrives without one gets an
+  // every-day rule effective from its own start date — which is exactly how it
+  // behaved in the version that wrote the file, so no history changes meaning.
+  await backfillMissingSchedules(user.id);
+
   // Summaries are derived, so rebuild rather than importing them.
   const earliest = await prisma.scheduleItem.findFirst({
     where: { userId: user.id },
@@ -377,6 +476,55 @@ export async function importBackup(
 
   revalidatePath("/", "layout");
   return succeed({ imported, tables: touchedTables });
+}
+
+/**
+ * Give any goal or habit that arrived without a schedule an every-day rule.
+ *
+ * Idempotent, and only ever *adds* — a record that already has a schedule is
+ * left completely alone.
+ */
+async function backfillMissingSchedules(userId: string): Promise<void> {
+  const [goals, habits, rules] = await Promise.all([
+    prisma.goal.findMany({ where: { userId }, select: { id: true, startDate: true, createdAt: true, active: true, endDate: true } }),
+    prisma.habit.findMany({ where: { userId }, select: { id: true, startDate: true, endDate: true, archived: true, timeOfDay: true } }),
+    prisma.scheduleRule.findMany({ where: { userId }, select: { ownerType: true, ownerId: true } }),
+  ]);
+
+  const have = new Set(rules.map((rule) => `${rule.ownerType}:${rule.ownerId}`));
+  const dayKey = (date: Date) =>
+    `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, "0")}-${String(date.getDate()).padStart(2, "0")}`;
+
+  for (const goal of goals) {
+    if (have.has(`goal:${goal.id}`)) continue;
+    await prisma.scheduleRule.create({
+      data: {
+        userId,
+        ownerType: "goal",
+        ownerId: goal.id,
+        effectiveFrom: goal.startDate ?? dayKey(goal.createdAt),
+        effectiveTo: goal.endDate,
+        mode: "every_day",
+        enabled: goal.active,
+      },
+    });
+  }
+
+  for (const habit of habits) {
+    if (have.has(`habit:${habit.id}`)) continue;
+    await prisma.scheduleRule.create({
+      data: {
+        userId,
+        ownerType: "habit",
+        ownerId: habit.id,
+        effectiveFrom: habit.startDate,
+        effectiveTo: habit.endDate,
+        mode: "every_day",
+        enabled: !habit.archived,
+        daypart: habit.timeOfDay,
+      },
+    });
+  }
 }
 
 /** Wipe everything and start over. Used by the "reset" button in Settings. */

@@ -2,105 +2,183 @@
 
 import * as React from "react";
 import { useRouter } from "next/navigation";
-import { Loader2, Plus, Target, Trash2 } from "lucide-react";
+import { Archive, Loader2, Pencil, Plus, Target, Trash2, Undo2 } from "lucide-react";
 import { toast } from "sonner";
 
+import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
-import { Input } from "@/components/ui/input";
-import { Label } from "@/components/ui/label";
-import {
-  Select,
-  SelectContent,
-  SelectItem,
-  SelectTrigger,
-  SelectValue,
-} from "@/components/ui/select";
+import { Switch } from "@/components/ui/switch";
 import { SectionCard } from "@/components/shared/section-card";
-import { GOAL_DOMAINS, type GoalDomain } from "@/lib/enums";
-import { titleCase } from "@/lib/utils";
-import { deleteGoal, saveGoal } from "@/server/actions/health";
+import { GoalDialog, emptyGoalDraft, type GoalDraft } from "@/components/settings/goal-dialog";
+import { type ScheduleDraft } from "@/components/shared/schedule-editor";
+import { GOAL_SOURCE_META, type GoalSource } from "@/lib/logic/goals";
+import { cn, titleCase } from "@/lib/utils";
+import { archiveGoal, deleteGoalPermanently, setGoalEnabled } from "@/server/actions/goals";
 
 export interface GoalRow {
   id: string;
   domain: string;
   metric: string;
   label: string;
+  description: string | null;
   target: number;
+  targetMax: number | null;
   unit: string;
+  direction: string;
   period: string;
+  source: string;
+  sourceRef: string | null;
+  startDate: string | null;
+  endDate: string | null;
   active: boolean;
+  archived: boolean;
+  scheduleSummary: string;
+  targetSummary: string;
+  schedule: ScheduleDraft;
 }
 
-/** Presets so the common goals are one click, not a form. */
-const PRESETS: Array<Omit<GoalRow, "id" | "active">> = [
-  { domain: "nutrition", metric: "calories", label: "Daily calories", target: 2200, unit: "kcal", period: "daily" },
-  { domain: "nutrition", metric: "protein", label: "Daily protein", target: 160, unit: "g", period: "daily" },
-  { domain: "workout", metric: "workouts_per_week", label: "Workouts per week", target: 4, unit: "", period: "weekly" },
-  { domain: "health", metric: "steps", label: "Daily steps", target: 9000, unit: "", period: "daily" },
-  { domain: "health", metric: "sleep_hours", label: "Sleep", target: 7.5, unit: "h", period: "daily" },
-  { domain: "health", metric: "hydration_ml", label: "Hydration", target: 2500, unit: "ml", period: "daily" },
+/** One click for the goals almost everyone wants. */
+const PRESETS: Array<{ label: string; draft: (today: string) => GoalDraft }> = [
+  {
+    label: "Workout Mon/Tue/Thu/Fri",
+    draft: (today) => ({
+      ...emptyGoalDraft(today),
+      label: "Complete a workout",
+      domain: "workout",
+      metric: "workout_session",
+      source: "workout_count",
+      direction: "gte",
+      target: 1,
+      unit: "",
+      schedule: { ...emptyGoalDraft(today).schedule, mode: "weekdays", weekdays: [1, 2, 4, 5] },
+    }),
+  },
+  {
+    label: "4 workouts per week",
+    draft: (today) => ({
+      ...emptyGoalDraft(today),
+      label: "4 workouts per week",
+      domain: "workout",
+      metric: "workouts_per_week",
+      source: "workout_count",
+      direction: "gte",
+      target: 4,
+      period: "weekly",
+      schedule: { ...emptyGoalDraft(today).schedule, mode: "times_per_week", timesPerWeek: 4 },
+    }),
+  },
+  {
+    label: "160 g protein daily",
+    draft: (today) => ({
+      ...emptyGoalDraft(today),
+      label: "Eat 160 g of protein",
+      domain: "nutrition",
+      metric: "protein",
+      source: "protein",
+      direction: "gte",
+      target: 160,
+      unit: "g",
+    }),
+  },
+  {
+    label: "Under 2,200 kcal",
+    draft: (today) => ({
+      ...emptyGoalDraft(today),
+      label: "Stay at or below 2,200 kcal",
+      domain: "nutrition",
+      metric: "calories",
+      source: "calories",
+      direction: "lte",
+      target: 2200,
+      unit: "kcal",
+    }),
+  },
+  {
+    label: "10,000 steps daily",
+    draft: (today) => ({
+      ...emptyGoalDraft(today),
+      label: "Walk 10,000 steps",
+      domain: "health",
+      metric: "steps",
+      source: "steps",
+      direction: "gte",
+      target: 10000,
+    }),
+  },
+  {
+    label: "8 h sleep Sun–Thu",
+    draft: (today) => ({
+      ...emptyGoalDraft(today),
+      label: "Sleep at least 8 hours",
+      domain: "health",
+      metric: "sleep_hours",
+      source: "sleep_hours",
+      direction: "gte",
+      target: 8,
+      unit: "h",
+      schedule: { ...emptyGoalDraft(today).schedule, mode: "weekdays", weekdays: [0, 1, 2, 3, 4] },
+    }),
+  },
 ];
 
-export function GoalsPanel({ goals }: { goals: GoalRow[] }) {
+export function GoalsPanel({
+  goals,
+  weekStartsOn = 1,
+  habits = [],
+  today,
+}: {
+  goals: GoalRow[];
+  weekStartsOn?: 0 | 1;
+  habits?: Array<{ id: string; name: string }>;
+  today: string;
+}) {
   const router = useRouter();
-  const [drafts, setDrafts] = React.useState<Record<string, number>>({});
+  const [dialogOpen, setDialogOpen] = React.useState(false);
+  const [editing, setEditing] = React.useState<GoalDraft | null>(null);
+  const [confirmingDelete, setConfirmingDelete] = React.useState<string | null>(null);
+  const [pendingId, setPendingId] = React.useState<string | null>(null);
   const [pending, startTransition] = React.useTransition();
 
-  const existingMetrics = new Set(goals.map((goal) => goal.metric));
-  const available = PRESETS.filter((preset) => !existingMetrics.has(preset.metric));
+  const active = goals.filter((goal) => !goal.archived);
+  const archived = goals.filter((goal) => goal.archived);
 
-  const [custom, setCustom] = React.useState({
-    domain: "health" as GoalDomain,
-    metric: "",
-    label: "",
-    target: 0,
-    unit: "",
-    period: "daily",
-  });
-
-  function persist(goal: GoalRow, target: number) {
-    startTransition(async () => {
-      const result = await saveGoal({ ...goal, target, direction: "gte" });
-      if (result.ok) {
-        toast.success(`${goal.label} updated`);
-        router.refresh();
-      } else {
-        toast.error(result.error);
-      }
-    });
+  function openNew(draft?: GoalDraft) {
+    setEditing(draft ?? emptyGoalDraft(today));
+    setDialogOpen(true);
   }
 
-  function addPreset(preset: (typeof PRESETS)[number]) {
-    startTransition(async () => {
-      const result = await saveGoal({ ...preset, direction: "gte", active: true });
-      if (result.ok) {
-        toast.success(`${preset.label} goal added`);
-        router.refresh();
-      } else {
-        toast.error(result.error);
-      }
+  function openEdit(goal: GoalRow) {
+    setEditing({
+      id: goal.id,
+      label: goal.label,
+      description: goal.description ?? "",
+      domain: goal.domain,
+      metric: goal.metric,
+      target: goal.target,
+      targetMax: goal.targetMax,
+      unit: goal.unit,
+      direction: goal.direction,
+      period: goal.period,
+      source: goal.source,
+      sourceRef: goal.sourceRef,
+      startDate: goal.startDate ?? today,
+      endDate: goal.endDate,
+      active: goal.active,
+      schedule: goal.schedule,
     });
+    setDialogOpen(true);
   }
 
-  function addCustom() {
-    if (!custom.metric.trim() || !custom.label.trim()) {
-      toast.error("Give the goal a key and a label");
-      return;
-    }
+  function run(id: string, work: () => Promise<{ ok: boolean; error?: string }>, message: string) {
+    setPendingId(id);
     startTransition(async () => {
-      const result = await saveGoal({
-        ...custom,
-        metric: custom.metric.trim().toLowerCase().replace(/\s+/g, "_"),
-        label: custom.label.trim(),
-        direction: "gte",
-        active: true,
-      });
+      const result = await work();
+      setPendingId(null);
       if (result.ok) {
-        toast.success("Goal added");
-        setCustom({ domain: "health", metric: "", label: "", target: 0, unit: "", period: "daily" });
+        toast.success(message);
         router.refresh();
       } else {
-        toast.error(result.error);
+        toast.error(result.error ?? "Something went wrong");
       }
     });
   }
@@ -110,134 +188,181 @@ export function GoalsPanel({ goals }: { goals: GoalRow[] }) {
       title="Goals"
       icon={Target}
       accent="text-emerald-500"
-      description="What progress bars across the app are measured against"
+      description="What counts as a good day, and on which days it counts"
+      action={
+        <Button size="sm" onClick={() => openNew()}>
+          <Plus /> New goal
+        </Button>
+      }
     >
       <div className="space-y-4">
-        {goals.length === 0 ? (
+        {active.length === 0 ? (
           <p className="rounded-lg border border-dashed px-4 py-5 text-center text-sm text-muted-foreground">
-            No goals yet. Add one below and progress starts showing up everywhere.
+            No goals yet. Add one below and progress starts showing up across the app.
           </p>
         ) : (
-          <div className="space-y-2">
-            {goals.map((goal) => (
-              <div key={goal.id} className="flex flex-wrap items-center gap-2 rounded-lg border px-3 py-2">
+          <ul className="space-y-2">
+            {active.map((goal) => (
+              <li
+                key={goal.id}
+                className={cn(
+                  "flex flex-wrap items-center gap-3 rounded-lg border px-3 py-2.5",
+                  !goal.active && "opacity-60",
+                )}
+              >
                 <div className="min-w-0 flex-1">
-                  <p className="truncate text-sm font-medium">{goal.label}</p>
-                  <p className="truncate text-xs text-muted-foreground">
-                    {titleCase(goal.domain)} · {goal.period}
-                    {goal.unit ? ` · ${goal.unit}` : ""}
+                  <div className="flex flex-wrap items-center gap-2">
+                    <p className="truncate text-sm font-medium">{goal.label}</p>
+                    <Badge variant="outline" className="text-[10px]">
+                      {titleCase(goal.domain)}
+                    </Badge>
+                    <Badge
+                      variant="secondary"
+                      className={cn("text-[10px]", !goal.active && "line-through")}
+                    >
+                      {goal.active ? goal.scheduleSummary : "Disabled"}
+                    </Badge>
+                  </div>
+                  <p className="mt-0.5 truncate text-xs text-muted-foreground">
+                    Target {goal.targetSummary}
+                    {goal.period !== "daily" ? ` · per ${goal.period.replace("ly", "")}` : ""} ·{" "}
+                    {GOAL_SOURCE_META[goal.source as GoalSource]?.label ?? "Manual"}
                   </p>
                 </div>
-                <Input
-                  type="number"
-                  min={0}
-                  step={0.1}
-                  className="h-8 w-28"
-                  value={drafts[goal.id] ?? goal.target}
-                  onChange={(event) =>
-                    setDrafts((current) => ({ ...current, [goal.id]: Number(event.target.value) }))
-                  }
-                  onBlur={() => {
-                    const next = drafts[goal.id];
-                    if (next !== undefined && next !== goal.target) persist(goal, next);
-                  }}
-                />
-                <Button
-                  size="icon-sm"
-                  variant="ghost"
-                  className="text-destructive"
-                  aria-label={`Delete ${goal.label}`}
-                  disabled={pending}
-                  onClick={() =>
-                    startTransition(async () => {
-                      const result = await deleteGoal(goal.id);
-                      if (result.ok) router.refresh();
-                      else toast.error(result.error);
-                    })
-                  }
-                >
-                  <Trash2 />
-                </Button>
-              </div>
+
+                <div className="flex items-center gap-1">
+                  <Switch
+                    checked={goal.active}
+                    aria-label={`${goal.active ? "Disable" : "Enable"} ${goal.label}`}
+                    disabled={pending && pendingId === goal.id}
+                    onCheckedChange={(checked) =>
+                      run(
+                        goal.id,
+                        () => setGoalEnabled(goal.id, checked),
+                        checked ? `${goal.label} enabled` : `${goal.label} disabled`,
+                      )
+                    }
+                  />
+                  <Button
+                    size="icon-sm"
+                    variant="ghost"
+                    aria-label={`Edit ${goal.label}`}
+                    onClick={() => openEdit(goal)}
+                  >
+                    <Pencil />
+                  </Button>
+                  <Button
+                    size="icon-sm"
+                    variant="ghost"
+                    aria-label={`Archive ${goal.label}`}
+                    disabled={pending && pendingId === goal.id}
+                    onClick={() =>
+                      run(goal.id, () => archiveGoal(goal.id, true), `${goal.label} archived`)
+                    }
+                  >
+                    {pending && pendingId === goal.id ? (
+                      <Loader2 className="animate-spin" />
+                    ) : (
+                      <Archive />
+                    )}
+                  </Button>
+                </div>
+              </li>
+            ))}
+          </ul>
+        )}
+
+        <div>
+          <p className="section-title mb-2">Add a common goal</p>
+          <div className="flex flex-wrap gap-2">
+            {PRESETS.map((preset) => (
+              <Button
+                key={preset.label}
+                size="sm"
+                variant="outline"
+                onClick={() => openNew(preset.draft(today))}
+              >
+                <Plus /> {preset.label}
+              </Button>
             ))}
           </div>
-        )}
-
-        {available.length > 0 && (
-          <div>
-            <p className="section-title mb-2">Add a common goal</p>
-            <div className="flex flex-wrap gap-2">
-              {available.map((preset) => (
-                <Button
-                  key={preset.metric}
-                  size="sm"
-                  variant="outline"
-                  disabled={pending}
-                  onClick={() => addPreset(preset)}
-                >
-                  <Plus /> {preset.label}
-                </Button>
-              ))}
-            </div>
-          </div>
-        )}
-
-        <div className="space-y-2 rounded-lg border p-3">
-          <p className="section-title">Custom goal</p>
-          <div className="grid gap-2 sm:grid-cols-5">
-            <div className="space-y-1.5 sm:col-span-2">
-              <Label htmlFor="goal-label">Label</Label>
-              <Input
-                id="goal-label"
-                value={custom.label}
-                placeholder="Meditation minutes"
-                onChange={(event) => setCustom((c) => ({ ...c, label: event.target.value }))}
-              />
-            </div>
-            <div className="space-y-1.5">
-              <Label htmlFor="goal-metric">Key</Label>
-              <Input
-                id="goal-metric"
-                value={custom.metric}
-                placeholder="meditation"
-                onChange={(event) => setCustom((c) => ({ ...c, metric: event.target.value }))}
-              />
-            </div>
-            <div className="space-y-1.5">
-              <Label htmlFor="goal-target">Target</Label>
-              <Input
-                id="goal-target"
-                type="number"
-                min={0}
-                value={custom.target}
-                onChange={(event) => setCustom((c) => ({ ...c, target: Number(event.target.value) }))}
-              />
-            </div>
-            <div className="space-y-1.5">
-              <Label>Domain</Label>
-              <Select
-                value={custom.domain}
-                onValueChange={(value) => setCustom((c) => ({ ...c, domain: value as GoalDomain }))}
-              >
-                <SelectTrigger>
-                  <SelectValue />
-                </SelectTrigger>
-                <SelectContent>
-                  {GOAL_DOMAINS.map((domain) => (
-                    <SelectItem key={domain} value={domain}>
-                      {titleCase(domain)}
-                    </SelectItem>
-                  ))}
-                </SelectContent>
-              </Select>
-            </div>
-          </div>
-          <Button size="sm" onClick={addCustom} disabled={pending}>
-            {pending ? <Loader2 className="animate-spin" /> : <Plus />}
-            Add goal
-          </Button>
+          <p className="mt-2 text-xs text-muted-foreground">
+            Presets open the form pre-filled — nothing is saved until you confirm.
+          </p>
         </div>
+
+        {archived.length > 0 && (
+          <details className="rounded-lg border">
+            <summary className="cursor-pointer px-3 py-2 text-sm font-medium">
+              Archived goals ({archived.length})
+            </summary>
+            <ul className="space-y-2 border-t p-3">
+              {archived.map((goal) => (
+                <li key={goal.id} className="flex flex-wrap items-center gap-2">
+                  <span className="min-w-0 flex-1 truncate text-sm text-muted-foreground">
+                    {goal.label}
+                  </span>
+                  <Button
+                    size="sm"
+                    variant="outline"
+                    disabled={pending && pendingId === goal.id}
+                    onClick={() =>
+                      run(goal.id, () => archiveGoal(goal.id, false), `${goal.label} restored`)
+                    }
+                  >
+                    <Undo2 /> Restore
+                  </Button>
+                  {confirmingDelete === goal.id ? (
+                    <span className="flex items-center gap-1">
+                      <Button
+                        size="sm"
+                        variant="destructive"
+                        disabled={pending && pendingId === goal.id}
+                        onClick={() => {
+                          setConfirmingDelete(null);
+                          run(
+                            goal.id,
+                            () => deleteGoalPermanently(goal.id),
+                            `${goal.label} deleted`,
+                          );
+                        }}
+                      >
+                        Delete permanently
+                      </Button>
+                      <Button size="sm" variant="ghost" onClick={() => setConfirmingDelete(null)}>
+                        Cancel
+                      </Button>
+                    </span>
+                  ) : (
+                    <Button
+                      size="icon-sm"
+                      variant="ghost"
+                      className="text-destructive"
+                      aria-label={`Delete ${goal.label} permanently`}
+                      onClick={() => setConfirmingDelete(goal.id)}
+                    >
+                      <Trash2 />
+                    </Button>
+                  )}
+                </li>
+              ))}
+            </ul>
+          </details>
+        )}
+
+        <p className="text-xs text-muted-foreground">
+          Days a goal is not scheduled show as <strong>rest days</strong>. They never count as
+          missed, never lower your day score, and never break a streak.
+        </p>
       </div>
+
+      <GoalDialog
+        open={dialogOpen}
+        onOpenChange={setDialogOpen}
+        goal={editing}
+        weekStartsOn={weekStartsOn}
+        habits={habits}
+      />
     </SectionCard>
   );
 }

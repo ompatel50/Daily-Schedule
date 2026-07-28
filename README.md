@@ -101,19 +101,32 @@ Node 20+. Everything else is npm dependencies — no Docker, no database server.
 
 ### 4. Habits — `/habits`
 
-* Daily, specific-weekday, or N-times-per-week recurrence.
-* Three states per day: **done**, **skipped** (a deliberate rest day — neutral for streaks) and
-  **missed**.
-* Streaks, longest streak, 90-day completion rate, weekly progress.
-* 28-day dot strip per habit — **click any dot to fix a day you forgot to log**.
+* Every day, selected weekdays, N times per week, every N days/weeks, monthly, or one time — all
+  through the same schedule engine goals use.
+* Statuses per day: **done**, **skipped** (deliberate, and it *does* break the streak),
+  **excused** (neutral — no credit, streak survives), **missed**, plus **rest day**,
+  **not scheduled** and **future**, which are never failures.
+* Streaks count consecutive **scheduled opportunities**, not calendar days: a Mon/Wed/Fri habit
+  done six times in a row is a streak of six, and the Tuesdays in between neither extend nor
+  break it.
+* 90-day completion rate over scheduled days only — a weekday habit is never "missed" on a
+  Saturday, and a habit that has not come due yet reads `—` rather than 0%.
+* 28-day dot strip per habit, one style per resolved state — **click any dot to fix a day you
+  forgot to log**.
 * Categories (health, productivity, learning, hygiene, mindfulness, personal) and time-of-day
   attachment (morning / afternoon / evening / before bed / anytime).
 
 ### 5. Calendar — `/calendar`
 
-* Six-month consistency heatmap, filterable by planner, habits, nutrition or workouts.
-* Month grid with per-day score, completion counts, calories and training minutes.
-* Current streak, longest streak, days tracked and "perfect days".
+* Six-month consistency heatmap, filterable by planner, habits, nutrition or workouts. Days with
+  nothing scheduled are skipped rather than drawn as zeros.
+* Month grid with seven explicit day states — completed, partial, missed, rest day, planned, open
+  day, no data — each with an icon, a border treatment and a text label, so it reads correctly in
+  greyscale and to a screen reader. A legend names all seven.
+* Click any date for a full detail panel: the day score with its explanation, habits and goals with
+  their resolved status, rest-day items listed separately, nutrition, training, health metrics
+  (labelled with their source) and notes.
+* Current streak, longest streak, scored days and "perfect days" — rest days excluded from all four.
 
 ### 6. Insights — `/insights`
 
@@ -161,11 +174,19 @@ src/
     enums.ts             # every "enum" + its display metadata
     validation.ts        # Zod schemas for every server action
     logic/               # pure, testable domain logic
-      recurrence.ts  streaks.ts  nutrition.ts  workouts.ts  scoring.ts
-      quick-add.ts   insights.ts
+      schedule.ts    # THE schedule engine — one answer to "does this apply today?"
+      goals.ts       # goal evaluation and completion sources
+      day-score.ts   # the day score *and* its explanation
+      recurrence.ts  # planner-item recurrence (materialised occurrences)
+      nutrition.ts   workouts.ts   scoring.ts   quick-add.ts   insights.ts
     data/foods.ts        # the bundled food database
   server/
     queries.ts           # read model — what pages call
+    schedule.ts          # schedule persistence and effective-dated versioning
+    facts.ts             # per-day measurement from records that already exist
+    goals.ts habits.ts   # goal and habit read models
+    day-score.ts         # assembles the score's inputs
+    insights.ts          # the weekly review
     summaries.ts         # the per-day rollup cache
     series.ts            # recurring-item materialisation
     actions/             # server actions (the only place that writes)
@@ -209,11 +230,33 @@ correcting a food's nutrition later never silently rewrites your history.
 `lib/enums.ts` and `lib/validation.ts`. This keeps the schema portable: switching `provider` to
 `postgres` needs no rewrite.
 
-**The day score.** One 0–100 number drives the heatmap, the dashboard ring and the weekly review.
-It weights planner completion 35%, habits 35%, nutrition 15% and training 15% — and only counts the
-dimensions that actually have data that day, so a day with no meals logged isn't punished for it.
-Calorie accuracy scores *both* over- and under-eating, since a goal you blow past isn't a goal you
-hit. See `lib/logic/scoring.ts`.
+**One schedule engine.** `lib/logic/schedule.ts` is the single authority on whether something
+applies on a date — for goals, habits, streaks, scoring, the calendar and insights. It exists
+because that question used to be answered independently in four places that could disagree. It
+keeps apart the states people care about: scheduled, times-per-week (flexible), not scheduled,
+rest day, excused, cancelled, moved, before start, after end, disabled. **Only the first can ever
+become a miss.**
+
+Schedules are **effective-dated**. Changing one closes the current version and opens a new one, so
+a date in the past keeps resolving against the rule that was actually in force then and old scores
+and streaks do not silently change. "Recalculate all history" exists, but you have to choose it and
+it tells you what it will do.
+
+**The day score.** The share of a day's *applicable* opportunities that were met, from
+`lib/logic/day-score.ts`. Rest days, unscheduled items, cancelled and excused occurrences, disabled
+goals, future dates and optional tasks are excluded — each with a reason you can read — rather than
+counted as failures. A day with nothing scheduled scores **null, not zero**: an open day is not a
+bad day, and it is never averaged in as one. Missing data is likewise not failure: a protein goal on
+a day with no food logged reports "not logged".
+
+Categories are planner, habits and goals, weighted equally by default. Nutrition, training and
+health are scored *as goals* rather than as separate categories, because in this app they already
+are goals — a separate category would count the same workout twice. Partial credit applies only
+where a partial amount is genuinely partial progress: 120 g toward a 160 g protein target is 75%,
+while a habit or a task is done or it is not.
+
+Click the score anywhere it appears to see every category, every opportunity, every excluded record
+and the formula in words.
 
 ---
 
@@ -221,8 +264,16 @@ hit. See `lib/logic/scoring.ts`.
 
 `User`, `Tag`, `ScheduleItem`, `ScheduleItemTag`, `ScheduleTemplate`, `Habit`, `HabitLog`,
 `FoodItem`, `Meal`, `MealEntry`, `MealTemplate`, `MealTemplateItem`, `Workout`, `WorkoutSet`,
-`WorkoutTemplate`, `HealthMetric`, `Goal`, `CalendarDaySummary`, `JournalEntry`, `Reminder`,
-`FavoriteItem`.
+`WorkoutTemplate`, `HealthMetric`, `Goal`, `GoalEntry`, `ScheduleRule`, `ScheduleRuleDay`,
+`ScheduleOverride`, `CalendarDaySummary`, `JournalEntry`, `Reminder`, `FavoriteItem`, `SeedBatch`,
+`SeedRecord`.
+
+**Scheduling is three shared tables, not two parallel families.** `ScheduleRule` is one
+effective-dated version owned by `(ownerType, ownerId)`; `ScheduleRuleDay` is one row per selected
+weekday, so "which goals apply on Wednesday?" is a real query rather than a `LIKE` over a
+comma-separated string; `ScheduleOverride` is a one-date exception (rest / excused / activate /
+cancel / reschedule) that never edits the repeating schedule. Goals and habits share all three,
+which is what makes a single engine possible.
 
 `HealthMetric` is deliberately generic (date + type + value + unit) so new metric types need no
 migration. Both `HealthMetric` and `Workout` carry `source` and `externalId` columns with a
@@ -250,6 +301,13 @@ These were decisions the brief left open. They're all reversible.
 5. **Recurrence is deliberately simpler than RFC 5545** — daily/weekly/monthly with an interval,
    weekday selection, and an optional end. That covers workouts, meals, habits and routines without
    dragging in an iCalendar implementation.
+7. **Your timezone decides what "today" is**, not the machine's clock. It is detected from the
+   browser on first run and changeable in Settings. Calendar days are stored as timezone-free
+   `YYYY-MM-DD` keys and converted only at the edges.
+8. **Schema changes use `prisma db push` plus idempotent data backfills** (`npm run db:migrate`)
+   rather than `prisma migrate`, because the database is a local file you own and `migrate dev`
+   can offer to reset it. Every backfill checks for its own prior output, so running it twice
+   changes nothing.
 6. **The seeded profile is fictional** and exists purely to make the app look real on first run.
    Reset it from Settings when you're ready to use it for yourself.
 
@@ -261,10 +319,22 @@ These were decisions the brief left open. They're all reversible.
 npm test
 ```
 
-102 tests across six suites, covering the logic that would be expensive to get wrong: recurrence
-expansion and matching, streak rules (including that a "skip" is neutral and an unlogged *today*
-doesn't break a streak), nutrition serving maths, day scoring, the natural-language quick-add
-parser, and day-key/time handling including a DST boundary.
+225 tests across ten suites, covering the logic that would be expensive to get wrong:
+
+* **Scheduling** — every mode, both week-start settings, DST, leap years, month and year
+  boundaries, all five override kinds, effective-dated versions, and every streak rule.
+* **Goals** — all five comparisons, partial credit, completion sources, and the canonical case:
+  a Mon/Tue/Thu/Fri workout goal is neutral on Wednesday, and a 4×/week goal reports "3 of 4, 75%,
+  1 to go" rather than "3 of 7" and is not failed before the week ends.
+* **Habits** — weekday habits excluding the weekend, missed and skipped breaking a streak while
+  excused and rest days do not, future days never counting as missed.
+* **Day score** — only applicable items in the denominator, rest days excluded, an empty day
+  scoring null rather than zero, partial progress capped, and category totals agreeing with the
+  overall total.
+* **Backup** — validation, checksums, older/newer format handling, and an assertion that the
+  export and import cover every table in `BACKUP_TABLES`.
+* Plus nutrition serving maths, the natural-language quick-add parser, planner recurrence, and
+  day-key/time handling including a DST boundary.
 
 The tests are pure — no database, no fixtures, no mocking — because all the logic they cover lives
 in `src/lib/logic`.

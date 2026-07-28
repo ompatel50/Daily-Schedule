@@ -19,7 +19,7 @@ import { SectionCard } from "@/components/shared/section-card";
 import { StatCard } from "@/components/shared/stat-card";
 import { Badge } from "@/components/ui/badge";
 import type { HealthMetricType } from "@/lib/enums";
-import { formatDay, formatDuration, lastNDays, shiftDay, today } from "@/lib/date";
+import { formatDay, formatDuration, lastNDays, shiftDay } from "@/lib/date";
 import { buildInsights, suggestFocus } from "@/lib/logic/insights";
 import { movingAverage } from "@/lib/logic/scoring";
 import { cn, formatNumber, pct } from "@/lib/utils";
@@ -30,6 +30,9 @@ import {
   getUser,
   getWindowStats,
 } from "@/server/queries";
+import { getWeeklyReview } from "@/server/insights";
+import { scheduleSettingsFor } from "@/server/schedule";
+import { getWeekBounds } from "@/lib/logic/schedule";
 
 export const metadata: Metadata = { title: "Insights" };
 export const dynamic = "force-dynamic";
@@ -37,15 +40,20 @@ export const dynamic = "force-dynamic";
 const TREND_DAYS = 60;
 
 export default async function InsightsPage() {
-  const date = today();
   const user = await getUser();
+  const settings = scheduleSettingsFor(user);
+  const date = settings.today;
+  const week = getWeekBounds(date, settings);
 
-  const [thisWeek, lastWeek, habits, goals, metrics] = await Promise.all([
+  const [thisWeek, lastWeek, habits, goals, metrics, review] = await Promise.all([
     getWindowStats(shiftDay(date, -6), date),
     getWindowStats(shiftDay(date, -13), shiftDay(date, -7)),
     getHabitsWithStats(date, { historyDays: 90 }),
     getGoalMap(),
     getHealthMetrics(shiftDay(date, -(TREND_DAYS - 1)), date),
+    // Uses the configured week start, so "this week" means the same thing here
+    // as it does for a times-per-week goal.
+    getWeeklyReview(user.id, week.start, week.end, settings),
   ]);
 
   const calorieGoal = goals.get("calories")?.target ?? 0;
@@ -55,8 +63,12 @@ export default async function InsightsPage() {
 
   const ranked = habits.slice().sort((a, b) => b.streak - a.streak);
   const bestHabit = ranked[0];
+  // Only habits that have actually had a scheduled opportunity can be "weak" —
+  // a habit with nothing scheduled yet reports null, not 0%.
   const weakestHabit = habits
-    .slice()
+    .filter((habit): habit is typeof habit & { completionRate: number } =>
+      habit.completionRate !== null,
+    )
     .sort((a, b) => a.completionRate - b.completionRate)
     .find((habit) => habit.completionRate < 60);
 
@@ -125,7 +137,7 @@ export default async function InsightsPage() {
         <StatCard
           label="Weekly score"
           value={`${thisWeek.averageScore}`}
-          hint={`last week ${lastWeek.averageScore}`}
+          hint={`${thisWeek.scoredDays} scored days · last week ${lastWeek.averageScore}`}
           icon={Flame}
           accent="text-emerald-500"
           progress={thisWeek.averageScore}
@@ -139,12 +151,20 @@ export default async function InsightsPage() {
           }
         />
         <StatCard
-          label="Completion"
-          value={`${thisWeek.planned > 0 ? pct(thisWeek.completed, thisWeek.planned) : 0}%`}
-          hint={`${thisWeek.completed} of ${thisWeek.planned} items`}
+          label="Scheduled opportunities"
+          value={`${
+            thisWeek.scheduledOpportunities > 0
+              ? pct(thisWeek.metOpportunities, thisWeek.scheduledOpportunities)
+              : 0
+          }%`}
+          hint={`${thisWeek.metOpportunities} of ${thisWeek.scheduledOpportunities} met`}
           icon={CheckCircle2}
           accent="text-domain-planner"
-          progress={thisWeek.planned > 0 ? pct(thisWeek.completed, thisWeek.planned) : 0}
+          progress={
+            thisWeek.scheduledOpportunities > 0
+              ? pct(thisWeek.metOpportunities, thisWeek.scheduledOpportunities)
+              : 0
+          }
           progressClassName="bg-domain-planner"
         />
         <StatCard
@@ -170,11 +190,83 @@ export default async function InsightsPage() {
       <div className="grid gap-6 lg:grid-cols-3">
         <div className="space-y-6 lg:col-span-2">
           <SectionCard
-            title="Weekly review"
+            title={`Weekly review · ${review.label}`}
             icon={Sparkles}
             accent="text-amber-500"
-            description="Last 7 days versus the week before"
+            description="Counted in scheduled opportunities — rest days are excluded, not failed"
           >
+            <div className="mb-4 space-y-3">
+              <div className="grid grid-cols-2 gap-2 sm:grid-cols-4">
+                <ReviewTally label="Scheduled" value={review.scheduledOpportunities} />
+                <ReviewTally label="Completed" value={review.completedOpportunities} />
+                <ReviewTally label="Missed" value={review.missedOpportunities} />
+                <ReviewTally label="Excused" value={review.excusedOpportunities} />
+              </div>
+
+              <div className="space-y-1.5">
+                {review.areas.map((area) => (
+                  <div key={area.key} className="flex items-center gap-3 text-sm">
+                    <span className="w-20 shrink-0 text-muted-foreground">{area.label}</span>
+                    <span className="tabular w-24 shrink-0">
+                      {area.scheduled === 0 ? "—" : `${area.completed} of ${area.scheduled}`}
+                    </span>
+                    <span className="tabular w-12 shrink-0 text-right text-muted-foreground">
+                      {area.rate === null ? "n/a" : `${area.rate}%`}
+                    </span>
+                    <span className="text-xs text-muted-foreground">
+                      {area.scheduled === 0 ? "nothing scheduled" : ""}
+                    </span>
+                  </div>
+                ))}
+              </div>
+
+              <div className="grid gap-2 text-xs text-muted-foreground sm:grid-cols-2">
+                <p>
+                  <span className="font-medium text-foreground">Rest days:</span> {review.restDays} of{" "}
+                  {review.totalDays} — no requirements scheduled.
+                </p>
+                <p>
+                  <span className="font-medium text-foreground">Training:</span>{" "}
+                  {review.workouts.completed} workouts, {formatDuration(review.workouts.minutes)}.
+                </p>
+                <p>
+                  <span className="font-medium text-foreground">Nutrition:</span> logged on{" "}
+                  {review.nutrition.loggedDays} of {review.totalDays} days
+                  {review.nutrition.averageCalories !== null
+                    ? `, averaging ${formatNumber(review.nutrition.averageCalories)} kcal`
+                    : ""}
+                  .
+                </p>
+                <p>
+                  <span className="font-medium text-foreground">Strongest area:</span>{" "}
+                  {review.strongest
+                    ? `${review.strongest.label} at ${review.strongest.rate}%`
+                    : "nothing scheduled yet"}
+                  .
+                </p>
+              </div>
+
+              <p className="rounded-lg bg-muted/60 px-3 py-2 text-sm">
+                <span className="font-medium">Focus for next week:</span> {review.focus}
+              </p>
+
+              {review.notes.length > 0 && (
+                <details className="rounded-lg border">
+                  <summary className="cursor-pointer px-3 py-2 text-xs font-medium">
+                    Notes from this week ({review.notes.length})
+                  </summary>
+                  <ul className="space-y-2 border-t p-3">
+                    {review.notes.map((note) => (
+                      <li key={note.date} className="text-xs">
+                        <span className="font-medium">{formatDay(note.date, "EEE, MMM d")}</span>
+                        <p className="whitespace-pre-wrap text-muted-foreground">{note.content}</p>
+                      </li>
+                    ))}
+                  </ul>
+                </details>
+              )}
+            </div>
+
             {insights.length === 0 ? (
               <p className="rounded-lg border border-dashed px-4 py-6 text-center text-sm text-muted-foreground">
                 Track a few days and this fills in with real observations.
@@ -319,6 +411,15 @@ function Reading({ label, value, goal }: { label: string; value: string; goal?: 
         {goal && <p className="text-[10px] text-muted-foreground/70">{goal}</p>}
       </div>
       <span className="tabular font-medium">{value}</span>
+    </div>
+  );
+}
+
+function ReviewTally({ label, value }: { label: string; value: number }) {
+  return (
+    <div className="rounded-lg bg-muted/50 px-3 py-2 text-center">
+      <p className="tabular text-lg font-semibold leading-none">{value}</p>
+      <p className="mt-1 text-[10px] uppercase tracking-wide text-muted-foreground">{label}</p>
     </div>
   );
 }

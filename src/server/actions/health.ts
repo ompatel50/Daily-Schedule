@@ -127,20 +127,28 @@ export async function saveGoal(input: unknown): Promise<ActionResult<{ id: strin
   const user = await getCurrentUser();
   const { id, ...rest } = parsed.data;
 
-  const goal = id
-    ? await prisma.goal.update({ where: { id }, data: rest })
-    : await prisma.goal.upsert({
+  // (userId, domain, metric, period) is no longer unique — two goals can
+  // legitimately share a metric ("workout Mon/Tue/Thu/Fri" and "4 workouts per
+  // week"). Reuse an existing row only when the caller did not supply an id and
+  // an identical goal already exists, so the preset buttons stay idempotent.
+  const existing = id
+    ? null
+    : await prisma.goal.findFirst({
         where: {
-          userId_domain_metric_period: {
-            userId: user.id,
-            domain: rest.domain,
-            metric: rest.metric,
-            period: rest.period,
-          },
+          userId: user.id,
+          domain: rest.domain,
+          metric: rest.metric,
+          period: rest.period,
+          archivedAt: null,
         },
-        create: { ...rest, userId: user.id },
-        update: rest,
+        orderBy: { createdAt: "asc" },
       });
+
+  const targetId = id ?? existing?.id;
+
+  const goal = targetId
+    ? await prisma.goal.update({ where: { id: targetId }, data: rest })
+    : await prisma.goal.create({ data: { ...rest, userId: user.id } });
 
   revalidateAll();
   return succeed({ id: goal.id });

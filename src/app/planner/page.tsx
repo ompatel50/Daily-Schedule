@@ -6,10 +6,11 @@ import { TemplateBar } from "@/components/planner/template-bar";
 import { DateNav } from "@/components/shared/date-nav";
 import { PageHeader } from "@/components/shared/page-header";
 import { SectionCard } from "@/components/shared/section-card";
-import { isDayKey, monthGridDays, today, weekRange } from "@/lib/date";
+import { isDayKey, monthGridDays, weekRange } from "@/lib/date";
 import { toScheduleRowItems } from "@/lib/serializers";
 import { extendSeriesFor } from "@/server/series";
-import { getScheduleItems, getScheduleTemplates, getUser } from "@/server/queries";
+import {
+  getToday, getScheduleItems, getScheduleTemplates, getUser } from "@/server/queries";
 
 export const metadata: Metadata = { title: "Planner" };
 export const dynamic = "force-dynamic";
@@ -20,7 +21,8 @@ export default async function PlannerPage({
   searchParams: Promise<{ date?: string; view?: string }>;
 }) {
   const params = await searchParams;
-  const date = params.date && isDayKey(params.date) ? params.date : today();
+  const todayKey = await getToday();
+  const date = params.date && isDayKey(params.date) ? params.date : todayKey;
   const view: PlannerScope =
     params.view === "week" || params.view === "month" ? params.view : "day";
 
