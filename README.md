@@ -23,7 +23,8 @@ npm run setup      # generate Prisma client, create the DB, seed ~10 weeks of sa
 npm run dev        # http://localhost:3000
 ```
 
-That's it. There is no account, no login and no cloud service to configure.
+That's it. There is no account, no login and no cloud service to configure. On first run a
+`.env` is created for you from `.env.example` (it only sets `DATABASE_URL="file:./dev.db"`).
 
 `npm run setup` is idempotent — re-running it re-seeds the demo dataset. To start from a genuinely
 empty app, run `npm run db:push` and then use **Settings → Danger zone → Reset everything**.
