@@ -1,5 +1,13 @@
-import "server-only";
-
+/**
+ * NOTE ON `server-only`: this module is part of the shared computation layer
+ * (facts → schedule → goals → score → summaries) rather than the app-facing
+ * server surface. The guard lives on `src/server/queries.ts` and the modules in
+ * `src/server/actions/`, which are what pages and components import directly.
+ * Keeping it off the computation modules is deliberate: it lets the seed script
+ * and future CLI tooling call the *real* aggregation instead of maintaining a
+ * hand-copied duplicate of the formula, which is precisely the drift this
+ * upgrade set out to remove.
+ */
 import { prisma } from "@/lib/db";
 import { type DayKey, dayRange, daysBetween } from "@/lib/date";
 import { emptyFacts, type GoalFacts } from "@/lib/logic/goals";

@@ -11,6 +11,10 @@ import { PrismaClient } from "@prisma/client";
 import { addDays, format, subDays } from "date-fns";
 
 import { SEED_FOODS } from "../src/lib/data/foods";
+// The seed calls the app's real aggregation rather than keeping its own copy of
+// the scoring formula. It used to duplicate scoreDay() by hand, which meant
+// seeded history and live recomputation could drift apart silently.
+import { rebuildSummaries } from "../src/server/summaries";
 
 const prisma = new PrismaClient();
 
@@ -78,7 +82,12 @@ async function main() {
   await prisma.journalEntry.deleteMany({ where: { userId: user.id } });
   await prisma.reminder.deleteMany({ where: { userId: user.id } });
   await prisma.favoriteItem.deleteMany({ where: { userId: user.id } });
+  await prisma.goalEntry.deleteMany({ where: { userId: user.id } });
   await prisma.goal.deleteMany({ where: { userId: user.id } });
+  // Schedules are polymorphic, so they are cleared explicitly rather than
+  // cascading from the goal/habit rows.
+  await prisma.scheduleRule.deleteMany({ where: { userId: user.id } });
+  await prisma.scheduleOverride.deleteMany({ where: { userId: user.id } });
   await prisma.tag.deleteMany({ where: { userId: user.id } });
   await prisma.calendarDaySummary.deleteMany({ where: { userId: user.id } });
 
@@ -122,17 +131,53 @@ async function main() {
   };
 
   // --- goals ---------------------------------------------------------------
-  const goals = [
-    { domain: "nutrition", metric: "calories", label: "Daily calories", target: 2400, unit: "kcal", period: "daily" },
-    { domain: "nutrition", metric: "protein", label: "Daily protein", target: 180, unit: "g", period: "daily" },
-    { domain: "nutrition", metric: "carbs", label: "Daily carbs", target: 240, unit: "g", period: "daily" },
-    { domain: "nutrition", metric: "fat", label: "Daily fat", target: 80, unit: "g", period: "daily" },
-    { domain: "workout", metric: "workouts_per_week", label: "Workouts per week", target: 4, unit: "", period: "weekly" },
-    { domain: "health", metric: "steps", label: "Daily steps", target: 9000, unit: "", period: "daily" },
-    { domain: "health", metric: "sleep_hours", label: "Sleep", target: 7.5, unit: "h", period: "daily" },
+  // Each goal carries a real schedule and a completion source, so the sample
+  // data exercises the same paths a real user's goals would — including a
+  // weekday-only training goal whose rest days must stay neutral.
+  const goalSeeds: Array<{
+    domain: string;
+    metric: string;
+    label: string;
+    target: number;
+    targetMax?: number;
+    unit: string;
+    period: string;
+    direction: string;
+    source: string;
+    schedule: { mode: string; weekdays?: number[]; timesPerWeek?: number };
+  }> = [
+    { domain: "nutrition", metric: "calories", label: "Stay under 2,400 kcal", target: 2400, unit: "kcal", period: "daily", direction: "lte", source: "calories", schedule: { mode: "every_day" } },
+    { domain: "nutrition", metric: "protein", label: "Eat 180 g of protein", target: 180, unit: "g", period: "daily", direction: "gte", source: "protein", schedule: { mode: "every_day" } },
+    { domain: "workout", metric: "workout_session", label: "Complete a workout", target: 1, unit: "", period: "daily", direction: "gte", source: "workout_count", schedule: { mode: "weekdays", weekdays: [1, 2, 4, 5] } },
+    { domain: "workout", metric: "workouts_per_week", label: "4 workouts per week", target: 4, unit: "", period: "weekly", direction: "gte", source: "workout_count", schedule: { mode: "times_per_week", timesPerWeek: 4 } },
+    { domain: "health", metric: "steps", label: "Walk 9,000 steps", target: 9000, unit: "", period: "daily", direction: "gte", source: "steps", schedule: { mode: "every_day" } },
+    { domain: "health", metric: "sleep_hours", label: "Sleep at least 7.5 hours", target: 7.5, unit: "h", period: "daily", direction: "gte", source: "sleep_hours", schedule: { mode: "weekdays", weekdays: [0, 1, 2, 3, 4] } },
   ];
-  for (const goal of goals) {
-    await prisma.goal.create({ data: { ...goal, direction: "gte", userId: user.id } });
+
+  for (const [index, seed] of goalSeeds.entries()) {
+    const { schedule, ...goalFields } = seed;
+    const goal = await prisma.goal.create({
+      data: {
+        ...goalFields,
+        targetMax: goalFields.targetMax ?? null,
+        userId: user.id,
+        sortOrder: index,
+        startDate: day(-HISTORY_DAYS),
+      },
+    });
+    await prisma.scheduleRule.create({
+      data: {
+        userId: user.id,
+        ownerType: "goal",
+        ownerId: goal.id,
+        effectiveFrom: day(-HISTORY_DAYS),
+        mode: schedule.mode,
+        timesPerWeek: schedule.timesPerWeek ?? null,
+        days: schedule.weekdays?.length
+          ? { create: schedule.weekdays.map((weekday) => ({ weekday })) }
+          : undefined,
+      },
+    });
   }
 
   // --- tags ----------------------------------------------------------------
@@ -171,6 +216,32 @@ async function main() {
         startDate: day(-HISTORY_DAYS),
       },
     });
+
+    // The schedule engine reads ScheduleRule, not the legacy columns. Seeding
+    // both keeps the sample data on exactly the same path as a habit created
+    // through the UI.
+    const mode =
+      seed.frequency === "custom"
+        ? "weekdays"
+        : seed.frequency === "weekly"
+          ? "times_per_week"
+          : "every_day";
+    await prisma.scheduleRule.create({
+      data: {
+        userId: user.id,
+        ownerType: "habit",
+        ownerId: habit.id,
+        effectiveFrom: day(-HISTORY_DAYS),
+        mode,
+        timesPerWeek: mode === "times_per_week" ? seed.targetPerWeek : null,
+        daypart: seed.timeOfDay,
+        days:
+          mode === "weekdays"
+            ? { create: seed.weekdays.map((weekday) => ({ weekday })) }
+            : undefined,
+      },
+    });
+
     habits.push({ habit, seed });
   }
 
@@ -815,111 +886,6 @@ async function main() {
   };
 
   console.log("Done:", counts);
-}
-
-/**
- * Day-summary rebuild, duplicated here rather than imported from
- * `src/server/summaries.ts` because that module is marked `server-only` and
- * can't be loaded from a plain Node script.
- */
-async function rebuildSummaries(userId: string, from: string, to: string) {
-  const start = new Date(`${from}T12:00:00`);
-  const end = new Date(`${to}T12:00:00`);
-  const dayCount = Math.round((end.getTime() - start.getTime()) / 86_400_000);
-
-  const goals = await prisma.goal.findMany({ where: { userId, active: true } });
-  const calorieGoal = goals.find((goal) => goal.metric === "calories")?.target ?? 0;
-  const weeklyWorkoutGoal = goals.find((goal) => goal.metric === "workouts_per_week")?.target ?? 0;
-  const workoutMinuteGoal = weeklyWorkoutGoal > 0 ? (weeklyWorkoutGoal * 45) / 7 : 0;
-
-  const habits = await prisma.habit.findMany({ where: { userId, archived: false } });
-
-  for (let index = 0; index <= dayCount; index += 1) {
-    const date = format(addDays(start, index), "yyyy-MM-dd");
-    const weekday = addDays(start, index).getDay();
-
-    const [items, logs, meals, workouts, metrics] = await Promise.all([
-      prisma.scheduleItem.findMany({ where: { userId, date }, select: { status: true } }),
-      prisma.habitLog.findMany({ where: { userId, date } }),
-      prisma.meal.findMany({ where: { userId, date }, select: { entries: true } }),
-      prisma.workout.findMany({ where: { userId, date, status: "completed" } }),
-      prisma.healthMetric.findMany({ where: { userId, date } }),
-    ]);
-
-    const doneIds = new Set(logs.filter((log) => log.status === "done").map((log) => log.habitId));
-    const skippedIds = new Set(logs.filter((log) => log.status === "skipped").map((log) => log.habitId));
-
-    const dueHabits = habits.filter((habit) => {
-      if (date < habit.startDate) return false;
-      if (habit.frequency === "custom") {
-        const weekdays: number[] = JSON.parse(habit.weekdays);
-        return weekdays.includes(weekday);
-      }
-      return true;
-    });
-
-    const habitsDue = dueHabits.filter((habit) => !skippedIds.has(habit.id)).length;
-    const habitsDone = dueHabits.filter((habit) => doneIds.has(habit.id)).length;
-
-    const entries = meals.flatMap((meal) => meal.entries);
-    const calories = Math.round(entries.reduce((total, entry) => total + entry.calories, 0));
-    const protein = Math.round(entries.reduce((total, entry) => total + entry.protein, 0) * 10) / 10;
-    const carbs = Math.round(entries.reduce((total, entry) => total + entry.carbs, 0) * 10) / 10;
-    const fat = Math.round(entries.reduce((total, entry) => total + entry.fat, 0) * 10) / 10;
-
-    const plannedCount = items.length;
-    const completedCount = items.filter((item) => item.status === "done").length;
-    const workoutMinutes = workouts.reduce((total, workout) => total + workout.durationMin, 0);
-    const metricValue = (type: string) => metrics.find((metric) => metric.type === type)?.value ?? null;
-
-    // Mirrors scoreDay() in src/lib/logic/scoring.ts.
-    const parts: Array<[number, number]> = [];
-    if (plannedCount > 0) parts.push([0.35, completedCount / plannedCount]);
-    if (habitsDue > 0) parts.push([0.35, habitsDone / habitsDue]);
-    if (entries.length > 0 && calorieGoal > 0) {
-      const deviation = Math.abs(calories - calorieGoal) / calorieGoal;
-      const accuracy = deviation <= 0.1 ? 1 : deviation >= 0.5 ? 0 : 1 - (deviation - 0.1) / 0.4;
-      parts.push([0.15, accuracy]);
-    }
-    if (workoutMinuteGoal > 0) {
-      parts.push([0.15, Math.min(1, workoutMinutes / workoutMinuteGoal)]);
-    }
-
-    const totalWeight = parts.reduce((sum, [weight]) => sum + weight, 0);
-    const score =
-      parts.length === 0
-        ? 0
-        : Math.round(
-            (parts.reduce((sum, [weight, value]) => sum + weight * Math.min(1, Math.max(0, value)), 0) /
-              totalWeight) *
-              100,
-          );
-
-    const data = {
-      plannedCount,
-      completedCount,
-      skippedCount: items.filter((item) => item.status === "skipped").length,
-      habitsDue,
-      habitsDone,
-      calories,
-      protein,
-      carbs,
-      fat,
-      workoutCount: workouts.length,
-      workoutMinutes,
-      caloriesBurned: workouts.reduce((total, workout) => total + (workout.caloriesBurned ?? 0), 0),
-      steps: metricValue("steps"),
-      sleepHours: metricValue("sleep_hours"),
-      bodyWeight: metricValue("body_weight"),
-      score,
-    };
-
-    await prisma.calendarDaySummary.upsert({
-      where: { userId_date: { userId, date } },
-      create: { userId, date, ...data },
-      update: data,
-    });
-  }
 }
 
 main()

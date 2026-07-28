@@ -785,8 +785,21 @@ model CalendarDaySummary {
   sleepHours Float?
   bodyWeight Float?
 
-  /// 0–100 blended consistency score for the heatmap.
+  /// 0–100 day score for the heatmap, produced by src/server/day-score.ts.
+  ///
+  /// Read it together with `scoreApplicable`: when that is 0 the day had no
+  /// applicable opportunity at all, and this column's 0 means "open day", not
+  /// "scored zero". Averaging those days in as zero is exactly the bug this
+  /// pair of columns exists to prevent.
   score Int @default(0)
+
+  /// Opportunities that actually applied on this day.
+  scoreApplicable Int @default(0)
+  scoreCompleted  Int @default(0)
+  scoreMissed     Int @default(0)
+  scorePending    Int @default(0)
+  /// Records excluded with a reason (rest day, not scheduled, optional…).
+  scoreExcluded   Int @default(0)
 
   updatedAt DateTime @updatedAt
 

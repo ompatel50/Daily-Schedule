@@ -19,6 +19,7 @@ import { TrendAreaChart, CategoryBarChart } from "@/components/shared/charts";
 import { EmptyState } from "@/components/shared/empty-state";
 import { PageHeader } from "@/components/shared/page-header";
 import { ProgressRing } from "@/components/shared/progress-ring";
+import { ScoreExplanation } from "@/components/shared/score-explanation";
 import { SectionCard } from "@/components/shared/section-card";
 import { StatCard } from "@/components/shared/stat-card";
 import { Badge } from "@/components/ui/badge";
@@ -33,7 +34,7 @@ import {
   shiftDay,
   today,
 } from "@/lib/date";
-import { scoreDay, trendDelta } from "@/lib/logic/scoring";
+import { trendDelta } from "@/lib/logic/scoring";
 import { cn, formatNumber, pct, sum } from "@/lib/utils";
 import { getConsistencyWindow, getDayOverview, getWindowStats } from "@/server/queries";
 
@@ -57,17 +58,9 @@ export default async function DashboardPage() {
   const workoutGoal = goals.get("workouts_per_week")?.target ?? 0;
 
   const workoutMinutesToday = sum(workouts, (workout) => workout.durationMin);
-  const score = scoreDay({
-    plannedCount: overview.planned,
-    completedCount: overview.completed,
-    habitsDue: dueHabits.length,
-    habitsDone,
-    calories: nutrition.totals.calories,
-    calorieGoal,
-    workoutMinutes: workoutMinutesToday,
-    workoutMinuteGoal: workoutGoal > 0 ? (workoutGoal * 45) / 7 : 0,
-    loggedNutrition: nutrition.totals.calories > 0,
-  });
+  // One score from the one service — Today, the calendar detail and Insights
+  // read the same object for this date, so they cannot disagree.
+  const { score } = overview;
 
   const steps = metrics.find((metric) => metric.type === "steps")?.value ?? 0;
   const sleep = metrics.find((metric) => metric.type === "sleep_hours")?.value ?? null;
@@ -265,16 +258,19 @@ export default async function DashboardPage() {
         </div>
 
         <div className="space-y-6">
-          <SectionCard title="Day score" icon={Flame} accent="text-emerald-500">
+          <SectionCard
+            title="Day score"
+            icon={Flame}
+            accent="text-emerald-500"
+            action={<ScoreExplanation score={score} />}
+          >
             <div className="flex flex-col items-center gap-3 py-1">
               <ProgressRing
-                value={score}
+                value={score.score ?? 0}
                 size={112}
-                label={`${score}`}
-                sublabel="today"
-                indicatorClassName={
-                  score >= 80 ? "text-emerald-500" : score >= 50 ? "text-amber-500" : "text-rose-500"
-                }
+                label={score.score === null ? "—" : `${score.score}`}
+                sublabel={score.score === null ? "open day" : "today"}
+                indicatorClassName={scoreTone(score.score)}
               />
               <div className="grid w-full grid-cols-3 gap-2 text-center">
                 <MiniStat label="7d avg" value={`${thisWeek.averageScore}`} />
@@ -405,4 +401,12 @@ function summaryLine(planned: number, completed: number, habitsDue: number, habi
   if (planned > 0) parts.push(`${completed} of ${planned} scheduled items done`);
   if (habitsDue > 0) parts.push(`${habitsDone} of ${habitsDue} habits complete`);
   return `${parts.join(" · ")}.`;
+}
+
+/** Colour by band. Never the only signal — the number and text carry it too. */
+function scoreTone(score: number | null): string {
+  if (score === null) return "text-muted-foreground";
+  if (score >= 80) return "text-emerald-500";
+  if (score >= 50) return "text-amber-500";
+  return "text-rose-500";
 }

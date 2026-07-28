@@ -1,9 +1,17 @@
-import "server-only";
-
+/**
+ * NOTE ON `server-only`: this module is part of the shared computation layer
+ * (facts → schedule → goals → score → summaries) rather than the app-facing
+ * server surface. The guard lives on `src/server/queries.ts` and the modules in
+ * `src/server/actions/`, which are what pages and components import directly.
+ * Keeping it off the computation modules is deliberate: it lets the seed script
+ * and future CLI tooling call the *real* aggregation instead of maintaining a
+ * hand-copied duplicate of the formula, which is precisely the drift this
+ * upgrade set out to remove.
+ */
 import { prisma } from "@/lib/db";
 import { type DayKey, dayRange, daysBetween, weekRange } from "@/lib/date";
-import { scoreDay } from "@/lib/logic/scoring";
 import { round, sum } from "@/lib/utils";
+import { getDayScore, scoreOptionsFor } from "@/server/day-score";
 import { getHabitDayTotals } from "@/server/habits";
 import { scheduleSettingsFor } from "@/server/schedule";
 
@@ -19,11 +27,16 @@ import { scheduleSettingsFor } from "@/server/schedule";
 export async function recomputeDay(userId: string, date: DayKey): Promise<void> {
   const user = await prisma.user.findUnique({
     where: { id: userId },
-    select: { weekStartsOn: true, timezone: true },
+    select: {
+      weekStartsOn: true,
+      timezone: true,
+      scoreWeights: true,
+      scoreOptionalTasks: true,
+    },
   });
   const settings = scheduleSettingsFor(user ?? { weekStartsOn: 1, timezone: "UTC" });
 
-  const [items, habitTotals, meals, workouts, metrics, goals] = await Promise.all([
+  const [items, habitTotals, meals, workouts, metrics, dayScore] = await Promise.all([
     prisma.scheduleItem.findMany({ where: { userId, date }, select: { status: true } }),
     // Habit due-ness comes from the shared schedule engine, so a weekday habit
     // contributes nothing on a Saturday rather than counting as unmet.
@@ -34,7 +47,15 @@ export async function recomputeDay(userId: string, date: DayKey): Promise<void> 
       select: { durationMin: true, caloriesBurned: true },
     }),
     prisma.healthMetric.findMany({ where: { userId, date }, select: { type: true, value: true } }),
-    prisma.goal.findMany({ where: { userId, active: true } }),
+    // The score comes from the one central service — the same call the
+    // Dashboard, Today, the calendar detail and Insights all make. This table
+    // caches its answer; it does not compute a second one.
+    getDayScore(
+      userId,
+      date,
+      settings,
+      scoreOptionsFor(user ?? { scoreWeights: null, scoreOptionalTasks: false }),
+    ),
   ]);
 
   const plannedCount = items.length;
@@ -57,22 +78,6 @@ export async function recomputeDay(userId: string, date: DayKey): Promise<void> 
 
   const metricValue = (type: string) => metrics.find((metric) => metric.type === type)?.value ?? null;
 
-  const calorieGoal = goals.find((goal) => goal.metric === "calories")?.target ?? 0;
-  const weeklyWorkoutGoal = goals.find((goal) => goal.metric === "workouts_per_week")?.target ?? 0;
-  const workoutMinuteGoal = weeklyWorkoutGoal > 0 ? (weeklyWorkoutGoal * 45) / 7 : 0;
-
-  const score = scoreDay({
-    plannedCount,
-    completedCount,
-    habitsDue,
-    habitsDone,
-    calories,
-    calorieGoal,
-    workoutMinutes,
-    workoutMinuteGoal,
-    loggedNutrition: entries.length > 0,
-  });
-
   const data = {
     plannedCount,
     completedCount,
@@ -89,7 +94,12 @@ export async function recomputeDay(userId: string, date: DayKey): Promise<void> 
     steps: metricValue("steps"),
     sleepHours: metricValue("sleep_hours"),
     bodyWeight: metricValue("body_weight"),
-    score,
+    score: dayScore.score ?? 0,
+    scoreApplicable: dayScore.totals.applicable,
+    scoreCompleted: dayScore.totals.completed,
+    scoreMissed: dayScore.totals.missed,
+    scorePending: dayScore.totals.pending,
+    scoreExcluded: dayScore.totals.excluded,
   };
 
   await prisma.calendarDaySummary.upsert({
@@ -120,7 +130,9 @@ export async function getSummaries(userId: string, from: DayKey, to: DayKey) {
 export async function getWeekSummary(userId: string, day: DayKey, weekStartsOn: 0 | 1 = 1) {
   const { start, end } = weekRange(day, weekStartsOn);
   const summaries = await getSummaries(userId, start, end);
-  const withData = summaries.filter((summary) => summary.score > 0);
+  // A day with nothing applicable has no score at all. Averaging it in as 0
+  // would punish a rest day for being restful.
+  const withData = summaries.filter((summary) => summary.scoreApplicable > 0);
 
   return {
     start,
@@ -164,6 +176,11 @@ export function summaryHasData(summary: {
     summary.calories > 0 ||
     summary.workoutCount > 0
   );
+}
+
+/** Whether this day's score is a real number rather than "nothing applied". */
+export function summaryHasScore(summary: { scoreApplicable: number }): boolean {
+  return summary.scoreApplicable > 0;
 }
 
 export function daysInWindow(from: DayKey, to: DayKey): number {

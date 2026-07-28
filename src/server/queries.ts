@@ -19,6 +19,8 @@ import {
 } from "@/lib/logic/schedule";
 import { totalMacros } from "@/lib/logic/nutrition";
 import { parseJson, sum } from "@/lib/utils";
+import { getDayScore, scoreOptionsFor } from "@/server/day-score";
+import { evaluateGoalsForDate } from "@/server/goals";
 import { getHabitViews } from "@/server/habits";
 import { loadSchedules, scheduleSettingsFor, toSchedulable } from "@/server/schedule";
 import { getSummaries } from "@/server/summaries";
@@ -499,23 +501,39 @@ export async function getReminders() {
 /** Everything the Today page and dashboard need, in one round of queries. */
 export async function getDayOverview(date: DayKey = today()) {
   const user = await getCurrentUser();
-  const weekStartsOn = user.weekStartsOn === 0 ? 0 : 1;
+  const settings = scheduleSettingsFor(user);
+  const weekStartsOn = settings.weekStartsOn;
   const { start: weekStart, end: weekEnd } = weekRange(date, weekStartsOn);
 
-  const [schedule, habits, nutrition, workouts, metrics, goals, journal, weekSummaries] =
-    await Promise.all([
-      getDaySchedule(date),
-      getHabitsWithStats(date),
-      getDayNutrition(date),
-      prisma.workout.findMany({
-        where: { userId: user.id, date },
-        include: { sets: { orderBy: { sortOrder: "asc" } } },
-      }),
-      prisma.healthMetric.findMany({ where: { userId: user.id, date } }),
-      getGoalMap(),
-      getJournalEntry(date),
-      getSummaries(user.id, weekStart, weekEnd),
-    ]);
+  const [
+    schedule,
+    habits,
+    nutrition,
+    workouts,
+    metrics,
+    goals,
+    goalEvaluations,
+    journal,
+    weekSummaries,
+    // One score, from the one service. The Dashboard and Today used to each
+    // call scoreDay() with their own inputs and could show different numbers
+    // for the same date.
+    score,
+  ] = await Promise.all([
+    getDaySchedule(date),
+    getHabitsWithStats(date),
+    getDayNutrition(date),
+    prisma.workout.findMany({
+      where: { userId: user.id, date },
+      include: { sets: { orderBy: { sortOrder: "asc" } } },
+    }),
+    prisma.healthMetric.findMany({ where: { userId: user.id, date } }),
+    getGoalMap(),
+    evaluateGoalsForDate(user.id, date, settings),
+    getJournalEntry(date),
+    getSummaries(user.id, weekStart, weekEnd),
+    getDayScore(user.id, date, settings, scoreOptionsFor(user)),
+  ]);
 
   // "Due" is a schedule question, answered by the engine. A times-per-week
   // habit is available today rather than required, and habits that are not
@@ -538,6 +556,9 @@ export async function getDayOverview(date: DayKey = today()) {
     dueHabits,
     restingHabits,
     habitsDone: dueHabits.filter((habit) => habit.todayStatus === "done").length,
+    score,
+    goalEvaluations,
+    settings,
     nutrition,
     workouts,
     metrics,
@@ -621,6 +642,9 @@ export async function searchEverything(query: string, limit = 8) {
 export async function getWindowStats(from: DayKey, to: DayKey) {
   const user = await getCurrentUser();
   const summaries = await getSummaries(user.id, from, to);
+  // Only days that had an applicable opportunity carry a score. Days with
+  // nothing scheduled are not failures and must not be averaged in as zero.
+  const scored = summaries.filter((summary) => summary.scoreApplicable > 0);
   const active = summaries.filter(
     (summary) => summary.plannedCount > 0 || summary.habitsDue > 0 || summary.calories > 0,
   );
@@ -640,8 +664,12 @@ export async function getWindowStats(from: DayKey, to: DayKey) {
     protein: sum(summaries, (s) => s.protein),
     loggedDays: summaries.filter((s) => s.calories > 0).length,
     activeDays: active.length,
+    scoredDays: scored.length,
+    scheduledOpportunities: sum(summaries, (s) => s.scoreApplicable),
+    metOpportunities: sum(summaries, (s) => s.scoreCompleted),
+    missedOpportunities: sum(summaries, (s) => s.scoreMissed),
     averageScore:
-      active.length === 0 ? 0 : Math.round(sum(active, (s) => s.score) / active.length),
+      scored.length === 0 ? 0 : Math.round(sum(scored, (s) => s.score) / scored.length),
   };
 }
 

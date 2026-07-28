@@ -1,92 +1,11 @@
 import { describe, expect, it } from "vitest";
 
 import {
-  calorieAccuracy,
   heatLevel,
   linearTrend,
   movingAverage,
-  scoreDay,
   trendDelta,
 } from "@/lib/logic/scoring";
-
-const baseDay = {
-  plannedCount: 0,
-  completedCount: 0,
-  habitsDue: 0,
-  habitsDone: 0,
-  calories: 0,
-  calorieGoal: 0,
-  workoutMinutes: 0,
-  workoutMinuteGoal: 0,
-  loggedNutrition: false,
-};
-
-describe("scoreDay", () => {
-  it("returns zero when there is nothing to score", () => {
-    expect(scoreDay(baseDay)).toBe(0);
-  });
-
-  it("scores a perfect day at 100", () => {
-    expect(
-      scoreDay({
-        ...baseDay,
-        plannedCount: 5,
-        completedCount: 5,
-        habitsDue: 4,
-        habitsDone: 4,
-        calories: 2400,
-        calorieGoal: 2400,
-        loggedNutrition: true,
-        workoutMinutes: 60,
-        workoutMinuteGoal: 45,
-      }),
-    ).toBe(100);
-  });
-
-  it("only weights the dimensions that have data", () => {
-    // Planner only, half done → 50.
-    expect(scoreDay({ ...baseDay, plannedCount: 4, completedCount: 2 })).toBe(50);
-  });
-
-  it("blends planner and habits evenly when both are present", () => {
-    // Planner 100%, habits 0% → equal weights → 50.
-    expect(
-      scoreDay({ ...baseDay, plannedCount: 2, completedCount: 2, habitsDue: 2, habitsDone: 0 }),
-    ).toBe(50);
-  });
-
-  it("ignores nutrition when nothing was logged", () => {
-    const withoutFood = scoreDay({ ...baseDay, plannedCount: 2, completedCount: 1, calorieGoal: 2000 });
-    expect(withoutFood).toBe(50);
-  });
-
-  it("caps over-achievement at 100%", () => {
-    expect(
-      scoreDay({ ...baseDay, workoutMinutes: 500, workoutMinuteGoal: 45 }),
-    ).toBe(100);
-  });
-});
-
-describe("calorieAccuracy", () => {
-  it("gives full credit within 10% of the goal", () => {
-    expect(calorieAccuracy(2400, 2400)).toBe(1);
-    expect(calorieAccuracy(2200, 2400)).toBe(1);
-  });
-
-  it("penalises over- and under-eating equally", () => {
-    expect(calorieAccuracy(1800, 2400)).toBeCloseTo(calorieAccuracy(3000, 2400), 5);
-  });
-
-  it("bottoms out beyond ±50%", () => {
-    expect(calorieAccuracy(1000, 2400)).toBe(0);
-    expect(calorieAccuracy(4000, 2400)).toBe(0);
-  });
-
-  it("returns zero without a goal or intake", () => {
-    expect(calorieAccuracy(2000, 0)).toBe(0);
-    expect(calorieAccuracy(0, 2000)).toBe(0);
-  });
-});
 
 describe("heatLevel", () => {
   it("maps scores to buckets", () => {

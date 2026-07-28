@@ -8,6 +8,7 @@ import { JournalCard } from "@/components/shared/journal-card";
 import { DateNav } from "@/components/shared/date-nav";
 import { PageHeader } from "@/components/shared/page-header";
 import { ProgressRing } from "@/components/shared/progress-ring";
+import { ScoreExplanation } from "@/components/shared/score-explanation";
 import { SectionCard } from "@/components/shared/section-card";
 import { StatCard } from "@/components/shared/stat-card";
 import { EmptyState } from "@/components/shared/empty-state";
@@ -15,7 +16,6 @@ import { Badge } from "@/components/ui/badge";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { MEAL_TYPE_META, WORKOUT_TYPE_META, type MealType, type WorkoutType } from "@/lib/enums";
 import { formatDuration, isDayKey, relativeDayLabel, today } from "@/lib/date";
-import { scoreDay } from "@/lib/logic/scoring";
 import { cn, formatNumber, pct } from "@/lib/utils";
 import { getDayOverview } from "@/server/queries";
 import { toScheduleRowItems } from "@/lib/serializers";
@@ -39,17 +39,9 @@ export default async function TodayPage({
   const proteinGoal = goals.get("protein")?.target ?? 0;
   const workoutGoal = goals.get("workouts_per_week")?.target ?? 0;
 
-  const score = scoreDay({
-    plannedCount: overview.planned,
-    completedCount: overview.completed,
-    habitsDue: dueHabits.length,
-    habitsDone,
-    calories: nutrition.totals.calories,
-    calorieGoal,
-    workoutMinutes: workouts.reduce((total, workout) => total + workout.durationMin, 0),
-    workoutMinuteGoal: workoutGoal > 0 ? (workoutGoal * 45) / 7 : 0,
-    loggedNutrition: nutrition.totals.calories > 0,
-  });
+  // One score from the one service — the same object the Dashboard, the
+  // calendar detail and Insights read for this date.
+  const { score } = overview;
 
   const rows = toScheduleRowItems(schedule);
   const remaining = schedule.filter((item) => item.status === "planned");
@@ -185,20 +177,21 @@ export default async function TodayPage({
         </div>
 
         <div className="space-y-6">
-          <SectionCard title="Day score" icon={Flame} accent="text-emerald-500">
+          <SectionCard
+            title="Day score"
+            icon={Flame}
+            accent="text-emerald-500"
+            action={<ScoreExplanation score={score} />}
+          >
             <div className="flex flex-col items-center gap-3 py-2">
               <ProgressRing
-                value={score}
+                value={score.score ?? 0}
                 size={116}
-                label={`${score}`}
-                sublabel="out of 100"
-                indicatorClassName={
-                  score >= 80 ? "text-emerald-500" : score >= 50 ? "text-amber-500" : "text-rose-500"
-                }
+                label={score.score === null ? "—" : `${score.score}`}
+                sublabel={score.score === null ? "open day" : "out of 100"}
+                indicatorClassName={scoreTone(score.score)}
               />
-              <p className="text-center text-xs text-muted-foreground">
-                {scoreMessage(score, overview.planned)}
-              </p>
+              <p className="text-center text-xs text-muted-foreground">{score.explanation}</p>
             </div>
           </SectionCard>
 
@@ -275,6 +268,14 @@ export default async function TodayPage({
       </div>
     </div>
   );
+}
+
+/** Colour by band. Never the only signal — the number and text carry it too. */
+function scoreTone(score: number | null): string {
+  if (score === null) return "text-muted-foreground";
+  if (score >= 80) return "text-emerald-500";
+  if (score >= 50) return "text-amber-500";
+  return "text-rose-500";
 }
 
 function scoreMessage(score: number, planned: number): string {
