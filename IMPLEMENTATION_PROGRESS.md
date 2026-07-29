@@ -19,7 +19,7 @@
 > same branch from the merged `main`, because a merged pull request cannot
 > track new work.
 
-**Last stable commit:** Phase 9 — food providers, real servings, snapshotted entries (see the Phase 9 section).
+**Last stable commit:** Phase 10 — the live workout session (see the Phase 10 section).
 
 ---
 
@@ -38,7 +38,7 @@
 | 15a| Backup coverage for the new tables (pulled forward) | ✅ done |
 | 8  | Dashboard / Today / Planner separation             | ✅ done |
 | 9  | Nutrition provider architecture & food search      | ✅ done (providers built + tested against fixtures; **no live API call was possible** — see below) |
-| 10 | Workout session system                             | ⬜ not started |
+| 10 | Workout session system                             | ✅ done |
 | 11 | Health imports & health metrics                    | ⬜ not started |
 | 12 | Demo-data separation & onboarding                  | ⬜ not started |
 | 13 | Reminders                                          | ⬜ not started |
@@ -47,16 +47,16 @@
 | 16 | Accessibility, responsiveness, performance         | ⬜ not started |
 | 17 | Full testing & polish                              | ⬜ not started |
 
-**Current phase:** 10 — Workout session system (**not started**)
+**Current phase:** 11 — Health imports & health metrics (**not started**)
 
 **The task's stated highest-priority milestone is complete** (central schedule
 engine, scheduled goals, scheduled habits, rest-day behaviour, streaks, day
 score, calendar/insights consistency). Phase 7 closed the last outstanding bug
 from the Phase 0 audit, Phase 8 has given Dashboard, Today and Planner one job
-each, and Phase 9 has replaced the bundled-only food table with a provider
-architecture. Everything from Phase 10 on is still outstanding and the app
-remains on its pre-upgrade implementations for those areas — see "What is NOT
-done" below, which is deliberately explicit so nothing reads as finished when it
+each, Phase 9 has replaced the bundled-only food table with a provider
+architecture, and Phase 10 has given workouts a real session. Everything from
+Phase 11 on is still outstanding and the app remains on its pre-upgrade
+implementations for those areas — see "What is NOT done" below, which is deliberately explicit so nothing reads as finished when it
 is not.
 
 ---
@@ -360,14 +360,14 @@ npx prisma db push --accept-data-loss   # additive; verified no data loss
 npm run db:migrate        # twice — second run is a no-op
 npm run db:seed           # twice — planner data does not duplicate
 npm run typecheck         # PASS
-npm test                  # PASS 421/421
+npm test                  # PASS 483/483
 npm run build             # PASS
 npm run start             # all 11 routes 200, no server errors
 ```
 
 ## Tests passing
 
-421 tests across 15 files. 341 of them are new and cover business behaviour, not
+483 tests across 16 files. 403 of them are new and cover business behaviour, not
 rendering:
 
 * `tests/schedule.test.ts` (68) — every schedule mode; both week starts; DST;
@@ -446,6 +446,24 @@ rendering:
   round-trip; the cache upserts on `(provider, externalId)` and a refresh does
   not overwrite `retrievedAt`; and **no outbound URL contains the user id or any
   personal keyword.**
+* `tests/session.test.ts` (62) — **Phase 10.** The status set and its metadata,
+  including that `in_progress` does **not** count as trained and `abandoned`
+  does; the transition table (abandon only from a live session, reopening
+  allowed, never back to `planned`, unknown statuses rejected); progress
+  (done/remaining/percent, the next outstanding set, 0% rather than NaN for an
+  empty session, the last tick taken by clock rather than position so
+  out-of-order sets still drive the rest timer); grouping by exercise; elapsed
+  time (to a stamp, to now, never negative, clamped for a session left open
+  overnight, NaN-free on an unparseable date); the recorded duration (real
+  elapsed, floored at one minute when something was done, not floored when
+  nothing was); the rest timer (counts down, stops at zero, no timer without a
+  configured rest, and identical for identical inputs — the property that makes
+  it survive a reload); planned-versus-actual outcomes; seeding a session from a
+  template (targets not results, per-exercise numbering, nameless exercises
+  skipped, absurd set counts clamped, missing targets left null rather than
+  zeroed, negatives rejected) and from a past workout; the default rest being
+  null rather than a guess; **volume counting only what was ticked**, including
+  the over-reporting regression; and the session validation schemas.
 * `tests/date.test.ts` (+6) — **Phase 8.** Relative-day labels and
   past/today/future resolved against a **supplied** reference day rather than
   the host clock, including the exact regression (host on 2026-07-29, user on
@@ -472,6 +490,7 @@ Run against the seeded database with `npm run build && npm run start`.
 | 6 — Workout session | ❌ Not addressed yet — Phase 10. |
 | 7 — Score consistency | ✅ Dashboard, Today and the calendar detail render byte-identical explanations for the same date. Re-confirmed after the Phase 8 rework: on 2026-07-28 all three read `94` and `94% — 15 of 18 applicable opportunities met, weighting 3 categories equally. 6 items were excluded and are listed below.` Insights reports the same window in scheduled opportunities. |
 | 10 — Surface separation (Phase 8) | ✅ Each of the three surfaces offers only what it owns, verified in a real browser — see the Phase 8 table under browser verification. |
+| 12 — Session lifecycle (Phase 10) | ✅ Start → tick → edit → add → untick → finish, verified in a browser with the numbers checked at each step. An open session leaves the day score untouched; finishing moves it. |
 | 11 — Nutrition recalculation (Phase 9) | ✅ Editing, moving, duplicating and deleting an entry each move the day's totals, the goal progress and the day score, all through the one `recomputeDay` path. Verified numerically in a browser. |
 | 8 — Demo data removal | ❌ Not addressed yet — Phase 12. |
 | 9 — Backup round-trip | ⚠️ **Partly.** Export verified in a real browser: format v2 with `scheduleRules=15`, `scheduleRuleDays=21`, a checksum, the app version and the user's timezone. A full export→modify→restore-into-a-clean-database round trip has **not** been executed end to end. |
@@ -479,6 +498,34 @@ Run against the seeded database with `npm run build && npm run start`.
 ### Browser verification (Playwright + Chromium)
 
 Driven against the running production build.
+
+**Phase 10 additions** — all 9 checked routes returned 200 with **zero console
+errors, zero warnings and zero uncaught page errors** after the hydration fix.
+Run against the production build, driving a full session lifecycle.
+
+* **Before starting**: no session card; templates read "Starts a live session —
+  tick sets off as you go"; 5 Start buttons enabled.
+* **After starting** a template: the panel appears — "Lower body · In progress ·
+  0m elapsed", **18 outstanding sets** each showing "target 5 × 110 kg", "0 of 18
+  sets", "nothing logged yet". Discard offered (nothing done yet), Finish
+  offered, and every template Start button **disabled**.
+* **The session is not in the history list** — one place to act on it, per the
+  Phase 8 rule.
+* **An open session does not count**: Today's Training tile read `1h` while the
+  session was live, unchanged from before it started.
+* **After ticking one set**: "1 of 18 sets", "550 kg moved", and the rest timer
+  showing "2:58 Resting after Back squat". Discard is **gone**, replaced by
+  "Stop early".
+* **Editing a set before ticking** it records the real number and the row reads
+  **"beat target"**.
+* **Adding an exercise mid-session** ("Face pull") appears in the panel.
+* **Unticking** a completed set changes the progress back.
+* **Finishing**: the panel disappears, Start re-enables, and the workout appears
+  at the top of the history — "Lower body · Strength · Today · 1m · 8 kcal · 19
+  sets · 7,992 kg volume".
+* **The day then changes**: Today's Training tile went `1h` → `47m`, through the
+  same `recomputeDay` every other write uses.
+* **0 px horizontal overflow** on `/workouts` at 900 px and 1280 px.
 
 **Phase 9 additions** — all 9 checked routes returned 200 with **zero console
 errors, zero warnings and zero uncaught page errors** across every check below.
@@ -635,8 +682,14 @@ These are stated plainly so nothing reads as finished when it is not:
    background refresh of stale cached foods; no per-provider result quota, so a
    generous USDA response can crowd out Open Food Facts within the 25-result cap;
    and `getFoodShortcuts` still returns at most 12 recents.
-7. Workouts have no in-progress session model — starting a template still
-   behaves as before.
+7. ~~Workouts have no in-progress session model.~~ **Fixed in Phase 10** —
+   starting a template opens a live session with outstanding sets, a derived rest
+   timer and a real elapsed duration. Still outstanding in this area: no
+   automatic progression suggestion (last time's numbers become the target, but
+   nothing proposes adding weight), no superset or circuit grouping, no
+   per-exercise rest override in the UI (the action exists —
+   `setSessionRest` — but nothing calls it), and no notification when the rest
+   timer reaches zero.
 8. No Apple Health / CSV import UI. `importHealthMetrics` exists as a server
    action with no interface.
 9. `getDayScores` over a range calls `getDayScore` per day, which is several
@@ -983,13 +1036,116 @@ link and carries on. Open Food Facts needs no configuration.
 
 ---
 
+## Phase 10 — the live workout session
+
+### The problem
+
+`startWorkoutFromTemplate` wrote a **finished** workout the moment you tapped
+Start: status `completed`, every set marked done, duration taken from the
+template's estimate. That is a reasonable way to log something you already did,
+and useless while you are actually training. There was no such thing as a set
+you had not done yet, no real elapsed time, and no way to put the phone down and
+come back.
+
+### What a session is
+
+A `Workout` with `status: "in_progress"`, real `startedAt` / `completedAt`
+stamps, and sets that start incomplete and carry the plan separately from the
+outcome. The state machine lives in `src/lib/logic/session.ts`, pure and fully
+tested; `src/server/actions/session.ts` is the only thing that writes.
+
+| Status | Counts as trained | Notes |
+|---|---|---|
+| `planned` | no | On the schedule, not started |
+| `in_progress` | **no** | A live session. Not counted until it ends. |
+| `completed` | yes | Finished |
+| `abandoned` | **yes** | Stopped early — it happened, and the ticked sets say how much |
+| `skipped` | no | Deliberately not done |
+
+Transitions are declared, not implicit: a session can only be abandoned from
+`in_progress`, a finished workout can be reopened, and nothing returns to
+`planned` once real sets exist.
+
+### The decisions worth stating
+
+**An open session is not training.** `in_progress` has
+`countsAsTrained: false`, and its planner row stays `planned` — which is what
+"work outstanding" means everywhere else. Otherwise a warm-up you abandoned
+would inflate the day score for as long as the tab stayed open.
+
+**Duration is measured, not typed.** Finishing computes it from the real
+`startedAt`→`completedAt` gap, clamped at both ends: never negative if the clock
+moves backwards, and never beyond 12 hours, so a session left open overnight
+cannot claim fourteen hours of training. A session that did *something* floors at
+one minute, because rounding a real workout to 0 would read as "no workout" to
+every other surface.
+
+**The rest timer is derived, not stored.** It is a function of (last tick, rest
+length, now). There is no ticking state to lose, so it survives a reload, a
+backgrounded tab and a navigation. Rest length comes from the plan, and is
+`null` rather than a made-up 90 seconds when no plan declares one.
+
+**The plan and the outcome are separate columns.** `targetReps` /
+`targetWeightKg` next to `reps` / `weightKg`, so "target 5 × 110 kg" and "beat
+target" both stay legible after the fact instead of the plan being overwritten by
+what happened.
+
+**Sets left outstanding stay outstanding.** Finishing does not tick them.
+Marking them done would make the record claim work that was not performed;
+`totalVolume` already ignores incomplete sets, so the numbers stay honest.
+
+**One session at a time.** Starting another returns the open one's id with
+`resumed: true` rather than erroring — the UI offers to resume, and the template
+buttons disable while a session is live.
+
+**Discarding is only available before anything is ticked.** Once a set is done,
+the option becomes "stop early", and the server refuses to discard. A stray tap
+should not be able to erase work.
+
+### Two bugs browser verification caught
+
+1. **A hydration mismatch (React error #418).** The session panel seeded its
+   clock with `useState(() => new Date())`, so the server's HTML and the first
+   client render disagreed about the elapsed minutes. Fixed by starting the clock
+   as `null` and filling it in from an effect — the same pattern the planner's
+   timeline already used for its "now" line. Console is clean now.
+2. **The history list over-reported volume.** It totalled
+   `sets.map(set => ({ ...set, completed: true }))` — harmless while every logged
+   set was complete by construction, and a straight overstatement once a session
+   could be finished with work left undone. It now carries each set's real flag.
+   Observed in the browser as 8,542 kg → 7,992 kg for the same workout, and
+   pinned by a test asserting 500 vs 1500 for a session that did one set of three.
+
+### Database changes (additive; no data was lost)
+
+`Workout` gained `startedAt`, `completedAt` and `restSecDefault`, and its
+`status` now documents `in_progress` and `abandoned`.
+
+`WorkoutSet` gained `targetReps`, `targetWeightKg` and `completedAt`.
+`completed` still defaults `true`, which is what every row written before this
+phase relied on — a workout logged after the fact is complete on arrival, and a
+session creates its sets with `false`.
+
+Row counts identical across all 15 tables before and after `prisma db push`
+(47 workouts, 652 schedule items, …), and confirmed again after restoring the
+pre-verification snapshot.
+
+---
+
 ## Exact next step
 
-**Phase 9 — nutrition provider architecture & food search.** Nothing from it
-has been started. `searchFoods` in `src/server/queries.ts` still searches only
-the bundled table plus the user's custom foods; there is no provider
-abstraction, no USDA or Open Food Facts client, and `USDA_FDC_API_KEY` is not
-referenced anywhere in the repository.
+**Phase 11 — health imports & health metrics.** Nothing from it has been
+started. `importHealthMetrics` exists as a server action with no interface;
+there is no Apple Health or CSV import UI, and no way to bring a watch export in.
+
+Two things worth doing before or alongside it:
+
+* If network access is available, run one live search against each food provider
+  and confirm the normalisers against real payloads — see "Provider verification
+  status" in the Phase 9 section. That is the one part of Phase 9 that has never
+  touched the real services.
+* Wire `setSessionRest` to the UI. The action exists and is tested; nothing calls
+  it, so a session's rest length can currently only come from its template.
 
 Resume with:
 

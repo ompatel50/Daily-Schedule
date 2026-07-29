@@ -154,6 +154,22 @@ interface through which they could travel, and `tests/food-lookup.test.ts` asser
 
 ### 3. Workouts — `/workouts`
 
+**Live sessions.** Starting a template opens a session rather than writing a finished workout: sets
+begin outstanding, you tick them off as you go, and the duration recorded at the end is real elapsed
+time rather than a number typed in advance. The plan (`3 × 8 @ 60 kg`) is kept next to what actually
+happened, so "beat target" and "target 5 × 110 kg" stay legible afterwards.
+
+* One session at a time — starting another offers to resume the open one instead.
+* A rest timer that counts down from the last set you ticked. It is *derived* from stored stamps, not
+  held in memory, so reloading the page or locking your phone mid-set loses nothing.
+* Add a set or a whole exercise mid-session; untick a mis-tap without losing what you typed.
+* Finish (counts it), **stop early** (keeps what you did — three of eight sets is true and worth
+  recording), or discard (only while nothing has been ticked; after that the server refuses).
+* A finished or stopped session can be reopened to fix a forgotten set, and the elapsed clock resumes
+  from the original start rather than resetting.
+* Sets left outstanding stay outstanding. Volume and the day score count what was done, never what
+  was planned.
+
 * Strength, cardio, walking, running, cycling, swimming, yoga, mobility, HIIT, sport and custom.
 * Duration, intensity, calories burned, heart rate, distance, RPE, notes, and per-set
   exercise/reps/weight tracking.
@@ -278,6 +294,7 @@ src/
       surfaces.ts    # which screen owns which job (dashboard / today / planner)
       food.ts        # the normalised food record + USDA/OFF normalisers
       servings.ts    # units, serving options, and which conversions are valid
+      session.ts     # the workout session: statuses, progress, rest, elapsed
       nutrition.ts   workouts.ts   scoring.ts   quick-add.ts   insights.ts
     data/foods.ts        # the bundled food database
   server/
@@ -294,6 +311,7 @@ src/
       usda.ts            #   USDA FoodData Central (needs USDA_FDC_API_KEY)
       openfoodfacts.ts   #   Open Food Facts (no key, read-only)
     actions/             # server actions (the only place that writes)
+      session.ts         #   the live workout session's lifecycle
 tests/                   # Vitest suites for the logic modules
 ```
 
@@ -351,6 +369,12 @@ scale never needs a food-specific constant.
 package or per item, with a `basis` column saying which. All serving maths goes through
 `lib/logic/servings.ts` and `lib/logic/nutrition.ts`, which prevents the classic "per serving vs
 per 100 g" bug.
+
+**A session is only counted once it ends.** An `in_progress` workout does not feed the day score, the
+calendar or Insights — a warm-up you abandoned is not training. Its planner row stays `planned`, which
+is what "work outstanding" means everywhere else in the app. Finishing derives the duration from real
+elapsed time (clamped, so a session left open overnight cannot claim fourteen hours), and stopping
+early counts as trained because it happened; how much is a question the ticked sets answer.
 
 **A logged entry is a snapshot, not a view.** Every `MealEntry` freezes the macros, the
 micronutrients, the food's name, its basis and the serving it was computed against. Correcting a

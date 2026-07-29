@@ -179,6 +179,41 @@ export const moveMealEntrySchema = z.object({
   mealLabel: z.string().max(60).nullable().optional(),
 });
 
+// --- workout sessions -------------------------------------------------------
+
+/**
+ * A session starts from a template, from a past workout, or empty. All three
+ * are optional and mutually exclusive in practice; the action picks whichever
+ * is present, preferring the template.
+ */
+export const startSessionSchema = z.object({
+  date: dayKey,
+  templateId: z.string().min(1).optional(),
+  fromWorkoutId: z.string().min(1).optional(),
+  name: z.string().trim().max(120).optional(),
+  type: z.enum(WORKOUT_TYPES).optional(),
+});
+
+/**
+ * Ticking a set. Everything is optional because the common case is tapping the
+ * checkbox and accepting the target — the action falls back to it rather than
+ * writing nulls over a plan.
+ */
+export const completeSetSchema = z.object({
+  id: z.string().min(1),
+  reps: z.number().int().min(0).max(1000).nullable().optional(),
+  weightKg: z.number().min(0).max(2000).nullable().optional(),
+  rpe: z.number().min(0).max(10).nullable().optional(),
+  notes: z.string().max(500).nullable().optional(),
+});
+
+export const addSessionSetSchema = z.object({
+  workoutId: z.string().min(1),
+  exercise: z.string().trim().min(1, "Exercise is required").max(120),
+  targetReps: z.number().int().min(0).max(1000).nullable().optional(),
+  targetWeightKg: z.number().min(0).max(2000).nullable().optional(),
+});
+
 export const workoutSetSchema = z.object({
   id: z.string().optional(),
   exercise: z.string().trim().min(1).max(120),

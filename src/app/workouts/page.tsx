@@ -8,6 +8,7 @@ import { SectionCard } from "@/components/shared/section-card";
 import { StatCard } from "@/components/shared/stat-card";
 import { Skeleton } from "@/components/ui/skeleton";
 import { WorkoutManager, type WorkoutView } from "@/components/workouts/workout-manager";
+import { SessionPanel, type SessionView } from "@/components/workouts/session-panel";
 import { WORKOUT_TYPE_META, type WorkoutType } from "@/lib/enums";
 import { formatDay, formatDuration, isDayKey, lastNDays, shiftDay } from "@/lib/date";
 import { personalRecords } from "@/lib/logic/workouts";
@@ -79,7 +80,41 @@ export default async function WorkoutsPage({
     })),
   ).slice(0, 6);
 
-  const views: WorkoutView[] = recent.map((workout) => ({
+  // The open session, if there is one. Deliberately not filtered by `date`: a
+  // session started before midnight is still yours at 00:30, and the panel must
+  // appear regardless of which day the page is showing.
+  const live = recent.find((workout) => workout.status === "in_progress") ?? null;
+  const session: SessionView | null = live
+    ? {
+        id: live.id,
+        name: live.name,
+        date: live.date,
+        startedAt: live.startedAt?.toISOString() ?? null,
+        restSecDefault: live.restSecDefault,
+        sets: live.sets.map((set) => ({
+          id: set.id,
+          exercise: set.exercise,
+          setNumber: set.setNumber,
+          reps: set.reps,
+          weightKg: set.weightKg,
+          durationSec: set.durationSec,
+          distanceM: set.distanceM,
+          targetReps: set.targetReps,
+          targetWeightKg: set.targetWeightKg,
+          restSec: set.restSec,
+          rpe: set.rpe,
+          completed: set.completed,
+          completedAt: set.completedAt?.toISOString() ?? null,
+          sortOrder: set.sortOrder,
+        })),
+      }
+    : null;
+
+  const views: WorkoutView[] = recent
+    // The live session has its own surface; showing it in the history list too
+    // would be the Phase 8 mistake — two places to act on the same thing.
+    .filter((workout) => workout.status !== "in_progress")
+    .map((workout) => ({
     id: workout.id,
     date: workout.date,
     time: workout.time,
@@ -100,6 +135,7 @@ export default async function WorkoutsPage({
       weightKg: set.weightKg,
       durationSec: set.durationSec,
       distanceM: set.distanceM,
+      completed: set.completed,
     })),
   }));
 
@@ -145,10 +181,17 @@ export default async function WorkoutsPage({
         />
       </div>
 
+      {session && (
+        <div className="mb-6">
+          <SessionPanel session={session} />
+        </div>
+      )}
+
       <div className="grid gap-6 lg:grid-cols-5">
         <div className="lg:col-span-3">
           <Suspense fallback={<Skeleton className="h-96 w-full" />}>
             <WorkoutManager
+              activeSessionId={session?.id ?? null}
               date={date}
               workouts={views}
               templates={templates.map((template) => ({

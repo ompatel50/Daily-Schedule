@@ -637,7 +637,22 @@ model Workout {
   perceivedEffort Int?   // RPE 1-10
   notes          String?
 
-  status String @default("completed") // planned | completed | skipped
+  /// planned | in_progress | completed | abandoned | skipped
+  ///
+  /// `in_progress` is a live session: it exists from the moment you start
+  /// training until you finish or abandon it. Only one can be open at a time.
+  status String @default("completed")
+
+  /// Wall-clock bounds of a session. `durationMin` above stays the number the
+  /// rest of the app reads (the score, insights, the calendar), but for a
+  /// session it is *derived* from these on finish rather than typed in — a
+  /// workout you actually did has a real length.
+  startedAt   DateTime?
+  completedAt DateTime?
+
+  /// Rest between sets, in seconds, carried from the template so the session's
+  /// timer has something to count down. Null means "no timer".
+  restSecDefault Int?
 
   // Import-friendly: an Apple Health / watch export can upsert on
   // (source, externalId) without touching manual rows.
@@ -666,6 +681,8 @@ model WorkoutSet {
   exercise  String
   setNumber Int    @default(1)
 
+  /// What actually happened. During a session these stay null until the set is
+  /// ticked off; for a workout logged after the fact they are filled straight in.
   reps       Int?
   weightKg   Float?
   durationSec Int?
@@ -673,7 +690,20 @@ model WorkoutSet {
   restSec    Int?
   rpe        Float?
   notes      String?
+
+  /// What the plan asked for, kept separate from what was done. A session shows
+  /// the target next to the input, and "3×8 @ 60 planned, 3×8 @ 62.5 done" stays
+  /// legible afterwards instead of the plan being overwritten by the outcome.
+  targetReps     Int?
+  targetWeightKg Float?
+
+  /// Defaults true so a workout logged after the fact is complete on arrival —
+  /// which is how every row before Phase 10 was written. A session creates its
+  /// sets with `false` and ticks them off.
   completed  Boolean @default(true)
+  /// When the set was ticked. Drives the rest timer, and is what makes a
+  /// session's elapsed time reconstructable rather than guessed.
+  completedAt DateTime?
 
   sortOrder Int @default(0)
 
