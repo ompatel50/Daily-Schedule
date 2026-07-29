@@ -15,6 +15,12 @@ import {
   DialogHeader,
   DialogTitle,
 } from "@/components/ui/dialog";
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuTrigger,
+} from "@/components/ui/dropdown-menu";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import {
@@ -37,6 +43,7 @@ import {
 } from "@/lib/enums";
 import { WEEKDAY_LABELS, minuteToTimeValue, parseTimeToMinute } from "@/lib/date";
 import { describeRule, parseRule, serializeRule, type RecurrenceRule } from "@/lib/logic/recurrence";
+import type { SeriesScope } from "@/lib/validation";
 import { createScheduleItem, deleteScheduleItem, updateScheduleItem } from "@/server/actions/planner";
 import { cn } from "@/lib/utils";
 
@@ -82,7 +89,7 @@ export function ScheduleItemDialog({
   const [repeat, setRepeat] = React.useState<"none" | "daily" | "weekly" | "monthly">("none");
   const [weekdays, setWeekdays] = React.useState<number[]>([]);
   const [interval, setInterval] = React.useState(1);
-  const [scope, setScope] = React.useState<"one" | "future">("one");
+  const [scope, setScope] = React.useState<SeriesScope>("one");
 
   // Reset the form each time the dialog opens so a stale draft can't leak
   // between edits.
@@ -149,7 +156,7 @@ export function ScheduleItemDialog({
     });
   }
 
-  function remove(deleteScope: "one" | "future" | "all") {
+  function remove(deleteScope: SeriesScope) {
     if (!item?.id) return;
     startTransition(async () => {
       const result = await deleteScheduleItem(item.id!, deleteScope);
@@ -353,16 +360,22 @@ export function ScheduleItemDialog({
 
           {isEdit && isSeries && (
             <div className="space-y-1.5 rounded-lg border border-amber-500/30 bg-amber-500/5 p-3">
-              <Label>Apply changes to</Label>
-              <Select value={scope} onValueChange={(value) => setScope(value as "one" | "future")}>
-                <SelectTrigger>
+              <Label htmlFor="item-scope">Apply changes to</Label>
+              <Select value={scope} onValueChange={(value) => setScope(value as SeriesScope)}>
+                <SelectTrigger id="item-scope">
                   <SelectValue />
                 </SelectTrigger>
                 <SelectContent>
                   <SelectItem value="one">This item only</SelectItem>
                   <SelectItem value="future">This and all future items</SelectItem>
+                  <SelectItem value="all">All items in the series</SelectItem>
                 </SelectContent>
               </Select>
+              <p className="text-xs text-muted-foreground">
+                {scope === "one"
+                  ? "Only this occurrence changes, and it stops following the series."
+                  : "The date stays on each occurrence — only the details carry across."}
+              </p>
             </div>
           )}
         </div>
@@ -370,18 +383,34 @@ export function ScheduleItemDialog({
         <DialogFooter className="sm:justify-between">
           {isEdit ? (
             <div className="flex gap-2">
-              <Button
-                variant="outline"
-                size="sm"
-                onClick={() => remove("one")}
-                disabled={pending}
-                className="text-destructive"
-              >
-                <Trash2 /> Delete
-              </Button>
-              {isSeries && (
-                <Button variant="ghost" size="sm" onClick={() => remove("all")} disabled={pending}>
-                  Delete series
+              {isSeries ? (
+                <DropdownMenu>
+                  <DropdownMenuTrigger asChild>
+                    <Button variant="outline" size="sm" disabled={pending} className="text-destructive">
+                      <Trash2 /> Delete…
+                    </Button>
+                  </DropdownMenuTrigger>
+                  <DropdownMenuContent align="start" className="w-56">
+                    <DropdownMenuItem destructive onClick={() => remove("one")}>
+                      This item only
+                    </DropdownMenuItem>
+                    <DropdownMenuItem destructive onClick={() => remove("future")}>
+                      This and all future items
+                    </DropdownMenuItem>
+                    <DropdownMenuItem destructive onClick={() => remove("all")}>
+                      All items in the series
+                    </DropdownMenuItem>
+                  </DropdownMenuContent>
+                </DropdownMenu>
+              ) : (
+                <Button
+                  variant="outline"
+                  size="sm"
+                  onClick={() => remove("one")}
+                  disabled={pending}
+                  className="text-destructive"
+                >
+                  <Trash2 /> Delete
                 </Button>
               )}
             </div>

@@ -26,6 +26,7 @@ import { EmptyState } from "@/components/shared/empty-state";
 import { ScheduleRow, type ScheduleRowItem } from "@/components/planner/schedule-row";
 import { ScheduleItemDialog, type ScheduleItemDraft } from "@/components/planner/schedule-item-dialog";
 import { reorderScheduleItems, rolloverUnfinished } from "@/server/actions/planner";
+import { conflictsByItem } from "@/lib/logic/planner";
 import { isPast, isToday } from "@/lib/date";
 import { useUIStore } from "@/store/ui-store";
 
@@ -63,6 +64,10 @@ export function DaySchedule({
   const timed = items.filter((item) => !item.allDay && item.startMinute !== null);
   const untimed = items.filter((item) => item.allDay || item.startMinute === null);
   const unfinished = items.filter((item) => item.status === "planned").length;
+
+  // Overlaps are surfaced, not prevented — see `conflictsByItem` for what does
+  // and does not count as one.
+  const conflicts = React.useMemo(() => conflictsByItem(items), [items]);
 
   function onDragEnd(event: DragEndEvent) {
     const { active, over } = event;
@@ -157,7 +162,12 @@ export function DaySchedule({
           {timed.length > 0 && (
             <div className="space-y-1.5">
               {timed.map((item) => (
-                <ScheduleRow key={item.id} item={item} onEdit={edit} />
+                <ScheduleRow
+                  key={item.id}
+                  item={item}
+                  onEdit={edit}
+                  conflictsWith={conflicts.get(item.id)}
+                />
               ))}
             </div>
           )}

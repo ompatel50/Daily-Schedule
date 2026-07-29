@@ -15,6 +15,7 @@ import {
   WORKOUT_TYPES,
 } from "./enums";
 import { GOAL_COMPARISONS, GOAL_SOURCES } from "./logic/goals";
+import { TEMPLATE_APPLY_MODES } from "./logic/planner";
 import { DAYPARTS, OVERRIDE_KINDS, SCHEDULE_MODES } from "./logic/schedule";
 
 /** Every server action validates its input through one of these schemas. */
@@ -79,6 +80,20 @@ export const scheduleTemplateSchema = z.object({
     )
     .min(1, "Add at least one item"),
 });
+
+/** Applying a saved routine to a day. `mode` answers "it's already there". */
+export const templateApplySchema = z.object({
+  templateId: z.string().min(1),
+  date: dayKey,
+  mode: z.enum(TEMPLATE_APPLY_MODES).default("auto"),
+});
+
+/**
+ * How far an edit or a delete reaches on a recurring item: just this
+ * occurrence, this one and everything after it, or the whole series.
+ */
+export const seriesScopeSchema = z.enum(["one", "future", "all"]);
+export type SeriesScope = z.infer<typeof seriesScopeSchema>;
 
 export const habitSchema = z.object({
   id: z.string().optional(),
