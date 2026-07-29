@@ -14,9 +14,11 @@ import {
   TIMES_OF_DAY,
   WORKOUT_TYPES,
 } from "./enums";
+import { FOOD_PROVIDERS } from "./logic/food";
 import { GOAL_COMPARISONS, GOAL_SOURCES } from "./logic/goals";
 import { TEMPLATE_APPLY_MODES } from "./logic/planner";
 import { DAYPARTS, OVERRIDE_KINDS, SCHEDULE_MODES } from "./logic/schedule";
+import { NUTRIENT_BASES } from "./logic/servings";
 
 /** Every server action validates its input through one of these schemas. */
 
@@ -117,37 +119,99 @@ export const habitLogSchema = z.object({
   notes: z.string().max(1000).nullable().optional(),
 });
 
+/** A finite, non-negative number — `.finite()` rejects NaN and Infinity. */
+const nutrientAmount = (max: number) =>
+  z.number().finite("Must be a number").min(0, "Cannot be negative").max(max);
+
 export const foodItemSchema = z.object({
   id: z.string().optional(),
   name: z.string().trim().min(1, "Name is required").max(160),
   brand: z.string().max(120).nullable().optional(),
-  basis: z.enum(["per_100g", "per_serving"]).default("per_100g"),
-  servingSize: z.number().positive("Serving size must be greater than 0").default(100),
+  description: z.string().max(400).nullable().optional(),
+  notes: z.string().max(500).nullable().optional(),
+  basis: z.enum(NUTRIENT_BASES).default("per_100g"),
+  servingSize: z.number().positive("Serving size must be greater than 0").max(100000).default(100),
   servingUnit: z.string().max(20).default("g"),
   servingLabel: z.string().max(80).nullable().optional(),
-  calories: z.number().min(0).max(10000),
-  protein: z.number().min(0).max(1000).default(0),
-  carbs: z.number().min(0).max(1000).default(0),
-  fat: z.number().min(0).max(1000).default(0),
-  fiber: z.number().min(0).max(1000).default(0),
-  sugar: z.number().min(0).max(1000).default(0),
-  sodium: z.number().min(0).max(100000).default(0),
+  calories: nutrientAmount(10000),
+  protein: nutrientAmount(1000).default(0),
+  carbs: nutrientAmount(1000).default(0),
+  fat: nutrientAmount(1000).default(0),
+  fiber: nutrientAmount(1000).default(0),
+  sugar: nutrientAmount(1000).default(0),
+  sodium: nutrientAmount(500000).default(0),
+  /** Optional micronutrients, keyed by the names in `lib/logic/food`. */
+  extraNutrients: z.record(z.string(), nutrientAmount(1_000_000)).optional(),
   category: z.enum(FOOD_CATEGORIES).default("other"),
+  favorite: z.boolean().optional(),
 });
 
+/**
+ * `idempotencyKey` is generated per save attempt by the client. A double-click,
+ * a retried submit and an optimistic replay all carry the same one, and the
+ * unique index on `(mealId, idempotencyKey)` turns the second write into a
+ * no-op. Deliberate duplication uses a fresh key, so it still works.
+ */
 export const mealEntrySchema = z.object({
   date: dayKey,
   mealType: z.enum(MEAL_TYPES),
   mealLabel: z.string().max(60).nullable().optional(),
-  foodItemId: z.string().min(1),
+  /** Internal id, when the food is already in the database. */
+  foodItemId: z.string().min(1).optional(),
+  /** Provider identity, when logging a result that has not been cached yet. */
+  provider: z.enum(FOOD_PROVIDERS).optional(),
+  externalId: z.string().min(1).max(64).optional(),
   quantity: z.number().positive("Quantity must be greater than 0").max(10000),
   unit: z.enum(SERVING_UNITS).default("serving"),
+  idempotencyKey: z.string().min(8).max(80).optional(),
 });
 
 export const updateMealEntrySchema = z.object({
   id: z.string().min(1),
   quantity: z.number().positive().max(10000),
   unit: z.enum(SERVING_UNITS),
+});
+
+export const moveMealEntrySchema = z.object({
+  id: z.string().min(1),
+  date: dayKey.optional(),
+  mealType: z.enum(MEAL_TYPES).optional(),
+  mealLabel: z.string().max(60).nullable().optional(),
+});
+
+// --- workout sessions -------------------------------------------------------
+
+/**
+ * A session starts from a template, from a past workout, or empty. All three
+ * are optional and mutually exclusive in practice; the action picks whichever
+ * is present, preferring the template.
+ */
+export const startSessionSchema = z.object({
+  date: dayKey,
+  templateId: z.string().min(1).optional(),
+  fromWorkoutId: z.string().min(1).optional(),
+  name: z.string().trim().max(120).optional(),
+  type: z.enum(WORKOUT_TYPES).optional(),
+});
+
+/**
+ * Ticking a set. Everything is optional because the common case is tapping the
+ * checkbox and accepting the target — the action falls back to it rather than
+ * writing nulls over a plan.
+ */
+export const completeSetSchema = z.object({
+  id: z.string().min(1),
+  reps: z.number().int().min(0).max(1000).nullable().optional(),
+  weightKg: z.number().min(0).max(2000).nullable().optional(),
+  rpe: z.number().min(0).max(10).nullable().optional(),
+  notes: z.string().max(500).nullable().optional(),
+});
+
+export const addSessionSetSchema = z.object({
+  workoutId: z.string().min(1),
+  exercise: z.string().trim().min(1, "Exercise is required").max(120),
+  targetReps: z.number().int().min(0).max(1000).nullable().optional(),
+  targetWeightKg: z.number().min(0).max(2000).nullable().optional(),
 });
 
 export const workoutSetSchema = z.object({

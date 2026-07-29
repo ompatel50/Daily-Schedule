@@ -40,6 +40,13 @@ export interface WorkoutSetDraft {
   weightKg: number | null;
   durationSec: number | null;
   distanceM: number | null;
+  /**
+   * Optional so the editor can build a row without it — the server defaults it
+   * to true for a workout logged after the fact. It matters for a workout that
+   * came from a session, which can legitimately hold sets that were never done,
+   * and whose volume must not count them.
+   */
+  completed?: boolean;
 }
 
 export interface WorkoutDraft {

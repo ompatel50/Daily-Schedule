@@ -95,14 +95,80 @@ The planner **shapes** the schedule; Today **runs** it and the dashboard
 
 ### 2. Nutrition — `/nutrition`
 
-* Food search over a bundled database of ~90 common foods, plus your own custom foods.
-* Log by serving, grams, ml, oz or piece; calories, protein, carbs, fat, fiber, sugar and sodium.
+* **Local-first food search with optional online lookup.** Every search checks, in order: your
+  foods, your favourites, your recent foods, anything cached from a previous online lookup, then
+  — only if that came up thin — USDA FoodData Central for generic ingredients and Open Food Facts
+  for branded products. Anything you pick is cached locally, so the second time it is offline data.
+* Log by grams, kilograms, ounces, pounds, millilitres, litres, cups, tablespoons, teaspoons,
+  pieces, slices, servings or packages — but only where the conversion is real (see below).
+* Calories, protein, carbs, fat, fiber, sugar and sodium up front; saturated fat, cholesterol,
+  potassium, calcium, iron and the vitamins kept alongside when a provider supplies them.
 * Breakfast / lunch / dinner / snack / custom meal labels.
 * Daily totals, macro split donut, 14-day calorie trend, goal progress.
 * **Favourites and recents** derived from what you actually log, so repeat meals are one click.
-* **Meal templates** — save any logged meal and re-log it later.
+* **Meal templates** — save any logged meal and re-log it later. Applying the same template twice
+  by accident writes nothing and asks; doubling a meal on purpose still works.
+* Edit the quantity, change the unit, move an entry to another meal or another day, duplicate it
+  deliberately, or delete it — each of which recomputes the day, the goals, the score, the calendar
+  and Insights through one shared path.
+
+#### Setting up online food search
+
+Both providers are optional. With neither configured the app still searches everything local.
+
+**USDA FoodData Central** (generic foods) needs a free key:
+
+1. Sign up at <https://fdc.nal.usda.gov/api-key-signup.html>
+2. Put it in `.env`:
+   ```
+   USDA_FDC_API_KEY="your-key-here"
+   ```
+3. Restart the dev server.
+
+The key is read inside a `server-only` module and is never sent to the browser — do not prefix it
+with `NEXT_PUBLIC_`, and do not commit it. Without it, search still works and the results panel says
+USDA is not set up, with the signup link.
+
+**Open Food Facts** (branded products) needs no key and is on by default. It is used read-only over
+its public v2 API, identified by a descriptive `User-Agent` that names this app rather than you.
+The app never writes, uploads or contributes anything to it.
+
+#### What leaves your machine
+
+Only a search term or a public barcode, and only when local results are thin. Requests are sent
+with no cookies and no referrer. Your meals, meal history, goals, health metrics, schedule, habits,
+workouts and notes are never part of a provider request — there is no field in the provider
+interface through which they could travel, and `tests/food-lookup.test.ts` asserts it.
+
+#### Known provider limitations
+
+* **USDA publishes no densities.** A food from USDA cannot be logged in cups or millilitres, only
+  by weight or by its declared serving.
+* **Open Food Facts is community data and often partial.** Records below a usable threshold are
+  dropped; the rest carry a completeness score and show a "partial data" hint. A nutrient that was
+  never published is missing, not zero.
+* **Open Food Facts states sodium in grams and sometimes only kilojoules.** Both are converted on
+  the way in; if you compare against the OFF website the raw numbers will look different.
+* Branded coverage differs between the two: USDA's branded set is US-centric, OFF is broader but
+  less consistent.
 
 ### 3. Workouts — `/workouts`
+
+**Live sessions.** Starting a template opens a session rather than writing a finished workout: sets
+begin outstanding, you tick them off as you go, and the duration recorded at the end is real elapsed
+time rather than a number typed in advance. The plan (`3 × 8 @ 60 kg`) is kept next to what actually
+happened, so "beat target" and "target 5 × 110 kg" stay legible afterwards.
+
+* One session at a time — starting another offers to resume the open one instead.
+* A rest timer that counts down from the last set you ticked. It is *derived* from stored stamps, not
+  held in memory, so reloading the page or locking your phone mid-set loses nothing.
+* Add a set or a whole exercise mid-session; untick a mis-tap without losing what you typed.
+* Finish (counts it), **stop early** (keeps what you did — three of eight sets is true and worth
+  recording), or discard (only while nothing has been ticked; after that the server refuses).
+* A finished or stopped session can be reopened to fix a forgotten set, and the elapsed clock resumes
+  from the original start rather than resetting.
+* Sets left outstanding stay outstanding. Volume and the day score count what was done, never what
+  was planned.
 
 * Strength, cardio, walking, running, cycling, swimming, yoga, mobility, HIIT, sport and custom.
 * Duration, intensity, calories burned, heart rate, distance, RPE, notes, and per-set
@@ -226,6 +292,9 @@ src/
       recurrence.ts  # planner-item recurrence (materialised occurrences)
       planner.ts     # routine-application identity + overlap detection
       surfaces.ts    # which screen owns which job (dashboard / today / planner)
+      food.ts        # the normalised food record + USDA/OFF normalisers
+      servings.ts    # units, serving options, and which conversions are valid
+      session.ts     # the workout session: statuses, progress, rest, elapsed
       nutrition.ts   workouts.ts   scoring.ts   quick-add.ts   insights.ts
     data/foods.ts        # the bundled food database
   server/
@@ -237,7 +306,12 @@ src/
     insights.ts          # the weekly review
     summaries.ts         # the per-day rollup cache
     series.ts            # recurring-item materialisation
+    food.ts              # food lookup order, provider merge, local cache
+    providers/           # one file per food source, behind FoodProvider
+      usda.ts            #   USDA FoodData Central (needs USDA_FDC_API_KEY)
+      openfoodfacts.ts   #   Open Food Facts (no key, read-only)
     actions/             # server actions (the only place that writes)
+      session.ts         #   the live workout session's lifecycle
 tests/                   # Vitest suites for the logic modules
 ```
 
@@ -271,16 +345,56 @@ the same numbers — a summary that refused to would be useless. The rule is tha
 you **change** a given thing, and a fact shown twice appears at a different altitude with a link to
 its owner.
 
-**The food database ships with the app.** There is no third-party nutrition API. A remote API would
-mean every meal you log leaves your machine, needs an API key, and stops working offline — all of
-which contradict "private and local-first". The bundled table covers everyday whole foods and common
-staples; anything missing takes about twenty seconds to add as a custom food, and custom foods are
-first-class in search from then on.
+**Food search is local-first, with online lookup as an addition rather than a dependency.** The
+original design shipped a bundled table and no API at all, on the grounds that a remote service
+would mean data leaving the machine and nothing working offline. Both concerns were right; neither
+required doing without a real food database. What resolves them is the direction of the flow: a
+query goes out, a food comes back, and *nothing about you* is part of either. Local rows, custom
+foods, favourites, recents and cached lookups are always searched first and always work offline, so
+a provider being unreachable costs you the long tail and nothing else.
 
-**Nutrition has one canonical basis.** Foods are stored either per 100 g or per serving, with a
-`basis` column saying which. All serving maths goes through `lib/logic/nutrition.ts`, which prevents
-the classic "per serving vs per 100 g" bug. Macros are also denormalised onto each logged entry, so
-correcting a food's nutrition later never silently rewrites your history.
+**Providers are an interface, not a coupling.** `server/providers/` holds one file per source
+behind a `FoodProvider` contract; everything above it — search, the log dialog, meal totals — reads
+the normalised `NormalizedFood` shape from `lib/logic/food.ts`. Adding a third source is a new file
+and a registry entry, not a change to any component. Provider payloads are also untrusted input:
+they are clamped and stripped by `sanitizeNormalizedFood` before anything is persisted.
+
+**A conversion happens only when it is mathematically valid.** Grams to ounces is arithmetic.
+Millilitres to grams is not — a cup of flour and a cup of honey differ by more than 2×. Where the
+density is unknown `lib/logic/servings.ts` returns `null` rather than assuming water, the unit is
+not offered in the UI, and the server action refuses it. Grams are always available, because a
+scale never needs a food-specific constant.
+
+**Nutrition has one canonical basis.** Foods state their nutrients per 100 g, per serving, per
+package or per item, with a `basis` column saying which. All serving maths goes through
+`lib/logic/servings.ts` and `lib/logic/nutrition.ts`, which prevents the classic "per serving vs
+per 100 g" bug.
+
+**A session is only counted once it ends.** An `in_progress` workout does not feed the day score, the
+calendar or Insights — a warm-up you abandoned is not training. Its planner row stays `planned`, which
+is what "work outstanding" means everywhere else in the app. Finishing derives the duration from real
+elapsed time (clamped, so a session left open overnight cannot claim fourteen hours), and stopping
+early counts as trained because it happened; how much is a question the ticked sets answer.
+
+**A logged entry is a snapshot, not a view.** Every `MealEntry` freezes the macros, the
+micronutrients, the food's name, its basis and the serving it was computed against. Correcting a
+custom food, or a provider refreshing its record, changes the food going forward and never moves a
+total that has already been recorded. Copying a meal or a day carries the original snapshot rather
+than recomputing.
+
+**A food's identity is its provider plus that provider's id.** `@@unique([provider, externalId])`
+means re-selecting the same USDA food updates the cached copy instead of creating a second row —
+and that two foods with similar names are never merged. USDA's "Chicken breast, raw" and a
+supermarket's "Chicken Breast" are different records with different numbers, and stay that way.
+Local and custom foods carry a null `externalId`, which SQLite treats as distinct, so the
+constraint never applies to them.
+
+**Accidental duplication is prevented in the database, not by a disabled button.** A save carries a
+client-generated `idempotencyKey`, unique per `(mealId, idempotencyKey)`; a double-click, a retried
+submit and an optimistic replay all collide and become a no-op. Meal templates reuse the planner's
+`sourceKey` scheme — the same `planTemplateApplication` function, so there is one implementation of
+"apply a saved set of rows without doubling it". Deliberate duplication is a separate, explicit
+action that takes a fresh key.
 
 **Enums are TEXT.** SQLite has no enum type, so every enum-like column is validated in
 `lib/enums.ts` and `lib/validation.ts`. This keeps the schema portable: switching `provider` to

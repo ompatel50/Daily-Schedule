@@ -14,7 +14,7 @@ import { WORKOUT_TYPE_META, type WorkoutType } from "@/lib/enums";
 import { formatDay, formatDuration, relativeDayLabel, today } from "@/lib/date";
 import { formatPace, pacePerKm, totalVolume } from "@/lib/logic/workouts";
 import { cn, formatNumber } from "@/lib/utils";
-import { repeatWorkout, startWorkoutFromTemplate } from "@/server/actions/workouts";
+import { startSession } from "@/server/actions/session";
 
 export interface WorkoutView extends WorkoutDraft {
   id: string;
@@ -42,11 +42,14 @@ export function WorkoutManager({
   workouts,
   templates,
   exerciseNames,
+  activeSessionId = null,
 }: {
   date: string;
   workouts: WorkoutView[];
   templates: WorkoutTemplateView[];
   exerciseNames: string[];
+  /** Set while a session is open, so this surface stops offering to start one. */
+  activeSessionId?: string | null;
 }) {
   const router = useRouter();
   const searchParams = useSearchParams();
@@ -63,31 +66,47 @@ export function WorkoutManager({
     }
   }, [searchParams]);
 
+  /**
+   * Starting a template opens a **session** rather than writing a finished
+   * workout. The old behaviour claimed every set was done the moment you
+   * tapped it, which is only true if you were logging something already over.
+   */
   function runTemplate(template: WorkoutTemplateView) {
     setBusy(template.id);
     startTransition(async () => {
-      const result = await startWorkoutFromTemplate(template.id, date);
+      const result = await startSession({ date, templateId: template.id });
       setBusy(null);
-      if (result.ok) {
-        toast.success(`Logged ${template.name}`);
-        router.refresh();
-      } else {
+      if (!result.ok) {
         toast.error(result.error);
+        return;
       }
+      if (result.data.resumed) {
+        toast.info("You already have a session open", {
+          description: "Finish or stop it before starting another.",
+        });
+      } else {
+        toast.success(`Started ${template.name}`);
+      }
+      router.refresh();
     });
   }
 
+  /** Repeat a past workout as a session — last time's numbers as targets. */
   function repeat(workout: WorkoutView) {
     setBusy(workout.id);
     startTransition(async () => {
-      const result = await repeatWorkout(workout.id, today());
+      const result = await startSession({ date: today(), fromWorkoutId: workout.id });
       setBusy(null);
-      if (result.ok) {
-        toast.success(`Repeated ${workout.name} on today`);
-        router.refresh();
-      } else {
+      if (!result.ok) {
         toast.error(result.error);
+        return;
       }
+      if (result.data.resumed) {
+        toast.info("You already have a session open");
+      } else {
+        toast.success(`Started ${workout.name} again`);
+      }
+      router.refresh();
     });
   }
 
@@ -109,7 +128,11 @@ export function WorkoutManager({
           title="Templates"
           icon={Zap}
           accent="text-domain-workout"
-          description="One click logs the whole session"
+          description={
+            activeSessionId
+              ? "Finish the session you have open before starting another"
+              : "Starts a live session — tick sets off as you go"
+          }
         >
           <div className="flex flex-wrap gap-2">
             {templates.map((template) => {
@@ -126,7 +149,7 @@ export function WorkoutManager({
                   <Button
                     size="sm"
                     variant="secondary"
-                    disabled={busy !== null}
+                    disabled={busy !== null || activeSessionId !== null}
                     onClick={() => runTemplate(template)}
                   >
                     {busy === template.id && <Loader2 className="animate-spin" />}
@@ -166,7 +189,11 @@ export function WorkoutManager({
           <div className="space-y-2">
             {workouts.map((workout) => {
               const meta = WORKOUT_TYPE_META[workout.type as WorkoutType] ?? WORKOUT_TYPE_META.custom;
-              const volume = totalVolume(workout.sets.map((row) => ({ ...row, completed: true })));
+              // Carry each set's real completion flag. Forcing `true` was
+              // harmless while every logged set was complete by construction;
+              // a session finished with sets left outstanding would now have
+              // its volume over-reported by exactly the work not done.
+              const volume = totalVolume(workout.sets);
               const pace =
                 workout.distanceKm && workout.durationMin
                   ? pacePerKm(workout.distanceKm, workout.durationMin)

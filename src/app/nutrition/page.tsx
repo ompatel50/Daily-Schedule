@@ -1,4 +1,5 @@
 import type { Metadata } from "next";
+import type { FoodItem } from "@prisma/client";
 import { Apple, Bookmark, Flame, PieChart, Search, TrendingUp } from "lucide-react";
 
 import { CustomFoodDialog } from "@/components/nutrition/custom-food-dialog";
@@ -12,6 +13,7 @@ import { SectionCard } from "@/components/shared/section-card";
 import { StatCard } from "@/components/shared/stat-card";
 import { formatDay, isDayKey, lastNDays, shiftDay } from "@/lib/date";
 import { macroSplit, totalMacros } from "@/lib/logic/nutrition";
+import { availableUnits } from "@/lib/logic/servings";
 import { average, formatNumber, pct } from "@/lib/utils";
 import {
   getToday,
@@ -22,46 +24,24 @@ import {
   getUser,
 } from "@/server/queries";
 import { getSummaries } from "@/server/summaries";
+import { rowToNormalizedFood, toResultView } from "@/server/food";
+
 
 export const metadata: Metadata = { title: "Nutrition" };
 export const dynamic = "force-dynamic";
 
-function toFoodOption(food: {
-  id: string;
-  name: string;
-  brand: string | null;
-  basis: string;
-  servingSize: number;
-  servingUnit: string;
-  servingLabel: string | null;
-  calories: number;
-  protein: number;
-  carbs: number;
-  fat: number;
-  fiber: number;
-  sugar: number;
-  sodium: number;
-  category: string;
-  isCustom: boolean;
-}): FoodOption {
-  return {
-    id: food.id,
-    name: food.name,
-    brand: food.brand,
-    basis: food.basis,
-    servingSize: food.servingSize,
-    servingUnit: food.servingUnit,
-    servingLabel: food.servingLabel,
-    calories: food.calories,
-    protein: food.protein,
-    carbs: food.carbs,
-    fat: food.fat,
-    fiber: food.fiber,
-    sugar: food.sugar,
-    sodium: food.sodium,
-    category: food.category,
-    isCustom: food.isCustom,
-  };
+/**
+ * Favourites and recents go through the same normaliser as a search result, so
+ * a row rendered from the shortcuts list and the identical row rendered from a
+ * search carry the same serving options, source label and completeness.
+ */
+function toFoodOption(food: FoodItem, isFavorite: boolean, isRecent: boolean): FoodOption {
+  return toResultView({
+    ...rowToNormalizedFood(food),
+    isFavorite,
+    isRecent,
+    origin: isFavorite ? "favorite" : isRecent ? "recent" : food.cached ? "cache" : "local",
+  });
 }
 
 export default async function NutritionPage({
@@ -112,9 +92,14 @@ export default async function NutritionPage({
     totals: meal.totals,
     entries: meal.entries.map((entry) => ({
       id: entry.id,
-      foodName: entry.foodItem.name,
+      // The name recorded at log time wins: a food renamed later must not
+      // rewrite what a past day says was eaten.
+      foodName: entry.foodNameAtLog ?? entry.foodItem.name,
       quantity: entry.quantity,
       unit: entry.unit,
+      units: availableUnits(rowToNormalizedFood(entry.foodItem)),
+      mealType: meal.type,
+      date,
       calories: entry.calories,
       protein: entry.protein,
       carbs: entry.carbs,
@@ -179,8 +164,10 @@ export default async function NutritionPage({
           <SectionCard title="Log food" icon={Search} accent="text-domain-nutrition">
             <FoodSearch
               date={date}
-              favorites={shortcuts.favorites.map(toFoodOption)}
-              recent={shortcuts.recent.map(toFoodOption)}
+              favorites={shortcuts.favorites.map((food) => toFoodOption(food, true, true))}
+              recent={shortcuts.recent.map((food) =>
+                toFoodOption(food, shortcuts.favoriteIds.has(food.id), true),
+              )}
               favoriteIds={Array.from(shortcuts.favoriteIds)}
             />
           </SectionCard>
