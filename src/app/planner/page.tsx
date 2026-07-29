@@ -1,12 +1,15 @@
 import type { Metadata } from "next";
-import { LayoutTemplate } from "lucide-react";
+import Link from "next/link";
+import { ArrowRight, LayoutTemplate } from "lucide-react";
 
 import { PlannerView, type PlannerScope } from "@/components/planner/planner-view";
 import { TemplateBar } from "@/components/planner/template-bar";
 import { DateNav } from "@/components/shared/date-nav";
 import { PageHeader } from "@/components/shared/page-header";
 import { SectionCard } from "@/components/shared/section-card";
+import { Button } from "@/components/ui/button";
 import { isDayKey, monthGridDays, weekRange } from "@/lib/date";
+import { SURFACE_ROLES, surfaceHref } from "@/lib/logic/surfaces";
 import { toScheduleRowItems } from "@/lib/serializers";
 import { extendSeriesFor } from "@/server/series";
 import {
@@ -57,9 +60,18 @@ export default async function PlannerPage({
   return (
     <div className="mx-auto max-w-7xl">
       <PageHeader
-        title="Planner"
-        description="Plan the day, reshape the week, see the month."
-        actions={<DateNav date={date} scope={view} weekStartsOn={weekStartsOn} />}
+        title={SURFACE_ROLES.planner.label}
+        description={`${SURFACE_ROLES.planner.purpose}. Working through the day happens in ${SURFACE_ROLES.today.label}.`}
+        actions={
+          <div className="flex flex-wrap items-center gap-2">
+            <DateNav date={date} scope={view} weekStartsOn={weekStartsOn} todayKey={todayKey} />
+            <Button asChild variant="outline" size="sm">
+              <Link href={surfaceHref("today", date)}>
+                Open in {SURFACE_ROLES.today.label} <ArrowRight />
+              </Link>
+            </Button>
+          </div>
+        }
       />
 
       <div className="space-y-6">
@@ -92,6 +104,7 @@ export default async function PlannerPage({
           weekStartsOn={weekStartsOn}
           dayStartHour={user.dayStartHour}
           dayEndHour={user.dayEndHour}
+          todayKey={todayKey}
         />
       </div>
     </div>

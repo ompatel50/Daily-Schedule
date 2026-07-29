@@ -1,3 +1,4 @@
+import Link from "next/link";
 import type { LucideIcon } from "lucide-react";
 import { ArrowDownRight, ArrowRight, ArrowUpRight } from "lucide-react";
 
@@ -18,6 +19,12 @@ export interface StatCardProps {
   delta?: number;
   /** When lower is better (e.g. resting HR), flip the delta colouring. */
   deltaInverted?: boolean;
+  /**
+   * Turns the whole card into a link to the surface that owns this number. The
+   * dashboard uses it so a summary tile is also the way in; the pages that own
+   * their own numbers leave it off.
+   */
+  href?: string;
 }
 
 export function StatCard({
@@ -30,12 +37,13 @@ export function StatCard({
   progressClassName,
   delta,
   deltaInverted,
+  href,
 }: StatCardProps) {
   const good = delta === undefined ? null : deltaInverted ? delta < 0 : delta > 0;
   const DeltaIcon = delta === undefined || delta === 0 ? ArrowRight : delta > 0 ? ArrowUpRight : ArrowDownRight;
 
-  return (
-    <Card className="p-4">
+  const card = (
+    <Card className={cn("p-4", href && "h-full transition-colors hover:bg-accent/40")}>
       <div className="flex items-start justify-between gap-2">
         <p className="text-xs font-medium uppercase tracking-wide text-muted-foreground">{label}</p>
         {Icon && <Icon className={cn("h-4 w-4 shrink-0", accent)} />}
@@ -66,5 +74,13 @@ export function StatCard({
         <Progress value={progress} className="mt-2 h-1.5" indicatorClassName={progressClassName} />
       )}
     </Card>
+  );
+
+  if (!href) return card;
+
+  return (
+    <Link href={href} className="block rounded-xl focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring">
+      {card}
+    </Link>
   );
 }

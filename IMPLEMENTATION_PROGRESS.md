@@ -4,18 +4,19 @@
 > work in a new session, **read this file first**, then run
 > `git log --oneline -12 && npm test`.
 
-**Branch:** `claude/personal-os-preview-3-upgrade-1gw0gt`
+**Branch:** `claude/personal-os-phase-8-or6v6y`
 
 > Note on branch naming: the task text asked for `feature/personal-os-preview-3`.
 > The session environment mandates development and pushes on a
 > session-assigned `claude/…` branch, and pushing anywhere else is prohibited.
 > All work therefore lives on the designated branch, which serves the same
 > purpose (an isolated feature branch off `main`). Phases 0–6 and 15a were done
-> on `claude/personal-os-preview-3-y6pmoe`, which has since been merged into
-> `main` (PR #3, merge commit `f8391d0`) and deleted.
+> on `claude/personal-os-preview-3-y6pmoe` (PR #3, merge commit `f8391d0`);
+> Phase 7 and the first part of Phase 8 on
+> `claude/personal-os-preview-3-upgrade-1gw0gt` (PR #4, merge commit `d92670e`).
+> Both have been merged into `main` and deleted.
 
-**Last stable commit:** `d5789aa` — Phase 7: stop routines duplicating, and
-finish the recurrence scopes.
+**Last stable commit:** Phase 8 — one job per surface (see the Phase 8 section).
 
 ---
 
@@ -32,7 +33,7 @@ finish the recurrence scopes.
 | 6  | Calendar & insights corrections                    | ✅ done |
 | 7  | Planner duplicate prevention & recurrence          | ✅ done |
 | 15a| Backup coverage for the new tables (pulled forward) | ✅ done |
-| 8  | Dashboard / Today / Planner separation             | 🟡 **started — audit + de-duplication done, separation NOT done** |
+| 8  | Dashboard / Today / Planner separation             | ✅ done |
 | 9  | Nutrition provider architecture & food search      | ⬜ not started |
 | 10 | Workout session system                             | ⬜ not started |
 | 11 | Health imports & health metrics                    | ⬜ not started |
@@ -43,16 +44,16 @@ finish the recurrence scopes.
 | 16 | Accessibility, responsiveness, performance         | ⬜ not started |
 | 17 | Full testing & polish                              | ⬜ not started |
 
-**Current phase:** 8 — Dashboard / Today / Planner separation (**part done, see
-below — the phase is not finished and is not marked finished**)
+**Current phase:** 9 — Nutrition provider architecture & food search (**not
+started**)
 
 **The task's stated highest-priority milestone is complete** (central schedule
 engine, scheduled goals, scheduled habits, rest-day behaviour, streaks, day
-score, calendar/insights consistency), and Phase 7 has closed the last
-outstanding bug from the Phase 0 audit. Everything from Phase 8 on is still
-outstanding and the app remains on its pre-upgrade implementations for those
-areas — see "What is NOT done" below, which is deliberately explicit so nothing
-reads as finished when it is not.
+score, calendar/insights consistency). Phase 7 closed the last outstanding bug
+from the Phase 0 audit, and Phase 8 has given Dashboard, Today and Planner one
+job each. Everything from Phase 9 on is still outstanding and the app remains on
+its pre-upgrade implementations for those areas — see "What is NOT done" below,
+which is deliberately explicit so nothing reads as finished when it is not.
 
 ---
 
@@ -91,6 +92,13 @@ reads as finished when it is not.
    **Unified in Phase 5.**
 6. `computeStreaks` — walked calendar days, treated weekly habits as daily.
    **Removed in Phase 4.**
+7. `scoreTone` — the score's colour bands, hand-copied into the dashboard, Today
+   and the calendar day detail. **Two removed in Phase 8 (first part), the third
+   in Phase 8 (this part);** one definition now lives in
+   `src/components/shared/day-score-card.tsx`.
+8. The editable day list itself — Today and `/planner?view=day` rendered the same
+   `DaySchedule` with no reason to prefer either. **Resolved in Phase 8:** still
+   one component, now with a declared posture per surface.
 
 ### Bugs confirmed by reading the code, and their status
 
@@ -102,9 +110,11 @@ reads as finished when it is not.
 | Score divided by all planner items and returned 0 for an untracked day | ✅ fixed (Phase 5) |
 | No score explanation anywhere | ✅ fixed (Phase 5) |
 | `Goal` unique on `(userId, domain, metric, period)` blocked two workout goals | ✅ fixed (Phase 1) |
-| Timezone stored but never used; `today()` used the host clock | ✅ fixed (Phase 6) |
+| Timezone stored but never used; `today()` used the host clock | ✅ fixed **server-side** (Phase 6); the display/navigation helpers were still on the host clock and are fixed for Dashboard / Today / Planner / Calendar / topbar in Phase 8 — see "What is NOT done" #11 for the rest |
 | `workoutMinuteGoal = weeklyGoal * 45 / 7` — an invented constant | ✅ removed (Phase 5) |
 | `applyScheduleTemplate` had no duplicate protection | ✅ fixed (Phase 7) |
+| Today, the Dashboard and the Planner were three views of the same editable day | ✅ fixed (Phase 8) |
+| The Today page rendered the title "Yesterday" when the host and user timezones disagreed | ✅ fixed (Phase 8) |
 
 ### Safety steps performed
 
@@ -191,6 +201,36 @@ reads as finished when it is not.
    zero-length items, endpoint-touching ranges and skipped items are all
    excluded. A *completed* item still counts, because it did occupy the time.
 
+10. **Surface responsibilities are data, not prose.** (Phase 8) The split
+    between Dashboard, Today and Planner is declared once in
+    `src/lib/logic/surfaces.ts` — an ownership table plus a per-surface
+    capability record — and read by the pages, the day list, the row menu, the
+    edit dialog, the sidebar and the command palette. A design decision written
+    only in a document drifts the first time someone adds a button; one the
+    components read, and that a test asserts is unambiguous, does not.
+
+11. **One day list with two postures, not two day lists.** (Phase 8) Today and
+    the Planner render the same `DaySchedule` against the same server actions;
+    a `surface` prop selects which affordances it offers. Forking it would have
+    been the shortest path and would have recreated exactly the duplication this
+    upgrade exists to remove. The same flag (`seriesActions`) rides through
+    `ScheduleRow` and `ScheduleItemDialog`.
+
+12. **A summary may repeat a fact; it may not repeat an interaction.**
+    (Phase 8) Three surfaces describing the same day will name some of the same
+    numbers — that is what a summary is. The rule applied instead: only one
+    surface may let you *change* a given thing, and where a fact appears twice
+    it appears at a different altitude with a link to its owner. Hence the
+    dashboard's tiles moved to a rolling week with today as the hint, and its
+    habit checklist became a read-only list.
+
+13. **The host clock is a fallback, not a source of truth.** (Phase 8) The
+    day-relative helpers in `src/lib/date.ts` take the reference day as an
+    argument; the surfaces pass the day the server resolved from the user's
+    timezone. The host clock remains the default only so the change did not have
+    to touch every component at once — see "What is NOT done" for what still
+    reads it.
+
 ---
 
 ## Database changes
@@ -270,8 +310,10 @@ prisma/migrations-data/002-template-source-keys.ts   sourceKey backfill
 src/lib/logic/planner.ts                      routine identity + overlaps (pure)
 tests/planner.test.ts                         28 tests
 
-Phase 8 (partial):
+Phase 8:
 src/components/shared/day-score-card.tsx      the one day-score card + scoreTone
+src/lib/logic/surfaces.ts                     who owns what (pure)
+tests/surfaces.test.ts                        17 tests
 ```
 
 ## Files removed
@@ -295,14 +337,14 @@ npx prisma db push --accept-data-loss   # additive; verified no data loss
 npm run db:migrate        # twice — second run is a no-op
 npm run db:seed           # twice — planner data does not duplicate
 npm run typecheck         # PASS
-npm test                  # PASS 253/253
+npm test                  # PASS 276/276
 npm run build             # PASS
-npm run start             # all 9 routes 200, no server errors
+npm run start             # all 11 routes 200, no server errors
 ```
 
 ## Tests passing
 
-253 tests across 11 files. 173 of them are new and cover business behaviour, not
+276 tests across 12 files. 196 of them are new and cover business behaviour, not
 rendering:
 
 * `tests/schedule.test.ts` (68) — every schedule mode; both week starts; DST;
@@ -330,6 +372,21 @@ rendering:
   found, endpoint-touching and separated blocks not, all-day / zero-length /
   no-duration / skipped items excluded, completed items still counted, one item
   clashing with several, and an empty or single-item day finding nothing.
+* `tests/surfaces.test.ts` (17) — **Phase 8.** Every responsibility owned by
+  exactly one surface; none unclaimed; none declared outside the known list;
+  the three surfaces' owned sets disjoint and together total; execution on
+  Today and structure on the Planner; the dashboard owning neither. Plus the
+  capability split: every planning affordance true on the planner and false on
+  Today, every execution affordance true on Today, completion deliberately kept
+  on both, and the two lists together covering each capability exactly once.
+  Plus hand-offs: the date travelling to the owning surface, omitted when
+  absent, never attached to the dashboard, and the sidebar copy for all three
+  surfaces matching the purpose declared in the ownership table.
+* `tests/date.test.ts` (+6) — **Phase 8.** Relative-day labels and
+  past/today/future resolved against a **supplied** reference day rather than
+  the host clock, including the exact regression (host on 2026-07-29, user on
+  2026-07-28) that had the Today page titled "Yesterday"; a day being neither
+  past nor future on itself; and month and year boundaries.
 
 ## Tests failing
 
@@ -349,13 +406,56 @@ Run against the seeded database with `npm run build && npm run start`.
 | 4 — Routine duplication | ✅ **Fixed and confirmed end to end in a real browser.** Applying "Sunday reset" to an empty day wrote 4 rows (`1:0 1:1 1:2 1:3`). Applying it again wrote **nothing** and opened an "Already applied" dialog offering all four choices. Keep → still 4 rows. Add another copy → 8 rows (`… 2:0 2:1 2:2 2:3`). Replace → back to 4 rows keyed from `1:0`. Row counts were read from the database after each step, not from the screen. Zero console errors throughout. |
 | 5 — Food search | ❌ Not addressed yet — Phase 9. |
 | 6 — Workout session | ❌ Not addressed yet — Phase 10. |
-| 7 — Score consistency | ✅ Dashboard, Today and the calendar detail render byte-identical explanations for the same date (`43% — 7 of 22 applicable opportunities met`, 3 exclusions). Insights reports the same window in scheduled opportunities. |
+| 7 — Score consistency | ✅ Dashboard, Today and the calendar detail render byte-identical explanations for the same date. Re-confirmed after the Phase 8 rework: on 2026-07-28 all three read `94` and `94% — 15 of 18 applicable opportunities met, weighting 3 categories equally. 6 items were excluded and are listed below.` Insights reports the same window in scheduled opportunities. |
+| 10 — Surface separation (Phase 8) | ✅ Each of the three surfaces offers only what it owns, verified in a real browser — see the Phase 8 table under browser verification. |
 | 8 — Demo data removal | ❌ Not addressed yet — Phase 12. |
 | 9 — Backup round-trip | ⚠️ **Partly.** Export verified in a real browser: format v2 with `scheduleRules=15`, `scheduleRuleDays=21`, a checksum, the app version and the user's timezone. A full export→modify→restore-into-a-clean-database round trip has **not** been executed end to end. |
 
 ### Browser verification (Playwright + Chromium)
 
 Driven against the running production build.
+
+**Phase 8 additions** — all 11 routes returned 200 with **zero console errors,
+zero console warnings and zero uncaught page errors** across every check below.
+
+*Separation, observed rather than assumed:*
+
+| Check | Dashboard | Today | Planner |
+|---|---|---|---|
+| Interactive checkboxes | **0** | 10 | present |
+| Row action menus | **0** | present | present |
+| "New item" buttons | **0** | **0** | 1 |
+| Timeline / time grid | none | **none** | present |
+| Routine bar | none | **none** | 1 |
+| Overlap row badges (2026-07-15) | — | **0** | **2** |
+| Overlap day banner (2026-07-15) | — | **0** | "1 overlapping pair of blocks on this day" |
+| View tabs | — | **none** | Day / Week / Month |
+
+* **Series scopes on a recurring item** (2026-07-28, seeded weekly series):
+  planner row menu offers `Edit · Push to tomorrow · Skip · Delete · Delete this
+  and future · Delete whole series`; Today's offers `Edit · Push to tomorrow ·
+  Skip · Delete` — the two series scopes are absent. The planner's edit dialog
+  renders the "Apply changes to" selector and the `Delete…` dropdown; Today's
+  renders neither, just a plain `Delete`.
+* **Hand-offs land where they claim**, each click followed to its final URL:
+  Today "Plan this day" → `/planner?date=2026-07-28`; planner "Open in Today"
+  from 2026-07-31 → `/today?date=2026-07-31` titled "Friday" (the date
+  survives); dashboard schedule tile, "Tick them off in Today" and "Open today"
+  → `/today`; calendar detail "Open in Today" → `/today?date=2026-07-28`.
+* **Execution still works**: ticking an item on Today flipped it
+  `checked → unchecked` and back through the real server action; quick add opens
+  from Today; the planner's new-item dialog still offers the full repeat editor.
+* **Score agreement across surfaces, same date (2026-07-28):** dashboard ring
+  `94`, Today ring `94`, and Today's explanation is byte-identical to the
+  calendar day detail's — `94% — 15 of 18 applicable opportunities met,
+  weighting 3 categories equally. 6 items were excluded and are listed below.`
+* **Timezone fix confirmed**: with the user in `America/New_York` and the host
+  on UTC, the Today page title went from **"Yesterday"** to **"Today"**, the
+  topbar from "Wednesday, July 29" to "Tuesday, July 28" on all three surfaces,
+  and the DateNav "Today" button is now disabled on the user's today and
+  navigates to `/today` (not the host's tomorrow) from another date.
+* **0px horizontal overflow** on `/`, `/today` and `/planner` at both 900px and
+  1280px viewports.
 
 **Phase 7 additions:**
 
@@ -435,6 +535,28 @@ These are stated plainly so nothing reads as finished when it is not:
 9. `getDayScores` over a range calls `getDayScore` per day, which is several
    queries per day. Fine for a month; it should be batched before anything asks
    for a year. Not yet a user-visible problem.
+10. **`getDayOverview` is still called by both `/` and `/today`.** The Phase 8
+    audit listed this as a cost worth removing. It was **not** removed: the
+    dashboard genuinely needs the habit views, the score and the day's records,
+    and the only ways to make it cheaper are a second read model (which is the
+    duplication this upgrade exists to delete) or request-level caching, which
+    does not help across two separate page loads anyway. The separation is now
+    about responsibility, not query count. Left as a deliberate non-goal.
+11. **The host-clock fix is partial.** `isToday` / `isPast` / `isFuture` /
+    `relativeDayLabel` now accept a reference day, and the Dashboard, Today,
+    Planner, Calendar and the topbar pass the user's. Still on the host clock:
+    `consistency-heatmap.tsx`, `quick-add-dialog.tsx`, `template-bar.tsx`,
+    `workout-manager.tsx`, `habit-dialog.tsx` (new-habit start date) and the
+    `ui-store` default context date. None of them decide a score; they mislabel
+    a day for the hours the two zones disagree. Finishing this belongs with the
+    accessibility/polish work in Phase 16/17.
+12. **There is still no rendering test.** The Phase 8 separation is enforced by
+    `tests/surfaces.test.ts` at the level of the ownership *declaration* — if a
+    future edit adds `conflicts` to Today's `owns`, or flips a planning
+    capability on, the suite fails. It cannot catch a component that ignores the
+    declaration and renders the button anyway; that was checked in a browser and
+    recorded above. A component-level suite belongs in Phase 17 with the
+    database-backed integration tests.
 
 ---
 
@@ -474,17 +596,23 @@ integration suite is a real gap and belongs in Phase 17.
 
 ### What the three surfaces actually render (audited, not assumed)
 
+Before → after. The "after" column is what the browser actually renders now,
+checked with Playwright rather than assumed.
+
 | | `/` dashboard | `/today` | `/planner` |
 |---|---|---|---|
-| Server query | `getDayOverview` + `getConsistencyWindow` + 2× `getWindowStats` | `getDayOverview` | `getScheduleItems` + `getScheduleTemplates` |
-| Stat grid | 4 cards (schedule, habits, calories, workouts/wk) | 4 cards (schedule, habits, calories, training) — 3 of 4 are the same metric | none |
-| Day list | read-only preview, next 5 | **editable** `DaySchedule` | **editable** `DaySchedule` |
-| Timeline | none | yes (tab) | yes (side panel) |
+| Stat grid **was** | 4 cards (schedule, habits, calories, workouts/wk) | 4 cards (schedule, habits, calories, training) — 3 of 4 the same metric | none |
+| Stat grid **now** | 4 cards, **rolling 7 days**, today as the hint, each a link out | unchanged — today's counts, which Today owns | none |
+| Day list **was** | read-only preview, next 5 | **editable** `DaySchedule` | **editable** `DaySchedule` — identical |
+| Day list **now** | read-only preview, links to Today | `DaySchedule surface="today"` — execution posture | `DaySchedule surface="planner"` — full |
+| Timeline | none | ~~tab~~ **removed** | side panel (sole owner) |
+| Conflicts | none | ~~row badges~~ **removed** | row badges **+ day banner** |
+| Series scopes | none | ~~6 in menu + dialog~~ **removed** | all 6 (unchanged) |
 | Day score card | ring + 3 mini stats | ring + explanation line | none |
-| Habits | `HabitChecklist`, capped at 8 | `HabitChecklist`, all | none |
+| Habits | ~~`HabitChecklist`, capped at 8~~ → **read-only list** | `HabitChecklist`, all | none |
 | Also | 2 charts, quick actions, health rows | meals, workouts, journal, protein | week/month grids, routines |
 
-### Duplication confirmed and removed
+### Duplication confirmed and removed (first part of the phase)
 
 1. **`scoreTone` was copy-pasted verbatim** into `src/app/page.tsx` and
    `src/app/today/page.tsx` — two definitions of the score's colour bands, the
@@ -503,33 +631,121 @@ Verified after the change: 9/9 routes return 200, the dashboard and Today
 render the **same** ring value for the same date (94%), the "Why this score?"
 trigger is present on both, and there are zero console errors or warnings.
 
-### What Phase 8 still has to do — NOT done
+A **third** copy of `scoreTone` survived that pass, inlined in
+`src/components/calendar/day-detail.tsx`. It is removed in the second part
+below.
 
-The de-duplication above is housekeeping. The actual phase — giving each surface
-a distinct job — has **not** been started:
+### The decision, recorded
 
-* `/today` and `/planner?view=day` still both render the same editable
-  `DaySchedule` for the same date. A user still has no reason to prefer one.
-* The dashboard's stat grid and Today's stat grid still show three of the same
-  four metrics.
-* `getDayOverview` is called by both `/` and `/today`; a user hitting both pays
-  for it twice.
-* No decision has been made or recorded about which surface owns editing, which
-  owns overview, and what the navigation should imply. That decision is the
-  substance of Phase 8 and should be made explicitly before more code moves.
+The previous session left the split "proposed, to be confirmed". It is now
+decided and implemented, and it lives in code rather than only in prose:
+`src/lib/logic/surfaces.ts` is the one declaration of who owns what, and
+`tests/surfaces.test.ts` fails if two surfaces ever claim the same job.
+
+| Surface | Owns | Does **not** do |
+|---|---|---|
+| **Dashboard** `/` | The day at a glance, recent trends, getting to the right screen | Nothing that changes the day. No checkboxes, no row menus, no new-item dialog. |
+| **Today** `/today` | Working through today, logging what happened (meals, habits, journal, training) | Structured creation, recurrence, series scopes, time blocking, overlap warnings, week/month. |
+| **Planner** `/planner` | Building and shaping the schedule, recurrence and series, routines, overlaps, the timeline, week and month | Meals, journal, habit ticking — the execution surface owns those. |
+
+**The principle applied.** Three surfaces that all describe the same day will
+always mention some of the same facts; a summary that refused to name a number
+would be useless. What confuses people is duplicated **depth** and duplicated
+**interaction** — two screens that both let you restructure the day, two lists
+to keep in sync, two stat grids of the same four numbers with no reason to
+prefer either. Those are what Phase 8 removed. Where the same fact does appear
+twice it is now stated at a different altitude and links to its owner.
+
+### What changed, surface by surface
+
+**Dashboard** — read-only, and now genuinely a command center:
+
+* The four stat tiles were the same three metrics Today shows. They now read
+  **rolling 7 days** with today as the hint (`44/54` · "8 of 10 done today"),
+  and each tile is a **link** to the surface that owns it. Every number comes
+  from `getWindowStats` / `getDayOverview` — the same services as before.
+* The habit checklist is gone. It was a second, **truncated** copy of Today's
+  (capped at 8, so habits nine and up were unreachable) and it meant the same
+  habit could be ticked in two places. It is now a read-only status list with
+  "Tick them off in Today".
+* "What's next" points at **Today**, not the planner; its empty state points at
+  the **planner**, because an empty day is a planning problem.
+* Result: the dashboard renders **zero** checkboxes, **zero** row menus and
+  **zero** new-item buttons. Quick add and the command palette stay — capture
+  and navigation are the command center's job.
+
+**Today** — the one place you finish a day:
+
+* The List/Timeline tabs are gone. The timeline was byte-identical to the
+  planner's side panel; time blocking belongs to the planner and Today now
+  links there ("Plan this day", and a "Planner →" action on the section).
+* The day list keeps completion, skip, push-to-tomorrow, quick capture,
+  backlog reordering and rollover. It **loses** structured creation, overlap
+  warnings and the two series-delete scopes.
+* Editing an item from Today always means *this occurrence*. The edit dialog
+  hides the scope selector and the repeat editor and says where to go instead,
+  rather than silently narrowing a scope the form appears to offer.
+
+**Planner** — structure, and now the sole owner of conflicts:
+
+* Keeps everything: new item, recurrence, all three edit and delete scopes,
+  routines, the timeline, week and month.
+* Gained a day-level overlap banner ("1 overlapping pair of blocks on this
+  day"), computed with the **same** `findConflicts` the row badges use. Now
+  that Today no longer shows overlaps, the planner surfaces them at the top
+  rather than only as a badge you have to scroll to find.
+* The header states the split in words: "Shape schedules, routines, recurrence
+  and time blocks. Working through the day happens in Today."
+
+**Shared, not forked.** `DaySchedule` is still **one** component rendered by
+both surfaces against the same server actions. A `surface` prop selects a
+posture from `DAY_LIST_CAPABILITIES`; there is no second implementation and no
+copied branch logic. `ScheduleRow` and `ScheduleItemDialog` take the same
+`seriesActions` flag. The sidebar and command-palette wording for all three
+surfaces is read from `SURFACE_ROLES`, so the navigation cannot describe a
+screen as doing something it no longer does.
+
+### A third copy of the score colour bands, removed
+
+`src/components/calendar/day-detail.tsx` still had the 80/50 colour ladder
+hand-inlined — a third copy, missed when the dashboard and Today were unified.
+It now calls the shared `scoreTone`. This is the completion of the earlier
+de-duplication, not a repeat of it.
+
+### The host-clock bug this uncovered
+
+Browser verification found the Today page titled **"Yesterday"**. Phase 6 fixed
+the *server* path (`getToday()` resolves the user's timezone), but the display
+and navigation helpers in `src/lib/date.ts` still read the host clock. With the
+seeded user in `America/New_York` and the host on UTC, the app was a day apart
+from itself for several hours a day.
+
+This became load-bearing in Phase 8 because the new hand-offs carry a date:
+`DateNav` stripped `?date=` whenever the target matched the *host* today, so
+"Plan this day" and the "Today" button could land on a different day than the
+one you left.
+
+Fixed by giving `isToday` / `isPast` / `isFuture` / `relativeDayLabel` an
+optional reference day (host clock still the default, so no caller broke) and
+threading the server-resolved day into the components where the three surfaces
+would otherwise disagree: `DateNav`, `DaySchedule`, `Timeline`, `WeekGrid`,
+`MonthGrid`, the Today page title, the calendar's date nav, and the topbar —
+which was insisting it was Wednesday above a page correctly showing Tuesday.
+
+**Deliberately not fixed here** (pre-existing, outside the separation, and
+listed under "What is NOT done"): `consistency-heatmap`, `quick-add-dialog`,
+`template-bar`, `workout-manager`, `habit-dialog` and the `ui-store` default
+still use the host clock.
 
 ---
 
 ## Exact next step
 
-**Finish Phase 8 — decide and implement the separation.**
-
-Proposed split, to be confirmed before implementing: dashboard = cross-domain
-overview and trends, read-only, links out; Today = the single focused "what
-now" surface that owns the editable day plus meals/habits/journal; Planner =
-scheduling and structure (week/month, routines, recurrence) rather than a second
-copy of Today. Under that split the planner's day view keeps the editable list
-because editing is its job, and the dashboard's day preview stays read-only.
+**Phase 9 — nutrition provider architecture & food search.** Nothing from it
+has been started. `searchFoods` in `src/server/queries.ts` still searches only
+the bundled table plus the user's custom foods; there is no provider
+abstraction, no USDA or Open Food Facts client, and `USDA_FDC_API_KEY` is not
+referenced anywhere in the repository.
 
 Resume with:
 

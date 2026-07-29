@@ -1,8 +1,8 @@
 import type { Metadata } from "next";
-import { Apple, CheckCircle2, Dumbbell, Repeat } from "lucide-react";
+import Link from "next/link";
+import { Apple, ArrowRight, CheckCircle2, Dumbbell, Repeat } from "lucide-react";
 
 import { DaySchedule } from "@/components/planner/day-schedule";
-import { Timeline } from "@/components/planner/timeline";
 import { HabitChecklist } from "@/components/habits/habit-checklist";
 import { JournalCard } from "@/components/shared/journal-card";
 import { DateNav } from "@/components/shared/date-nav";
@@ -12,9 +12,10 @@ import { SectionCard } from "@/components/shared/section-card";
 import { StatCard } from "@/components/shared/stat-card";
 import { EmptyState } from "@/components/shared/empty-state";
 import { Badge } from "@/components/ui/badge";
-import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
+import { Button } from "@/components/ui/button";
 import { MEAL_TYPE_META, WORKOUT_TYPE_META, type MealType, type WorkoutType } from "@/lib/enums";
 import { formatDuration, isDayKey, relativeDayLabel } from "@/lib/date";
+import { SURFACE_ROLES, surfaceHref } from "@/lib/logic/surfaces";
 import { cn, formatNumber, pct } from "@/lib/utils";
 import {
   getToday, getDayOverview } from "@/server/queries";
@@ -51,7 +52,7 @@ export default async function TodayPage({
   return (
     <div className="mx-auto max-w-7xl">
       <PageHeader
-        title={relativeDayLabel(date)}
+        title={relativeDayLabel(date, todayKey)}
         description={
           nextUp
             ? `Next up: ${nextUp.title}`
@@ -59,7 +60,13 @@ export default async function TodayPage({
               ? "Everything on the schedule is handled."
               : "Nothing scheduled yet — plan the day below."
         }
-        actions={<DateNav date={date} weekStartsOn={user.weekStartsOn === 0 ? 0 : 1} />}
+        actions={
+          <DateNav
+            date={date}
+            weekStartsOn={user.weekStartsOn === 0 ? 0 : 1}
+            todayKey={todayKey}
+          />
+        }
       />
 
       <div className="stat-grid mb-6">
@@ -109,25 +116,22 @@ export default async function TodayPage({
             title="Your day"
             icon={CheckCircle2}
             accent="text-domain-planner"
-            description={`${overview.planned} ${overview.planned === 1 ? "item" : "items"} scheduled`}
+            description={
+              overview.planned === 0
+                ? "Nothing scheduled"
+                : `${remaining.length} of ${overview.planned} still to do`
+            }
+            action={
+              // Today runs the day; laying it out on a time axis, reshaping a
+              // series or resolving overlaps is the planner's job.
+              <Button asChild variant="ghost" size="sm">
+                <Link href={surfaceHref("planner", date)}>
+                  Planner <ArrowRight />
+                </Link>
+              </Button>
+            }
           >
-            <Tabs defaultValue="list">
-              <TabsList>
-                <TabsTrigger value="list">List</TabsTrigger>
-                <TabsTrigger value="timeline">Timeline</TabsTrigger>
-              </TabsList>
-              <TabsContent value="list">
-                <DaySchedule date={date} items={rows} />
-              </TabsContent>
-              <TabsContent value="timeline">
-                <Timeline
-                  date={date}
-                  items={rows}
-                  startHour={user.dayStartHour}
-                  endHour={user.dayEndHour}
-                />
-              </TabsContent>
-            </Tabs>
+            <DaySchedule date={date} items={rows} surface="today" todayKey={todayKey} />
           </SectionCard>
 
           <SectionCard

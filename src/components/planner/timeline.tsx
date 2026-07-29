@@ -21,23 +21,26 @@ export function Timeline({
   items,
   startHour = 6,
   endHour = 22,
+  todayKey,
   onSelect,
 }: {
   date: string;
   items: ScheduleRowItem[];
   startHour?: number;
   endHour?: number;
+  /** "Today" in the user's timezone; see `DateNav`. */
+  todayKey?: string;
   onSelect?: (item: ScheduleRowItem) => void;
 }) {
   const [now, setNow] = React.useState<number | null>(null);
 
   // Client-only so SSR output stays deterministic.
   React.useEffect(() => {
-    if (!isToday(date)) return;
+    if (!isToday(date, todayKey ?? undefined)) return;
     setNow(nowMinute());
     const interval = setInterval(() => setNow(nowMinute()), 60_000);
     return () => clearInterval(interval);
-  }, [date]);
+  }, [date, todayKey]);
 
   const timed = React.useMemo(
     () =>

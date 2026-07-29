@@ -67,11 +67,18 @@ export function ScheduleItemDialog({
   onOpenChange,
   item,
   defaultDate,
+  seriesActions = true,
 }: {
   open: boolean;
   onOpenChange: (open: boolean) => void;
   item?: ScheduleItemDraft | null;
   defaultDate: string;
+  /**
+   * Offer the three series scopes on save and delete. False on Today, where an
+   * edit always means "this occurrence"; reshaping the series is the planner's
+   * job and the dialog says so rather than silently narrowing the scope.
+   */
+  seriesActions?: boolean;
 }) {
   const router = useRouter();
   const isEdit = Boolean(item?.id);
@@ -170,7 +177,8 @@ export function ScheduleItemDialog({
     });
   }
 
-  const isSeries = Boolean(item?.seriesId) || Boolean(parseRule(item?.recurrenceRule ?? null));
+  const recurring = Boolean(item?.seriesId) || Boolean(parseRule(item?.recurrenceRule ?? null));
+  const isSeries = recurring && seriesActions;
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
@@ -286,6 +294,23 @@ export function ScheduleItemDialog({
             </div>
           </div>
 
+          {!seriesActions ? (
+            // Today edits one occurrence. The rule is shown so nothing is
+            // hidden, but changing it reshapes every future day, which is the
+            // planner's job — and the form says where to go rather than
+            // silently accepting an edit with a narrower scope than it looks.
+            <div className="space-y-1 rounded-lg border p-3">
+              <div className="flex items-center justify-between gap-2">
+                <Label>Repeat</Label>
+                <span className="text-xs text-muted-foreground">{describeRule(rule, date)}</span>
+              </div>
+              <p className="text-xs text-muted-foreground">
+                {recurring
+                  ? "Changes here apply to this day only. Edit the series in the planner."
+                  : "Set up a repeat in the planner."}
+              </p>
+            </div>
+          ) : (
           <div className="space-y-2 rounded-lg border p-3">
             <div className="flex items-center justify-between gap-2">
               <Label>Repeat</Label>
@@ -347,6 +372,7 @@ export function ScheduleItemDialog({
               </div>
             )}
           </div>
+          )}
 
           <div className="space-y-1.5">
             <Label htmlFor="item-notes">Notes</Label>

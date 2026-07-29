@@ -65,7 +65,11 @@ Node 20+. Everything else is npm dependencies — no Docker, no database server.
 
 ## What's in it
 
-### 1. Planner — `/planner`, `/today`
+### 1. Planner — `/planner`
+
+The planner **shapes** the schedule; Today **runs** it and the dashboard
+**summarises** it. Each of the three owns a distinct job, declared once in
+`src/lib/logic/surfaces.ts` — see "Three surfaces, three jobs" below.
 
 * Day, week and month views (`?view=day|week|month`, `?date=YYYY-MM-DD`).
 * Items support title, time block or all-day, category, priority, notes, recurrence, completion
@@ -147,12 +151,44 @@ Node 20+. Everything else is npm dependencies — no Docker, no database server.
   rate.
 * Manual health metric entry.
 
-### 7. Dashboard — `/`
+### 7. Today — `/today`
 
-The home screen: today's schedule, habits, calories and training at a glance, a day score ring,
-what's next, 30-day consistency, weekly training load, health highlights and quick actions.
+The screen you work from. Your day as a checklist you tick off, the habits due today, what you
+ate, what you trained, the day score with its explanation, and a note. One-line quick add is here
+because capture should never be a trip; building the structure of a day — times, categories,
+recurrence, routines — is the planner's job, and Today links straight to it.
 
-### 8. Productivity layer
+### 8. Dashboard — `/`
+
+The home screen, and deliberately **read-only**: how the last seven days are going with today as
+the hint, a day score ring, what's next, 30-day consistency, weekly training load, habit status,
+health highlights and quick actions. Every tile links to the screen that owns it. You cannot tick
+anything off from here — that happens in Today.
+
+### Three surfaces, three jobs
+
+Dashboard, Today and Planner all talk about the same day, so they name some of the same numbers.
+What they never do is offer the same *interaction* twice:
+
+| | Dashboard `/` | Today `/today` | Planner `/planner` |
+|---|---|---|---|
+| Summarises the day | ✅ | | |
+| Recent trends | ✅ | | |
+| Routes you to the right screen | ✅ | | |
+| Tick items off, skip, push to tomorrow | | ✅ | ✅ |
+| Meals, journal, habit ticking | | ✅ | |
+| New item with times, category, recurrence | | | ✅ |
+| Series scopes (this / this and future / all) | | | ✅ |
+| Routines | | | ✅ |
+| Overlap warnings | | | ✅ |
+| Timeline, week and month | | | ✅ |
+
+Today and the planner render the **same** day-list component against the same server actions —
+a `surface` prop chooses which affordances it offers, so there is no second implementation to
+drift. The ownership table is in `src/lib/logic/surfaces.ts`, and `tests/surfaces.test.ts` fails
+if two surfaces ever claim the same job.
+
+### 9. Productivity layer
 
 * **Command palette** (`⌘K` / `Ctrl K`) — searches across schedule items, workouts, foods, habits
   and journal entries, plus actions and navigation.
@@ -189,6 +225,7 @@ src/
       day-score.ts   # the day score *and* its explanation
       recurrence.ts  # planner-item recurrence (materialised occurrences)
       planner.ts     # routine-application identity + overlap detection
+      surfaces.ts    # which screen owns which job (dashboard / today / planner)
       nutrition.ts   workouts.ts   scoring.ts   quick-add.ts   insights.ts
     data/foods.ts        # the bundled food database
   server/
@@ -225,6 +262,14 @@ exception so a later series-wide edit won't overwrite it.
 **`CalendarDaySummary` is a cache, not truth.** Every write recomputes the affected day's rollup, so
 the heatmap and insights read one small table instead of joining five. It can always be rebuilt from
 scratch (`rebuildSummaries`), which is what import and restore do.
+
+**Screens own jobs, and the ownership is data.** Dashboard, Today and Planner each have exactly one
+role, declared in `lib/logic/surfaces.ts` and read by the pages, the day list, the row menu, the
+sidebar and the command palette. A split written only in a document drifts the first time someone
+adds a button. Note what the rule is *not*: three screens describing the same day will name some of
+the same numbers — a summary that refused to would be useless. The rule is that only one screen lets
+you **change** a given thing, and a fact shown twice appears at a different altitude with a link to
+its owner.
 
 **The food database ships with the app.** There is no third-party nutrition API. A remote API would
 mean every meal you log leaves your machine, needs an API key, and stops working offline — all of
