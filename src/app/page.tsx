@@ -16,10 +16,9 @@ import {
 import { DashboardQuickActions } from "@/components/dashboard/quick-actions";
 import { HabitChecklist } from "@/components/habits/habit-checklist";
 import { TrendAreaChart, CategoryBarChart } from "@/components/shared/charts";
+import { DayScoreCard } from "@/components/shared/day-score-card";
 import { EmptyState } from "@/components/shared/empty-state";
 import { PageHeader } from "@/components/shared/page-header";
-import { ProgressRing } from "@/components/shared/progress-ring";
-import { ScoreExplanation } from "@/components/shared/score-explanation";
 import { SectionCard } from "@/components/shared/section-card";
 import { StatCard } from "@/components/shared/stat-card";
 import { Badge } from "@/components/ui/badge";
@@ -259,31 +258,13 @@ export default async function DashboardPage() {
         </div>
 
         <div className="space-y-6">
-          <SectionCard
-            title="Day score"
-            icon={Flame}
-            accent="text-emerald-500"
-            action={<ScoreExplanation score={score} />}
-          >
-            <div className="flex flex-col items-center gap-3 py-1">
-              <ProgressRing
-                value={score.score ?? 0}
-                size={112}
-                label={score.score === null ? "—" : `${score.score}`}
-                sublabel={score.score === null ? "open day" : "today"}
-                indicatorClassName={scoreTone(score.score)}
-              />
-              <div className="grid w-full grid-cols-3 gap-2 text-center">
-                <MiniStat label="7d avg" value={`${thisWeek.averageScore}`} />
-                <MiniStat label="Active days" value={`${thisWeek.activeDays}/7`} />
-                <MiniStat
-                  label="Logged"
-                  value={`${thisWeek.loggedDays}/7`}
-                  hint="days with food"
-                />
-              </div>
+          <DayScoreCard score={score} size={112} sublabel="today">
+            <div className="grid w-full grid-cols-3 gap-2 text-center">
+              <MiniStat label="7d avg" value={`${thisWeek.averageScore}`} />
+              <MiniStat label="Active days" value={`${thisWeek.activeDays}/7`} />
+              <MiniStat label="Logged" value={`${thisWeek.loggedDays}/7`} hint="days with food" />
             </div>
-          </SectionCard>
+          </DayScoreCard>
 
           <SectionCard
             title="Habits"
@@ -402,12 +383,4 @@ function summaryLine(planned: number, completed: number, habitsDue: number, habi
   if (planned > 0) parts.push(`${completed} of ${planned} scheduled items done`);
   if (habitsDue > 0) parts.push(`${habitsDone} of ${habitsDue} habits complete`);
   return `${parts.join(" · ")}.`;
-}
-
-/** Colour by band. Never the only signal — the number and text carry it too. */
-function scoreTone(score: number | null): string {
-  if (score === null) return "text-muted-foreground";
-  if (score >= 80) return "text-emerald-500";
-  if (score >= 50) return "text-amber-500";
-  return "text-rose-500";
 }

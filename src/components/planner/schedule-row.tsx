@@ -14,6 +14,7 @@ import {
   Pencil,
   Repeat,
   Trash2,
+  TriangleAlert,
 } from "lucide-react";
 import { toast } from "sonner";
 
@@ -59,11 +60,14 @@ export function ScheduleRow({
   onEdit,
   sortable = false,
   compact = false,
+  conflictsWith,
 }: {
   item: ScheduleRowItem;
   onEdit?: (item: ScheduleRowItem) => void;
   sortable?: boolean;
   compact?: boolean;
+  /** Titles of items whose time range overlaps this one. Informational only. */
+  conflictsWith?: string[];
 }) {
   const router = useRouter();
   const [pending, startTransition] = React.useTransition();
@@ -80,6 +84,14 @@ export function ScheduleRow({
   const skipped = item.status === "skipped";
   const meta = CATEGORY_META[item.category as ScheduleCategory] ?? CATEGORY_META.personal;
   const recurring = Boolean(item.recurrenceRule || item.seriesId);
+
+  // A warning, never a block — double-booking yourself is sometimes deliberate.
+  const conflict =
+    conflictsWith && conflictsWith.length > 0
+      ? conflictsWith.length === 1
+        ? conflictsWith[0]
+        : `${conflictsWith[0]} and ${conflictsWith.length - 1} more`
+      : null;
 
   const act = (fn: () => Promise<{ ok: boolean; error?: string }>, message?: string) =>
     startTransition(async () => {
@@ -160,6 +172,13 @@ export function ScheduleRow({
           ))}
         </div>
 
+        {conflict && (
+          <p className="mt-1 inline-flex items-center gap-1 text-xs text-amber-600 dark:text-amber-500">
+            <TriangleAlert className="h-3 w-3 shrink-0" aria-hidden />
+            <span>Overlaps {conflict}</span>
+          </p>
+        )}
+
         {!compact && item.notes && (
           <p className="mt-1 line-clamp-2 text-xs text-muted-foreground/80">{item.notes}</p>
         )}
@@ -205,12 +224,22 @@ export function ScheduleRow({
             <Trash2 /> Delete
           </DropdownMenuItem>
           {recurring && (
-            <DropdownMenuItem
-              destructive
-              onClick={() => act(() => deleteScheduleItem(item.id, "all"), "Series deleted")}
-            >
-              <Trash2 /> Delete whole series
-            </DropdownMenuItem>
+            <>
+              <DropdownMenuItem
+                destructive
+                onClick={() =>
+                  act(() => deleteScheduleItem(item.id, "future"), "This and future deleted")
+                }
+              >
+                <Trash2 /> Delete this and future
+              </DropdownMenuItem>
+              <DropdownMenuItem
+                destructive
+                onClick={() => act(() => deleteScheduleItem(item.id, "all"), "Series deleted")}
+              >
+                <Trash2 /> Delete whole series
+              </DropdownMenuItem>
+            </>
           )}
         </DropdownMenuContent>
       </DropdownMenu>

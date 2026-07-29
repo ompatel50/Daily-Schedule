@@ -1,14 +1,13 @@
 import type { Metadata } from "next";
-import { Apple, CheckCircle2, Dumbbell, Flame, Repeat } from "lucide-react";
+import { Apple, CheckCircle2, Dumbbell, Repeat } from "lucide-react";
 
 import { DaySchedule } from "@/components/planner/day-schedule";
 import { Timeline } from "@/components/planner/timeline";
 import { HabitChecklist } from "@/components/habits/habit-checklist";
 import { JournalCard } from "@/components/shared/journal-card";
 import { DateNav } from "@/components/shared/date-nav";
+import { DayScoreCard } from "@/components/shared/day-score-card";
 import { PageHeader } from "@/components/shared/page-header";
-import { ProgressRing } from "@/components/shared/progress-ring";
-import { ScoreExplanation } from "@/components/shared/score-explanation";
 import { SectionCard } from "@/components/shared/section-card";
 import { StatCard } from "@/components/shared/stat-card";
 import { EmptyState } from "@/components/shared/empty-state";
@@ -179,23 +178,9 @@ export default async function TodayPage({
         </div>
 
         <div className="space-y-6">
-          <SectionCard
-            title="Day score"
-            icon={Flame}
-            accent="text-emerald-500"
-            action={<ScoreExplanation score={score} />}
-          >
-            <div className="flex flex-col items-center gap-3 py-2">
-              <ProgressRing
-                value={score.score ?? 0}
-                size={116}
-                label={score.score === null ? "—" : `${score.score}`}
-                sublabel={score.score === null ? "open day" : "out of 100"}
-                indicatorClassName={scoreTone(score.score)}
-              />
-              <p className="text-center text-xs text-muted-foreground">{score.explanation}</p>
-            </div>
-          </SectionCard>
+          <DayScoreCard score={score}>
+            <p className="text-center text-xs text-muted-foreground">{score.explanation}</p>
+          </DayScoreCard>
 
           <SectionCard
             title="Habits"
@@ -272,19 +257,3 @@ export default async function TodayPage({
   );
 }
 
-/** Colour by band. Never the only signal — the number and text carry it too. */
-function scoreTone(score: number | null): string {
-  if (score === null) return "text-muted-foreground";
-  if (score >= 80) return "text-emerald-500";
-  if (score >= 50) return "text-amber-500";
-  return "text-rose-500";
-}
-
-function scoreMessage(score: number, planned: number): string {
-  if (planned === 0 && score === 0) return "Plan something to start scoring the day.";
-  if (score >= 90) return "Excellent day — everything lined up.";
-  if (score >= 75) return "Strong day. Finish what's left and you're golden.";
-  if (score >= 50) return "Solid progress. A couple of things still open.";
-  if (score > 0) return "Slow start — pick one thing and knock it out.";
-  return "Nothing logged yet today.";
-}

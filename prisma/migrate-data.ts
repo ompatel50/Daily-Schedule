@@ -17,8 +17,9 @@
 import { PrismaClient } from "@prisma/client";
 
 import * as schedules from "./migrations-data/001-schedules";
+import * as templateSourceKeys from "./migrations-data/002-template-source-keys";
 
-const MIGRATIONS = [schedules];
+const MIGRATIONS = [schedules, templateSourceKeys];
 
 async function main() {
   const prisma = new PrismaClient();

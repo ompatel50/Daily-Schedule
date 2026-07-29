@@ -76,7 +76,17 @@ Node 20+. Everything else is npm dependencies — no Docker, no database server.
   overlapping blocks.
 * **Quick add** (`N` anywhere): one text field that understands natural language —
   `Gym 6:30-7:30pm tomorrow !high #fitness`. A live preview shows exactly what will be created.
-* **Routines**: saved multi-item templates you can stamp onto any day in one click.
+* **Routines**: saved multi-item templates you can stamp onto any day in one click. Applying the
+  same routine to the same day twice does **not** silently double it — nothing is written and you
+  are asked whether to keep what's there, replace it with a fresh copy, add a second copy
+  deliberately, or cancel.
+* **Recurring items** can be edited or deleted at three scopes each: this occurrence, this and all
+  future occurrences, or the entire series. Editing one occurrence detaches it, so a later
+  series-wide edit will not overwrite your change. A series edit carries the details across but
+  never the date.
+* **Overlap warnings**: two blocks competing for the same minutes are flagged on the day list.
+  It is a warning, not a block — sometimes double-booking is deliberate. All-day items,
+  back-to-back blocks that merely touch, and skipped items are never flagged.
 * **Roll over**: push everything unfinished from a past day to the next day.
 
 ### 2. Nutrition — `/nutrition`
@@ -178,6 +188,7 @@ src/
       goals.ts       # goal evaluation and completion sources
       day-score.ts   # the day score *and* its explanation
       recurrence.ts  # planner-item recurrence (materialised occurrences)
+      planner.ts     # routine-application identity + overlap detection
       nutrition.ts   workouts.ts   scoring.ts   quick-add.ts   insights.ts
     data/foods.ts        # the bundled food database
   server/
@@ -333,6 +344,9 @@ npm test
   overall total.
 * **Backup** — validation, checksums, older/newer format handling, and an assertion that the
   export and import cover every table in `BACKUP_TABLES`.
+* **Planner** — applying a routine once writes it, applying it again writes nothing, a deliberate
+  second copy still works and never re-uses a key, and overlap detection flags a real clash while
+  ignoring all-day items, back-to-back blocks and skipped items.
 * Plus nutrition serving maths, the natural-language quick-add parser, planner recurrence, and
   day-key/time handling including a DST boundary.
 

@@ -8,13 +8,20 @@ import { type DayKey, daysBetween, shiftDay, today } from "@/lib/date";
 import { expandRule, parseRule, serializeRule, type RecurrenceRule } from "@/lib/logic/recurrence";
 import { parseQuickAdd } from "@/lib/logic/quick-add";
 import {
+  planTemplateApplication,
+  type TemplateApplyMode,
+  type TemplateRow,
+} from "@/lib/logic/planner";
+import {
   fail,
   fromZod,
   quickAddSchema,
   scheduleItemSchema,
   scheduleTemplateSchema,
   succeed,
+  templateApplySchema,
   type ActionResult,
+  type SeriesScope,
 } from "@/lib/validation";
 import { extendSeriesFor, HORIZON_DAYS } from "@/server/series";
 import { recomputeDay } from "@/server/summaries";
@@ -28,6 +35,23 @@ async function touchDays(userId: string, days: DayKey[]) {
     await recomputeDay(userId, day);
   }
 }
+
+/** Prisma's "unique constraint failed" without importing the runtime error class. */
+function isUniqueViolation(error: unknown): boolean {
+  return (
+    typeof error === "object" &&
+    error !== null &&
+    "code" in error &&
+    (error as { code?: unknown }).code === "P2002"
+  );
+}
+
+/** What `applyScheduleTemplate` reports back to the UI. */
+export type ApplyTemplateResult =
+  | { status: "applied"; created: number; removed: number; ordinal: number }
+  /** The routine is already on this day. Nothing was written; ask the user. */
+  | { status: "duplicate"; existing: number; templateName: string; itemCount: number }
+  | { status: "unchanged"; existing: number };
 
 export async function createScheduleItem(input: unknown): Promise<ActionResult<{ id: string }>> {
   const parsed = scheduleItemSchema.safeParse(input);
@@ -107,10 +131,16 @@ export async function quickAddScheduleItem(input: unknown): Promise<ActionResult
   });
 }
 
+/**
+ * Edit an item. On a recurring item `scope` decides how far the change reaches:
+ * this occurrence only, this one and every later one, or the whole series
+ * including the past. Editing a single occurrence detaches it, so a later
+ * series-wide edit does not silently overwrite the user's change.
+ */
 export async function updateScheduleItem(
   input: unknown,
-  scope: "one" | "future" = "one",
-): Promise<ActionResult<{ id: string }>> {
+  scope: SeriesScope = "one",
+): Promise<ActionResult<{ id: string; updated: number }>> {
   const parsed = scheduleItemSchema.safeParse(input);
   if (!parsed.success) return fromZod(parsed.error);
   if (!parsed.data.id) return fail("Missing item id");
@@ -134,6 +164,9 @@ export async function updateScheduleItem(
     completedAt: data.status === "done" ? (existing.completedAt ?? new Date()) : null,
   };
 
+  let updated = 1;
+  const touched: DayKey[] = [existing.date, data.date];
+
   await prisma.$transaction(async (tx) => {
     await tx.scheduleItem.update({
       where: { id: existing.id },
@@ -153,31 +186,40 @@ export async function updateScheduleItem(
       });
     }
 
-    if (scope === "future") {
-      const seriesId = existing.seriesId ?? existing.id;
-      await tx.scheduleItem.updateMany({
-        where: {
-          userId: user.id,
-          isException: false,
-          date: { gt: existing.date },
-          OR: [{ seriesId }, { id: seriesId }],
-        },
-        data: {
-          title: fields.title,
-          notes: fields.notes,
-          startMinute: fields.startMinute,
-          endMinute: fields.endMinute,
-          allDay: fields.allDay,
-          category: fields.category,
-          priority: fields.priority,
-        },
-      });
-    }
+    if (scope === "one") return;
+
+    // Series-wide edits carry the *details* across, never the date — moving
+    // every occurrence onto one day would collapse the series.
+    const seriesId = existing.seriesId ?? existing.id;
+    const where = {
+      userId: user.id,
+      isException: false,
+      id: { not: existing.id },
+      ...(scope === "future" ? { date: { gt: existing.date } } : {}),
+      OR: [{ seriesId }, { id: seriesId }],
+    };
+
+    const affected = await tx.scheduleItem.findMany({ where, select: { date: true } });
+    touched.push(...affected.map((row) => row.date));
+
+    const result = await tx.scheduleItem.updateMany({
+      where,
+      data: {
+        title: fields.title,
+        notes: fields.notes,
+        startMinute: fields.startMinute,
+        endMinute: fields.endMinute,
+        allDay: fields.allDay,
+        category: fields.category,
+        priority: fields.priority,
+      },
+    });
+    updated += result.count;
   });
 
-  await touchDays(user.id, [existing.date, data.date]);
+  await touchDays(user.id, touched);
   revalidateAll();
-  return succeed({ id: existing.id });
+  return succeed({ id: existing.id, updated });
 }
 
 export async function toggleScheduleItem(id: string): Promise<ActionResult<{ status: string }>> {
@@ -266,9 +308,10 @@ export async function reorderScheduleItems(
   return succeed({ count: orderedIds.length });
 }
 
+/** Delete one occurrence, this one and every later one, or the whole series. */
 export async function deleteScheduleItem(
   id: string,
-  scope: "one" | "future" | "all" = "one",
+  scope: SeriesScope = "one",
 ): Promise<ActionResult<{ deleted: number }>> {
   const user = await getCurrentUser();
   const item = await prisma.scheduleItem.findFirst({ where: { id, userId: user.id } });
@@ -348,25 +391,31 @@ export async function saveScheduleTemplate(input: unknown): Promise<ActionResult
   return succeed({ id: template.id });
 }
 
+/**
+ * Stamp a routine onto a day.
+ *
+ * Applying the same routine to the same day twice used to duplicate it
+ * silently. Every row now carries a `sourceKey` unique per
+ * `(user, date, template, key)`, so the second attempt is detected instead:
+ * `mode: "auto"` reports `status: "duplicate"` and writes nothing, and the
+ * caller offers the choice — keep what's there, replace it, or add a second
+ * copy deliberately.
+ */
 export async function applyScheduleTemplate(
   templateId: string,
   date: DayKey,
-): Promise<ActionResult<{ created: number }>> {
+  mode: TemplateApplyMode = "auto",
+): Promise<ActionResult<ApplyTemplateResult>> {
+  const parsedInput = templateApplySchema.safeParse({ templateId, date, mode });
+  if (!parsedInput.success) return fromZod(parsedInput.error);
+
   const user = await getCurrentUser();
   const template = await prisma.scheduleTemplate.findFirst({
-    where: { id: templateId, userId: user.id },
+    where: { id: parsedInput.data.templateId, userId: user.id },
   });
   if (!template) return fail("Template not found");
 
-  let items: Array<{
-    title: string;
-    startMinute?: number | null;
-    endMinute?: number | null;
-    allDay?: boolean;
-    category?: string;
-    priority?: string;
-    notes?: string | null;
-  }>;
+  let items: TemplateRow[];
   try {
     items = JSON.parse(template.items);
   } catch {
@@ -374,37 +423,81 @@ export async function applyScheduleTemplate(
   }
   if (!Array.isArray(items) || items.length === 0) return fail("Template has no items");
 
+  const existing = await prisma.scheduleItem.findMany({
+    where: { userId: user.id, date, templateId: template.id },
+    select: { id: true, sourceKey: true },
+  });
+
+  const plan = planTemplateApplication({ rows: items, existing, mode: parsedInput.data.mode });
+
+  if (plan.action === "ask") {
+    return succeed({
+      status: "duplicate",
+      existing: plan.existing,
+      templateName: template.name,
+      itemCount: items.length,
+    });
+  }
+
+  if (plan.action === "keep" || plan.create.length === 0) {
+    return succeed({ status: "unchanged", existing: plan.existing });
+  }
+
   const maxOrder = await prisma.scheduleItem.aggregate({
     where: { userId: user.id, date },
     _max: { sortOrder: true },
   });
   const offset = (maxOrder._max.sortOrder ?? 0) + 1;
 
-  await prisma.scheduleItem.createMany({
-    data: items.map((item, index) => ({
-      userId: user.id,
-      title: item.title,
-      notes: item.notes ?? null,
-      date,
-      startMinute: item.allDay ? null : (item.startMinute ?? null),
-      endMinute: item.allDay ? null : (item.endMinute ?? null),
-      allDay: Boolean(item.allDay),
-      category: item.category ?? template.category,
-      priority: item.priority ?? "medium",
-      status: "planned",
-      sortOrder: offset + index,
-      templateId: template.id,
-    })),
-  });
+  let created = 0;
+  let removed = 0;
 
-  await prisma.scheduleTemplate.update({
-    where: { id: template.id },
-    data: { useCount: { increment: 1 }, lastUsed: new Date() },
-  });
+  try {
+    await prisma.$transaction(async (tx) => {
+      if (plan.remove.length > 0) {
+        const result = await tx.scheduleItem.deleteMany({
+          where: { id: { in: plan.remove }, userId: user.id },
+        });
+        removed = result.count;
+      }
+
+      const result = await tx.scheduleItem.createMany({
+        data: plan.create.map(({ row, index, sourceKey }) => ({
+          userId: user.id,
+          title: row.title,
+          notes: row.notes ?? null,
+          date,
+          startMinute: row.allDay ? null : (row.startMinute ?? null),
+          endMinute: row.allDay ? null : (row.endMinute ?? null),
+          allDay: Boolean(row.allDay),
+          category: row.category ?? template.category,
+          priority: row.priority ?? "medium",
+          status: "planned",
+          sortOrder: offset + index,
+          templateId: template.id,
+          sourceKey,
+        })),
+      });
+      created = result.count;
+
+      await tx.scheduleTemplate.update({
+        where: { id: template.id },
+        data: { useCount: { increment: 1 }, lastUsed: new Date() },
+      });
+    });
+  } catch (error) {
+    // The unique constraint is the last line of defence — a double-submit that
+    // raced past the read above lands here. Nothing was written; say so rather
+    // than showing a database error.
+    if (isUniqueViolation(error)) {
+      return succeed({ status: "unchanged", existing: plan.existing });
+    }
+    throw error;
+  }
 
   await touchDays(user.id, [date]);
   revalidateAll();
-  return succeed({ created: items.length });
+  return succeed({ status: "applied", created, removed, ordinal: plan.ordinal });
 }
 
 export async function deleteScheduleTemplate(id: string): Promise<ActionResult<null>> {
