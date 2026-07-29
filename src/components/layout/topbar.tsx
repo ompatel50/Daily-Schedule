@@ -17,7 +17,7 @@ import {
 import { ThemeToggle } from "@/components/layout/theme-toggle";
 import { useUIStore } from "@/store/ui-store";
 
-export function Topbar() {
+export function Topbar({ todayKey }: { todayKey?: string }) {
   const pathname = usePathname();
   const setCommandOpen = useUIStore((state) => state.setCommandOpen);
   const setShortcutsOpen = useUIStore((state) => state.setShortcutsOpen);
@@ -51,8 +51,11 @@ export function Topbar() {
 
       <div className="min-w-0">
         <h1 className="truncate text-base font-semibold leading-tight">{current.label}</h1>
+        {/* The user's day, resolved on the server. Reading the host clock here
+            had the chrome insisting it was Wednesday above a page correctly
+            showing Tuesday. */}
         <p className="hidden truncate text-xs text-muted-foreground sm:block">
-          {formatDayLong(today())}
+          {formatDayLong(todayKey ?? today())}
         </p>
       </div>
 

@@ -8,7 +8,11 @@ import {
   formatTimeRange,
   fromDayKey,
   isDayKey,
+  isFuture,
+  isPast,
+  isToday,
   lastNDays,
+  relativeDayLabel,
   minuteToTimeValue,
   monthGridDays,
   parseTimeToMinute,
@@ -88,6 +92,57 @@ describe("ranges", () => {
   it("reports the weekday", () => {
     expect(weekdayOf("2026-03-02")).toBe(1); // Monday
     expect(weekdayOf("2026-03-08")).toBe(0); // Sunday
+  });
+});
+
+/**
+ * The server resolves "today" from the user's configured timezone; the host
+ * clock can be a day off. Every helper that decides past / today / future has
+ * to be able to take that day as an argument, or the Today page ends up titled
+ * "Yesterday" and a hand-off link lands on a different day than the one you
+ * left.
+ */
+describe("relative days against a supplied reference", () => {
+  it("labels the reference day itself as Today", () => {
+    expect(relativeDayLabel("2026-07-28", "2026-07-28")).toBe("Today");
+    expect(relativeDayLabel("2026-07-29", "2026-07-28")).toBe("Tomorrow");
+    expect(relativeDayLabel("2026-07-27", "2026-07-28")).toBe("Yesterday");
+  });
+
+  it("does not call the reference day yesterday when the host clock has moved on", () => {
+    // The exact regression: host is 2026-07-29 (UTC), the user is in
+    // America/New_York where it is still 2026-07-28.
+    expect(relativeDayLabel("2026-07-28", "2026-07-29")).toBe("Yesterday");
+    expect(relativeDayLabel("2026-07-28", "2026-07-28")).toBe("Today");
+  });
+
+  it("names nearby days and dates further out", () => {
+    expect(relativeDayLabel("2026-07-31", "2026-07-28")).toBe("Friday");
+    expect(relativeDayLabel("2026-08-20", "2026-07-28")).toBe("Aug 20");
+  });
+
+  it("answers is-today, is-past and is-future against the reference", () => {
+    expect(isToday("2026-07-28", "2026-07-28")).toBe(true);
+    expect(isToday("2026-07-29", "2026-07-28")).toBe(false);
+
+    expect(isPast("2026-07-27", "2026-07-28")).toBe(true);
+    expect(isPast("2026-07-28", "2026-07-28")).toBe(false);
+    expect(isPast("2026-07-29", "2026-07-28")).toBe(false);
+
+    expect(isFuture("2026-07-29", "2026-07-28")).toBe(true);
+    expect(isFuture("2026-07-28", "2026-07-28")).toBe(false);
+    expect(isFuture("2026-07-27", "2026-07-28")).toBe(false);
+  });
+
+  it("treats the reference day as neither past nor future — a day is not overdue on itself", () => {
+    expect(isPast("2026-07-28", "2026-07-28")).toBe(false);
+    expect(isFuture("2026-07-28", "2026-07-28")).toBe(false);
+  });
+
+  it("crosses month and year boundaries", () => {
+    expect(relativeDayLabel("2026-08-01", "2026-07-31")).toBe("Tomorrow");
+    expect(relativeDayLabel("2025-12-31", "2026-01-01")).toBe("Yesterday");
+    expect(isPast("2025-12-31", "2026-01-01")).toBe(true);
   });
 });
 

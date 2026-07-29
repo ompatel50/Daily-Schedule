@@ -10,6 +10,8 @@ import {
   Sun,
 } from "lucide-react";
 
+import { SURFACE_ROLES } from "@/lib/logic/surfaces";
+
 export interface NavItem {
   href: string;
   label: string;
@@ -21,28 +23,31 @@ export interface NavItem {
 }
 
 export const NAV_ITEMS: NavItem[] = [
+  // Dashboard / Today / Planner take their wording from the one ownership table
+  // in `lib/logic/surfaces`, so the sidebar and the command palette can never
+  // describe a surface as doing something it no longer does.
   {
-    href: "/",
-    label: "Dashboard",
+    href: SURFACE_ROLES.dashboard.href,
+    label: SURFACE_ROLES.dashboard.label,
     icon: LayoutDashboard,
     shortcut: "d",
-    description: "Everything at a glance",
+    description: SURFACE_ROLES.dashboard.purpose,
     accent: "text-domain-planner",
   },
   {
-    href: "/today",
-    label: "Today",
+    href: SURFACE_ROLES.today.href,
+    label: SURFACE_ROLES.today.label,
     icon: Sun,
     shortcut: "t",
-    description: "Your timeline for the day",
+    description: SURFACE_ROLES.today.purpose,
     accent: "text-amber-500",
   },
   {
-    href: "/planner",
-    label: "Planner",
+    href: SURFACE_ROLES.planner.href,
+    label: SURFACE_ROLES.planner.label,
     icon: CalendarDays,
     shortcut: "p",
-    description: "Day, week and month views",
+    description: SURFACE_ROLES.planner.purpose,
     accent: "text-domain-planner",
   },
   {

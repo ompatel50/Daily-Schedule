@@ -14,6 +14,7 @@ import {
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { ProgressRing } from "@/components/shared/progress-ring";
+import { scoreTone } from "@/components/shared/day-score-card";
 import { ScoreExplanation } from "@/components/shared/score-explanation";
 import { SectionCard } from "@/components/shared/section-card";
 import { formatDayLong, formatDuration } from "@/lib/date";
@@ -107,15 +108,10 @@ export async function DayDetail({ date, anchor }: { date: string; anchor: string
             size={104}
             label={score.score === null ? "—" : `${score.score}`}
             sublabel={score.score === null ? stateMeta.label.toLowerCase() : "day score"}
-            indicatorClassName={
-              score.score === null
-                ? "text-muted-foreground"
-                : score.score >= 80
-                  ? "text-emerald-500"
-                  : score.score >= 50
-                    ? "text-amber-500"
-                    : "text-rose-500"
-            }
+            // The one definition of the score's colour bands — a third
+            // hand-copied ladder here is how the calendar starts calling 79
+            // green while Today calls it amber.
+            indicatorClassName={scoreTone(score.score)}
           />
           <Badge variant="outline">{stateMeta.label}</Badge>
         </div>

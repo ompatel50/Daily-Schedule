@@ -58,7 +58,14 @@ export default async function CalendarPage({
       <PageHeader
         title="Calendar"
         description="Six months of consistency at a glance, and the month in detail."
-        actions={<DateNav date={anchor} scope="month" weekStartsOn={month.weekStartsOn} />}
+        actions={
+          <DateNav
+            date={anchor}
+            scope="month"
+            weekStartsOn={month.weekStartsOn}
+            todayKey={settings.today}
+          />
+        }
       />
 
       {detail && (

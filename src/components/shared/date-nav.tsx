@@ -27,24 +27,33 @@ export function DateNav({
   date,
   scope = "day",
   weekStartsOn = 1,
+  todayKey,
 }: {
   date: DayKey;
   scope?: DateScope;
   weekStartsOn?: 0 | 1;
+  /**
+   * "Today" in the user's timezone, resolved on the server. Without it this
+   * component navigates by the host clock, so a hand-off from one surface to
+   * another can land on a different day than the one you left.
+   */
+  todayKey?: DayKey;
 }) {
   const router = useRouter();
   const pathname = usePathname();
   const searchParams = useSearchParams();
 
+  const now = todayKey ?? today();
+
   const go = React.useCallback(
     (next: DayKey) => {
       const params = new URLSearchParams(searchParams.toString());
-      if (next === today()) params.delete("date");
+      if (next === now) params.delete("date");
       else params.set("date", next);
       const query = params.toString();
       router.push(query ? `${pathname}?${query}` : pathname);
     },
-    [pathname, router, searchParams],
+    [now, pathname, router, searchParams],
   );
 
   const step = React.useCallback(
@@ -74,13 +83,13 @@ export function DateNav({
         step(1);
       } else if (event.key === "t") {
         event.preventDefault();
-        go(today());
+        go(now);
       }
     }
 
     window.addEventListener("keydown", onKeyDown);
     return () => window.removeEventListener("keydown", onKeyDown);
-  }, [go, step]);
+  }, [go, now, step]);
 
   const title =
     scope === "month"
@@ -99,10 +108,10 @@ export function DateNav({
         <ChevronRight />
       </Button>
       <Button
-        variant={isToday(date) ? "secondary" : "outline"}
+        variant={isToday(date, now) ? "secondary" : "outline"}
         size="sm"
-        onClick={() => go(today())}
-        disabled={isToday(date)}
+        onClick={() => go(now)}
+        disabled={isToday(date, now)}
       >
         Today
       </Button>

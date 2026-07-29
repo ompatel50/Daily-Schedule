@@ -100,16 +100,27 @@ export function weekdayOf(day: DayKey): number {
   return fromDayKey(day).getDay();
 }
 
-export function isToday(day: DayKey): boolean {
-  return day === today();
+/*
+ * `today()` reads the host clock. The server resolves the real day from the
+ * user's configured timezone (`getToday()`), and the two disagree for several
+ * hours a day whenever the machine's zone is not the user's — which is how the
+ * Today page came to be titled "Yesterday".
+ *
+ * Every one of these takes the reference day as an argument so a caller that
+ * knows the user's day can pass it. The host clock stays the default only
+ * because the alternative is threading it through every component at once.
+ */
+
+export function isToday(day: DayKey, reference: DayKey = today()): boolean {
+  return day === reference;
 }
 
-export function isPast(day: DayKey): boolean {
-  return daysBetween(day, today()) > 0;
+export function isPast(day: DayKey, reference: DayKey = today()): boolean {
+  return daysBetween(day, reference) > 0;
 }
 
-export function isFuture(day: DayKey): boolean {
-  return daysBetween(today(), day) > 0;
+export function isFuture(day: DayKey, reference: DayKey = today()): boolean {
+  return daysBetween(reference, day) > 0;
 }
 
 export function isSameMonth(a: DayKey, b: DayKey): boolean {
@@ -131,8 +142,8 @@ export function formatMonthTitle(day: DayKey): string {
 }
 
 /** "Today", "Yesterday", "Tomorrow" or a formatted date. */
-export function relativeDayLabel(day: DayKey): string {
-  const delta = daysBetween(today(), day);
+export function relativeDayLabel(day: DayKey, reference: DayKey = today()): string {
+  const delta = daysBetween(reference, day);
   if (delta === 0) return "Today";
   if (delta === 1) return "Tomorrow";
   if (delta === -1) return "Yesterday";

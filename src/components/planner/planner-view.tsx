@@ -3,6 +3,8 @@
 import * as React from "react";
 import { usePathname, useRouter, useSearchParams } from "next/navigation";
 
+import { TriangleAlert } from "lucide-react";
+
 import { DaySchedule } from "@/components/planner/day-schedule";
 import { MonthGrid } from "@/components/planner/month-grid";
 import { ScheduleItemDialog, type ScheduleItemDraft } from "@/components/planner/schedule-item-dialog";
@@ -10,6 +12,7 @@ import { Timeline } from "@/components/planner/timeline";
 import { WeekGrid } from "@/components/planner/week-grid";
 import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import type { ScheduleRowItem } from "@/components/planner/schedule-row";
+import { findConflicts } from "@/lib/logic/planner";
 
 export type PlannerScope = "day" | "week" | "month";
 
@@ -25,6 +28,7 @@ export function PlannerView({
   weekStartsOn,
   dayStartHour,
   dayEndHour,
+  todayKey,
 }: {
   date: string;
   view: PlannerScope;
@@ -33,6 +37,8 @@ export function PlannerView({
   weekStartsOn: 0 | 1;
   dayStartHour: number;
   dayEndHour: number;
+  /** "Today" in the user's timezone, so every grid highlights the same day. */
+  todayKey: string;
 }) {
   const router = useRouter();
   const pathname = usePathname();
@@ -40,6 +46,11 @@ export function PlannerView({
 
   const [editing, setEditing] = React.useState<ScheduleItemDraft | null>(null);
   const [dialogOpen, setDialogOpen] = React.useState(false);
+
+  // The planner owns conflicts now that Today no longer shows them, so the
+  // count belongs here rather than only as a badge you have to scroll to find.
+  // Same `findConflicts` the rows use — one definition of what an overlap is.
+  const dayConflicts = React.useMemo(() => findConflicts(dayItems), [dayItems]);
 
   function setView(next: string) {
     const params = new URLSearchParams(searchParams.toString());
@@ -77,10 +88,21 @@ export function PlannerView({
         </TabsList>
       </Tabs>
 
+      {view === "day" && dayConflicts.length > 0 && (
+        <p className="flex items-center gap-2 rounded-lg border border-amber-500/30 bg-amber-500/5 px-3 py-2 text-sm text-amber-700 dark:text-amber-400">
+          <TriangleAlert className="h-4 w-4 shrink-0" aria-hidden />
+          <span>
+            {dayConflicts.length} overlapping{" "}
+            {dayConflicts.length === 1 ? "pair of blocks" : "pairs of blocks"} on this day. Double-booking
+            is allowed — this is a warning, not a block.
+          </span>
+        </p>
+      )}
+
       {view === "day" && (
         <div className="grid gap-6 xl:grid-cols-5">
           <div className="xl:col-span-3">
-            <DaySchedule date={date} items={dayItems} />
+            <DaySchedule date={date} items={dayItems} surface="planner" todayKey={todayKey} />
           </div>
           <div className="xl:col-span-2">
             <Timeline
@@ -88,6 +110,7 @@ export function PlannerView({
               items={dayItems}
               startHour={dayStartHour}
               endHour={dayEndHour}
+              todayKey={todayKey}
               onSelect={open}
             />
           </div>
@@ -95,11 +118,17 @@ export function PlannerView({
       )}
 
       {view === "week" && (
-        <WeekGrid anchor={date} items={rangeItems} weekStartsOn={weekStartsOn} onSelect={open} />
+        <WeekGrid
+          anchor={date}
+          items={rangeItems}
+          weekStartsOn={weekStartsOn}
+          todayKey={todayKey}
+          onSelect={open}
+        />
       )}
 
       {view === "month" && (
-        <MonthGrid anchor={date} items={rangeItems} weekStartsOn={weekStartsOn} />
+        <MonthGrid anchor={date} items={rangeItems} weekStartsOn={weekStartsOn} todayKey={todayKey} />
       )}
 
       <ScheduleItemDialog

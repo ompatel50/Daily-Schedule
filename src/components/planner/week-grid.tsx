@@ -31,11 +31,14 @@ export function WeekGrid({
   anchor,
   items,
   weekStartsOn = 1,
+  todayKey,
   onSelect,
 }: {
   anchor: string;
   items: ScheduleRowItem[];
   weekStartsOn?: 0 | 1;
+  /** "Today" in the user's timezone; see `DateNav`. */
+  todayKey?: string;
   onSelect?: (item: ScheduleRowItem) => void;
 }) {
   const router = useRouter();
@@ -102,6 +105,7 @@ export function WeekGrid({
             key={day}
             day={day}
             items={byDay.get(day) ?? []}
+            todayKey={todayKey}
             onSelect={onSelect}
             onAdd={() => openQuickAdd(day)}
           />
@@ -114,11 +118,13 @@ export function WeekGrid({
 function DayColumn({
   day,
   items,
+  todayKey,
   onSelect,
   onAdd,
 }: {
   day: string;
   items: ScheduleRowItem[];
+  todayKey?: string;
   onSelect?: (item: ScheduleRowItem) => void;
   onAdd: () => void;
 }) {
@@ -131,7 +137,7 @@ function DayColumn({
       className={cn(
         "flex min-h-[340px] flex-col rounded-lg border bg-card/40 transition-colors",
         isOver && "border-primary bg-accent/60",
-        isToday(day) && "border-domain-planner/50 bg-domain-planner/[0.04]",
+        isToday(day, todayKey) && "border-domain-planner/50 bg-domain-planner/[0.04]",
       )}
     >
       <div className="flex items-center justify-between border-b px-2 py-1.5">
@@ -142,7 +148,7 @@ function DayColumn({
           <p
             className={cn(
               "tabular text-sm font-semibold leading-tight",
-              isToday(day) && "text-domain-planner",
+              isToday(day, todayKey) && "text-domain-planner",
             )}
           >
             {formatDay(day, "d")}

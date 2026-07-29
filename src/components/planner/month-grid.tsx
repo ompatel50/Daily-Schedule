@@ -14,10 +14,13 @@ export function MonthGrid({
   anchor,
   items,
   weekStartsOn = 1,
+  todayKey,
 }: {
   anchor: string;
   items: ScheduleRowItem[];
   weekStartsOn?: 0 | 1;
+  /** "Today" in the user's timezone; see `DateNav`. */
+  todayKey?: string;
 }) {
   const days = monthGridDays(anchor, weekStartsOn);
   const byDay = new Map<string, ScheduleRowItem[]>();
@@ -54,14 +57,14 @@ export function MonthGrid({
               className={cn(
                 "flex min-h-[104px] flex-col gap-1 border-b border-r p-1.5 transition-colors hover:bg-accent/40",
                 outside && "bg-muted/20 opacity-55",
-                isToday(day) && "bg-domain-planner/[0.06]",
+                isToday(day, todayKey) && "bg-domain-planner/[0.06]",
               )}
             >
               <div className="flex items-center justify-between">
                 <span
                   className={cn(
                     "tabular text-xs font-medium",
-                    isToday(day) &&
+                    isToday(day, todayKey) &&
                       "flex h-5 w-5 items-center justify-center rounded-full bg-domain-planner text-[10px] text-white",
                   )}
                 >

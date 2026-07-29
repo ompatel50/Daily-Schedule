@@ -60,12 +60,19 @@ export function ScheduleRow({
   onEdit,
   sortable = false,
   compact = false,
+  seriesActions = true,
   conflictsWith,
 }: {
   item: ScheduleRowItem;
   onEdit?: (item: ScheduleRowItem) => void;
   sortable?: boolean;
   compact?: boolean;
+  /**
+   * Offer the "this and future" / "whole series" scopes. False on Today, where
+   * deleting every future Monday standup is not a thing you meant to do while
+   * working through this Monday.
+   */
+  seriesActions?: boolean;
   /** Titles of items whose time range overlaps this one. Informational only. */
   conflictsWith?: string[];
 }) {
@@ -223,7 +230,7 @@ export function ScheduleRow({
           >
             <Trash2 /> Delete
           </DropdownMenuItem>
-          {recurring && (
+          {recurring && seriesActions && (
             <>
               <DropdownMenuItem
                 destructive

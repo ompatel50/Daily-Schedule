@@ -14,7 +14,6 @@ import {
 } from "lucide-react";
 
 import { DashboardQuickActions } from "@/components/dashboard/quick-actions";
-import { HabitChecklist } from "@/components/habits/habit-checklist";
 import { TrendAreaChart, CategoryBarChart } from "@/components/shared/charts";
 import { DayScoreCard } from "@/components/shared/day-score-card";
 import { EmptyState } from "@/components/shared/empty-state";
@@ -34,6 +33,7 @@ import {
   today,
 } from "@/lib/date";
 import { trendDelta } from "@/lib/logic/scoring";
+import { SURFACE_ROLES, surfaceHref } from "@/lib/logic/surfaces";
 import { cn, formatNumber, pct, sum } from "@/lib/utils";
 import { getConsistencyWindow, getDayOverview, getToday, getWindowStats } from "@/server/queries";
 
@@ -102,51 +102,88 @@ export default async function DashboardPage() {
         description={summaryLine(overview.planned, overview.completed, dueHabits.length, habitsDone)}
         actions={
           <Button asChild variant="outline" size="sm">
-            <Link href="/today">
+            <Link href={surfaceHref("today")}>
               Open today <ArrowRight />
             </Link>
           </Button>
         }
       />
 
+      {/*
+        Rolling-week tiles, each a link to the surface that owns the number.
+        Today shows the same domains for *today* and lets you act on them; the
+        dashboard's job is the trend behind them and the way in, so these read
+        "how is the week going" with today as the hint — not a second copy of
+        Today's counters that gives you no reason to prefer either screen.
+      */}
       <div className="stat-grid mb-6">
         <StatCard
-          label="Today's schedule"
-          value={`${overview.completed}/${overview.planned}`}
-          hint={remaining.length > 0 ? `${remaining.length} remaining` : "all clear"}
+          label="Schedule · 7 days"
+          value={`${thisWeek.completed}/${thisWeek.planned}`}
+          hint={
+            overview.planned === 0
+              ? "nothing scheduled today"
+              : `${overview.completed} of ${overview.planned} done today`
+          }
           icon={CheckCircle2}
           accent="text-domain-planner"
-          progress={pct(overview.completed, overview.planned)}
+          progress={pct(thisWeek.completed, thisWeek.planned)}
           progressClassName="bg-domain-planner"
           delta={thisWeek.planned > 0 ? completionDelta : undefined}
+          href={surfaceHref("today")}
         />
         <StatCard
-          label="Habits today"
-          value={`${habitsDone}/${dueHabits.length}`}
-          hint={dueHabits.length === 0 ? "rest day" : "due today"}
+          label="Habits · 7 days"
+          value={`${thisWeek.habitsDone}/${thisWeek.habitsDue}`}
+          hint={
+            dueHabits.length === 0
+              ? "rest day today"
+              : `${habitsDone} of ${dueHabits.length} done today`
+          }
           icon={Repeat}
           accent="text-domain-habit"
-          progress={pct(habitsDone, dueHabits.length)}
+          progress={pct(thisWeek.habitsDone, thisWeek.habitsDue)}
           progressClassName="bg-domain-habit"
           delta={thisWeek.habitsDue > 0 ? habitDelta : undefined}
+          href={surfaceHref("today")}
         />
         <StatCard
-          label="Calories"
-          value={formatNumber(nutrition.totals.calories)}
-          hint={calorieGoal > 0 ? `of ${formatNumber(calorieGoal)} goal` : "log a meal"}
+          label="Calories · daily average"
+          value={
+            thisWeek.loggedDays > 0
+              ? formatNumber(Math.round(thisWeek.caloriesEaten / thisWeek.loggedDays))
+              : "—"
+          }
+          hint={
+            nutrition.totals.calories > 0
+              ? `${formatNumber(nutrition.totals.calories)} today`
+              : "nothing logged today"
+          }
           icon={Apple}
           accent="text-domain-nutrition"
-          progress={pct(nutrition.totals.calories, calorieGoal)}
+          progress={
+            calorieGoal > 0 && thisWeek.loggedDays > 0
+              ? pct(thisWeek.caloriesEaten / thisWeek.loggedDays, calorieGoal)
+              : undefined
+          }
           progressClassName="bg-domain-nutrition"
+          href="/nutrition"
         />
         <StatCard
-          label="Workouts this week"
+          label="Training · 7 days"
           value={`${thisWeek.workouts}`}
-          hint={workoutGoal > 0 ? `of ${workoutGoal} target` : formatDuration(thisWeek.workoutMinutes)}
+          hint={
+            workoutMinutesToday > 0
+              ? `${formatDuration(workoutMinutesToday)} today`
+              : workoutGoal > 0
+                ? `of ${workoutGoal} target`
+                : formatDuration(thisWeek.workoutMinutes)
+          }
           icon={Dumbbell}
           accent="text-domain-workout"
           progress={pct(thisWeek.workouts, workoutGoal)}
           progressClassName="bg-domain-workout"
+          href="/workouts"
         />
       </div>
 
@@ -162,9 +199,11 @@ export default async function DashboardPage() {
                 : "Nothing timed left today"
             }
             action={
+              // A preview, not a checklist. Ticking things off happens on the
+              // surface that owns the day.
               <Button asChild variant="ghost" size="sm">
-                <Link href="/planner">
-                  Planner <ArrowRight />
+                <Link href={surfaceHref("today")}>
+                  {SURFACE_ROLES.today.label} <ArrowRight />
                 </Link>
               </Button>
             }
@@ -176,7 +215,7 @@ export default async function DashboardPage() {
                 description="Add a few blocks, or apply a routine template from the planner."
                 action={
                   <Button asChild size="sm">
-                    <Link href="/planner">Plan today</Link>
+                    <Link href={surfaceHref("planner", date)}>Plan today</Link>
                   </Button>
                 }
               />
@@ -283,7 +322,44 @@ export default async function DashboardPage() {
               </Button>
             }
           >
-            <HabitChecklist habits={dueHabits.slice(0, 8)} restingHabits={restingHabits} date={date} />
+            {/*
+              Read-only. The dashboard used to render a second, truncated copy
+              of Today's checklist, so the same habit could be ticked in two
+              places and the first eight were the only ones you could reach.
+              Status here, the actual ticking on Today.
+            */}
+            {dueHabits.length === 0 ? (
+              <p className="text-sm text-muted-foreground">
+                A rest day, not a missed one
+                {restingHabits.length > 0 ? ` — ${restingHabits.length} not scheduled.` : "."}
+              </p>
+            ) : (
+              <div className="space-y-1.5">
+                {dueHabits.map((habit) => {
+                  const done = habit.todayStatus === "done";
+                  return (
+                    <div key={habit.id} className="flex items-baseline gap-2 text-sm">
+                      <CheckCircle2
+                        className={cn(
+                          "h-3.5 w-3.5 shrink-0 translate-y-0.5",
+                          done ? "text-emerald-500" : "text-muted-foreground/30",
+                        )}
+                        aria-hidden
+                      />
+                      <span className={cn("min-w-0 flex-1 truncate", done && "text-muted-foreground line-through")}>
+                        {habit.name}
+                      </span>
+                      <span className="shrink-0 text-xs text-muted-foreground">{habit.statusLabel}</span>
+                    </div>
+                  );
+                })}
+                <Button asChild variant="outline" size="sm" className="mt-1 w-full">
+                  <Link href={surfaceHref("today")}>
+                    Tick them off in {SURFACE_ROLES.today.label} <ArrowRight />
+                  </Link>
+                </Button>
+              </div>
+            )}
           </SectionCard>
 
           <SectionCard
