@@ -4,7 +4,7 @@
 > work in a new session, **read this file first**, then run
 > `git log --oneline -12 && npm test`.
 
-**Branch:** `claude/personal-os-phase-8-or6v6y`
+**Branch:** `claude/personal-os-phase-8-or6v6y` (restarted from `main` after PR #5 merged; the session's branch name is fixed and now carries Phase 9)
 
 > Note on branch naming: the task text asked for `feature/personal-os-preview-3`.
 > The session environment mandates development and pushes on a
@@ -13,10 +13,13 @@
 > purpose (an isolated feature branch off `main`). Phases 0–6 and 15a were done
 > on `claude/personal-os-preview-3-y6pmoe` (PR #3, merge commit `f8391d0`);
 > Phase 7 and the first part of Phase 8 on
-> `claude/personal-os-preview-3-upgrade-1gw0gt` (PR #4, merge commit `d92670e`).
-> Both have been merged into `main` and deleted.
+> `claude/personal-os-preview-3-upgrade-1gw0gt` (PR #4, merge commit `d92670e`);
+> the rest of Phase 8 on `claude/personal-os-phase-8-or6v6y` (PR #5, merge
+> commit `01bc4a8`). All have been merged into `main`. Phase 9 restarts that
+> same branch from the merged `main`, because a merged pull request cannot
+> track new work.
 
-**Last stable commit:** Phase 8 — one job per surface (see the Phase 8 section).
+**Last stable commit:** Phase 9 — food providers, real servings, snapshotted entries (see the Phase 9 section).
 
 ---
 
@@ -34,7 +37,7 @@
 | 7  | Planner duplicate prevention & recurrence          | ✅ done |
 | 15a| Backup coverage for the new tables (pulled forward) | ✅ done |
 | 8  | Dashboard / Today / Planner separation             | ✅ done |
-| 9  | Nutrition provider architecture & food search      | ⬜ not started |
+| 9  | Nutrition provider architecture & food search      | ✅ done (providers built + tested against fixtures; **no live API call was possible** — see below) |
 | 10 | Workout session system                             | ⬜ not started |
 | 11 | Health imports & health metrics                    | ⬜ not started |
 | 12 | Demo-data separation & onboarding                  | ⬜ not started |
@@ -44,16 +47,17 @@
 | 16 | Accessibility, responsiveness, performance         | ⬜ not started |
 | 17 | Full testing & polish                              | ⬜ not started |
 
-**Current phase:** 9 — Nutrition provider architecture & food search (**not
-started**)
+**Current phase:** 10 — Workout session system (**not started**)
 
 **The task's stated highest-priority milestone is complete** (central schedule
 engine, scheduled goals, scheduled habits, rest-day behaviour, streaks, day
 score, calendar/insights consistency). Phase 7 closed the last outstanding bug
-from the Phase 0 audit, and Phase 8 has given Dashboard, Today and Planner one
-job each. Everything from Phase 9 on is still outstanding and the app remains on
-its pre-upgrade implementations for those areas — see "What is NOT done" below,
-which is deliberately explicit so nothing reads as finished when it is not.
+from the Phase 0 audit, Phase 8 has given Dashboard, Today and Planner one job
+each, and Phase 9 has replaced the bundled-only food table with a provider
+architecture. Everything from Phase 10 on is still outstanding and the app
+remains on its pre-upgrade implementations for those areas — see "What is NOT
+done" below, which is deliberately explicit so nothing reads as finished when it
+is not.
 
 ---
 
@@ -231,6 +235,25 @@ which is deliberately explicit so nothing reads as finished when it is not.
     to touch every component at once — see "What is NOT done" for what still
     reads it.
 
+14. **A provider is an interface, and the boundary is the privacy boundary.**
+    (Phase 9) `ProviderSearchOptions` has no field through which a meal, a goal,
+    a weight or a user id could travel — the privacy property is structural
+    rather than a rule someone has to remember. Provider payloads are treated as
+    untrusted input in the other direction and clamped by
+    `sanitizeNormalizedFood` before anything is persisted.
+
+15. **`null` is the honest answer for a conversion that needs a constant we do
+    not have.** (Phase 9) Returning 0, or quietly assuming water's density,
+    would produce a number nobody could defend from a UI that looked confident.
+    `baseAmountsFor` returns `null`, `canConvert` reports it, the unit is not
+    offered, and the action refuses it. Grams are always available where the
+    food can be weighed at all, because a scale needs no food-specific constant.
+
+16. **A logged entry is a value, not a view of a food.** (Phase 9) The macros
+    were already denormalised; Phase 9 froze the rest — name, basis, serving,
+    grams, micronutrients. The test that matters is that a snapshot does not
+    move when the food is corrected afterwards.
+
 ---
 
 ## Database changes
@@ -337,14 +360,14 @@ npx prisma db push --accept-data-loss   # additive; verified no data loss
 npm run db:migrate        # twice — second run is a no-op
 npm run db:seed           # twice — planner data does not duplicate
 npm run typecheck         # PASS
-npm test                  # PASS 276/276
+npm test                  # PASS 421/421
 npm run build             # PASS
 npm run start             # all 11 routes 200, no server errors
 ```
 
 ## Tests passing
 
-276 tests across 12 files. 196 of them are new and cover business behaviour, not
+421 tests across 15 files. 341 of them are new and cover business behaviour, not
 rendering:
 
 * `tests/schedule.test.ts` (68) — every schedule mode; both week starts; DST;
@@ -382,6 +405,47 @@ rendering:
   Plus hand-offs: the date travelling to the owning surface, omitted when
   absent, never attached to the dashboard, and the sidebar copy for all three
   surfaces matching the purpose declared in the ownership table.
+* `tests/food.test.ts` (84) — **Phase 9.** USDA normalisation (generic vs
+  branded, both nutrient row shapes, micronutrients kept, a household measure
+  with no weight treated as a label, records with no name or no calories
+  dropped); Open Food Facts normalisation (sodium g→mg, micronutrients g→mg,
+  kilojoule fallback, salt÷2.5 when sodium is absent, density derived only from
+  a serving stated in both ml and grams, sparse records kept but marked, empty
+  stubs dropped); serving conversion (per-100 g, per-serving, mass-unit exactness,
+  portions with no known weight, **volume rejected without a density**, volume
+  allowed once one exists, an explicit assertion that 1 g/ml is never the
+  fallback, and that every offered option is one `canConvert` accepts);
+  nutrient maths and **historical snapshots** (quantity edits, unit changes,
+  and a snapshot staying put when the food is later corrected); completeness;
+  identity (two foods with the same name are never merged); ranking (favourites
+  and recents first, exact local next, generic over branded, shorter names on
+  ties, stable otherwise); sanitising hostile payloads; custom-food validation
+  (required name, positive serving, non-negative and finite nutrients, all four
+  bases); logging validation; and meal-template application through the
+  planner's shared `planTemplateApplication`.
+* `tests/food-providers.test.ts` (40) — **Phase 9.** Registry order and
+  coverage; the missing-key path (`not_configured`, **no request attempted**, a
+  hint naming the variable, whitespace treated as absent); USDA success, and
+  failures for 401/403, 429 with `retry-after`, 5xx, a thrown network error, an
+  abort, a malformed body, and unusable rows dropped without failing the search;
+  ids validated before a request is made; Open Food Facts search, barcode
+  lookup, missing product, empty-stub filtering, partial-record completeness,
+  rate limits and outages; fallback in both directions (each provider still
+  answers when the other cannot); and failure classification never putting a URL
+  or body into a user-facing message. Plus the privacy assertions: only the
+  query and the key are sent, no cookies, no referrer, GET with no body, and
+  Open Food Facts is only ever read.
+* `tests/food-lookup.test.ts` (21) — **Phase 9.** The lookup order end to end
+  with the database mocked: a well-stocked local answer never calls out;
+  a thin one consults both providers; favourites, recents and cached foods are
+  flagged and ranked; a provider result already held locally does not appear
+  twice and the local row wins; a provider failure removes only its own results;
+  the missing key surfaces as status rather than an error; `localOnly` (offline)
+  skips every provider and still returns favourites and cached foods; an
+  identical repeat search is served from the memo instead of a second
+  round-trip; the cache upserts on `(provider, externalId)` and a refresh does
+  not overwrite `retrievedAt`; and **no outbound URL contains the user id or any
+  personal keyword.**
 * `tests/date.test.ts` (+6) — **Phase 8.** Relative-day labels and
   past/today/future resolved against a **supplied** reference day rather than
   the host clock, including the exact regression (host on 2026-07-29, user on
@@ -408,12 +472,48 @@ Run against the seeded database with `npm run build && npm run start`.
 | 6 — Workout session | ❌ Not addressed yet — Phase 10. |
 | 7 — Score consistency | ✅ Dashboard, Today and the calendar detail render byte-identical explanations for the same date. Re-confirmed after the Phase 8 rework: on 2026-07-28 all three read `94` and `94% — 15 of 18 applicable opportunities met, weighting 3 categories equally. 6 items were excluded and are listed below.` Insights reports the same window in scheduled opportunities. |
 | 10 — Surface separation (Phase 8) | ✅ Each of the three surfaces offers only what it owns, verified in a real browser — see the Phase 8 table under browser verification. |
+| 11 — Nutrition recalculation (Phase 9) | ✅ Editing, moving, duplicating and deleting an entry each move the day's totals, the goal progress and the day score, all through the one `recomputeDay` path. Verified numerically in a browser. |
 | 8 — Demo data removal | ❌ Not addressed yet — Phase 12. |
 | 9 — Backup round-trip | ⚠️ **Partly.** Export verified in a real browser: format v2 with `scheduleRules=15`, `scheduleRuleDays=21`, a checksum, the app version and the user's timezone. A full export→modify→restore-into-a-clean-database round trip has **not** been executed end to end. |
 
 ### Browser verification (Playwright + Chromium)
 
 Driven against the running production build.
+
+**Phase 9 additions** — all 9 checked routes returned 200 with **zero console
+errors, zero warnings and zero uncaught page errors** across every check below.
+Run against the production build.
+
+* **Local food search still works**: typing "chicken" returns bundled results
+  with source and kind badges on every row ("Chicken burrito bowl · Generic ·
+  Bundled · 640 kcal · P 45 · C 65 · F 20 · per serving").
+* **The missing-key state is understandable**: "USDA FoodData Central is not set
+  up. Add USDA_FDC_API_KEY to .env to search it. Local results are unaffected."
+* **Provider failure does not break the page**: because the sandbox blocks both
+  hosts, the real failure path ran — "USDA is unavailable" with a Retry button,
+  and a fully working local result list underneath.
+* **Empty state**: "No matches for "zzzzqqqq". Add it as a custom food and it'll
+  be searchable from now on."
+* **Serving options are only ever convertible ones**: a per-serving food with an
+  opaque portion offers exactly `["1 bowl"]`; a weighable food offers
+  `["grams", "ounces"]`. This check is what caught the bug described above.
+* **Logging works and totals update**: calories 1,662 → 2,302 after logging.
+* **Editing the quantity recalculates**: 2,302 → 2,378.
+* **Duplicate is explicit and adds a row**: 10 entries → 11, calories → 2,579.
+* **Moving between meals keeps the day total**: a Dinner section appeared and
+  the total stayed at 2,579.
+* **Moving to another day reduces the source day**: 2,579 → 2,518.
+* **Deleting recalculates**: entry removed, calories → 2,356.
+* **Favourites** toggle from a result row and the Favourites section appears.
+* **Meal templates**: first apply added 4 entries (9 → 13); applying the same
+  template again added **nothing** and showed the four-way dialog — "Standard
+  breakfast has already put 4 items on this day. Nothing has been changed yet."
+* **The day score reflects nutrition**: 94 → 95 after logging, through the same
+  `recomputeDay` path as every other write.
+* **0 px horizontal overflow** on `/nutrition` at both 900 px and 1280 px.
+* **No secret in the client bundle**: neither `USDA_FDC_API_KEY`,
+  `api.nal.usda.gov` nor `world.openfoodfacts.org` appears anywhere under
+  `.next/static/`.
 
 **Phase 8 additions** — all 11 routes returned 200 with **zero console errors,
 zero console warnings and zero uncaught page errors** across every check below.
@@ -526,8 +626,15 @@ These are stated plainly so nothing reads as finished when it is not:
 5. **Reminders are not schedule-aware yet** — `reminder-watcher.tsx` still fires
    from the old `Reminder` table. The `reminderEnabled`/`reminderMinute` fields
    on `ScheduleRule` are written by the editor but **not yet consumed**.
-6. Nutrition still searches only the bundled local food table. No USDA or Open
-   Food Facts provider exists, and `USDA_FDC_API_KEY` is not referenced anywhere.
+6. ~~Nutrition still searches only the bundled local food table.~~ **Fixed in
+   Phase 9** — provider architecture, USDA and Open Food Facts, local caching,
+   offline behaviour. **But no live provider request has ever been made** (the
+   sandbox blocks both hosts with a 403 at the CONNECT stage), so the normalisers
+   are verified against captured fixtures only. Also still outstanding in this
+   area: there is no barcode *scanner*, only barcode-as-a-search-term; no
+   background refresh of stale cached foods; no per-provider result quota, so a
+   generous USDA response can crowd out Open Food Facts within the 25-result cap;
+   and `getFoodShortcuts` still returns at most 12 recents.
 7. Workouts have no in-progress session model — starting a template still
    behaves as before.
 8. No Apple Health / CSV import UI. `importHealthMetrics` exists as a server
@@ -736,6 +843,143 @@ which was insisting it was Wednesday above a page correctly showing Tuesday.
 listed under "What is NOT done"): `consistency-heatmap`, `quick-add-dialog`,
 `template-bar`, `workout-manager`, `habit-dialog` and the `ui-store` default
 still use the host clock.
+
+---
+
+## Phase 9 — nutrition provider architecture & food search
+
+### Provider verification status — read this first
+
+**No live provider call was made, because this environment cannot make one.**
+Both hosts are blocked by the sandbox's network policy:
+
+```
+$ curl https://api.nal.usda.gov/fdc/v1/foods/search?query=apple&api_key=DEMO_KEY
+curl: (56) CONNECT tunnel failed, response 403
+$ curl https://world.openfoodfacts.org/api/v2/search?page_size=1
+curl: (56) CONNECT tunnel failed, response 403
+```
+
+So: the provider layer, the normalisers, the caching, the failure states and the
+tests are complete and verified against captured fixtures, and **the request and
+response handling has never been exercised against the real services.** The
+shapes in `tests/fixtures/` are modelled on the documented and observed API
+responses, but a live run could still turn up a field this code reads
+differently. That is stated here rather than glossed, and it is the one part of
+Phase 9 a person with network access should confirm before trusting it.
+
+What *was* verified in a browser is the failure path itself — because the
+blocked network exercises it for real. Searching in the running production build
+produces "USDA is unavailable", a Retry button, and a fully working local result
+list underneath. That is exactly the degradation the phase is supposed to have.
+
+### The lookup order
+
+One place decides it — `src/server/food.ts`:
+
+1. local foods (bundled + your own) ─┐
+2. favourites                        │ all rows already in the database:
+3. recent foods                      │ one query, then flagged from the
+4. cached external foods            ─┘ usage records
+5. USDA FoodData Central — generic ingredients
+6. Open Food Facts — branded, packaged products
+7. "add it as a custom food" — always available in the UI
+
+Steps 1–4 never touch the network, which is the whole offline story: anything
+you have used before is local by the time you use it again. Steps 5 and 6 run
+only when the local answer came up thin (fewer than 6 hits), run concurrently,
+and are individually allowed to fail.
+
+### Architecture
+
+* `src/lib/logic/food.ts` — the `NormalizedFood` record, the USDA and Open Food
+  Facts normalisers, ranking, identity, and `sanitizeNormalizedFood`. Pure.
+* `src/lib/logic/servings.ts` — units, serving options, and which conversions
+  are valid. Pure.
+* `src/server/providers/` — `types.ts` (the `FoodProvider` contract),
+  `usda.ts`, `openfoodfacts.ts`, `index.ts` (the registry and its order).
+* `src/server/food.ts` — the lookup order above, the local cache
+  (`cacheFood` / `getCachedFood` / `materializeFood`), and the view mapping.
+* `src/server/actions/food-search.ts` — the single client entry point.
+
+The UI never sees a provider shape. Adding a third source is a new file plus a
+registry entry, not a change to any component.
+
+### The rules this phase is actually about
+
+**A conversion happens only when it is mathematically valid.** Grams to ounces
+is arithmetic. Millilitres to grams needs a density, and a cup of flour and a
+cup of honey differ by more than 2×. Where the density is unknown,
+`baseAmountsFor` returns `null`, the unit is not offered, and the server action
+refuses it. Nothing anywhere assumes 1 g/ml. The only place a density comes from
+is an Open Food Facts product whose serving is stated in *both* ml and grams.
+
+Browser verification caught a real bug here: the log dialog was offering grams
+for "1 bowl" of soup — a portion with no declared weight — which would have
+produced a unit the Log button then refused. `servingOptionsFor` now offers
+weight only when the food can actually be weighed, with a test asserting that
+every option it returns is one `canConvert` accepts.
+
+**A logged entry is a snapshot, not a view.** `MealEntry` gained
+`foodNameAtLog`, `basisAtLog`, `servingSizeAtLog`, `servingUnitAtLog`,
+`gramsAtLog` and `extraNutrientsAtLog` alongside the macros it already stored.
+A provider refresh, a renamed custom food or a corrected serving size changes
+the food going forward and never moves a total already recorded. Copying a meal
+or a day carries the original snapshot rather than recomputing.
+
+**Identity is provider + the provider's id, never the name.**
+`@@unique([provider, externalId])`. Re-selecting the same USDA food updates the
+cached copy instead of creating a second row; two foods with similar names are
+never merged. Local and custom foods carry a null `externalId`, and SQLite
+treats NULLs as distinct, so the constraint never applies to them.
+
+**Accidental duplication is rejected by the database.** A save carries a
+client-generated `idempotencyKey`, unique per `(mealId, idempotencyKey)`. A
+double-click, a retried submit and an optimistic replay collide and become a
+no-op that reports `duplicate: true` rather than an error. Deliberate
+duplication is a separate menu action with a fresh key.
+
+**Meal templates reuse the planner's logic rather than copying it.**
+`planTemplateApplication` was made generic over the row type; nutrition passes
+meal-template items through the same function, the same `sourceKey` scheme
+(`<ordinal>:<index>`) and the same four-way choice. There is one implementation
+of "apply a saved set of rows without doubling it", and the planner's existing
+tests still cover it.
+
+### Privacy
+
+Only a search term or a public barcode leaves the machine, and only when local
+results are thin. Requests carry no cookies and no referrer. There is no field
+in `ProviderSearchOptions` through which a meal, goal, weight or user id could
+travel, and `tests/food-lookup.test.ts` asserts that no outbound URL contains
+the user id or any personal keyword.
+
+The USDA key is read inside a `server-only` module. Verified against the built
+output: neither `USDA_FDC_API_KEY`, `api.nal.usda.gov` nor
+`world.openfoodfacts.org` appears anywhere in `.next/static/`. No error path
+echoes a URL either, because the USDA URL carries the key as a query parameter —
+`classifyHttpStatus` writes its own message from the status code alone.
+
+### Database changes (additive; no data was lost)
+
+`FoodItem` gained `description`, `provider`, `externalId`, `barcode`, `kind`,
+`source`, `retrievedAt`, `refreshedAt`, `extraNutrients`, `servingOptions`,
+`completeness`, `cached`, a `@@unique([provider, externalId])` and an index on
+`barcode`. `basis` now also accepts `per_package` and `per_item`.
+
+`MealEntry` gained `foodNameAtLog`, `basisAtLog`, `servingSizeAtLog`,
+`servingUnitAtLog`, `gramsAtLog`, `extraNutrientsAtLog`, `idempotencyKey`,
+`templateId`, `sourceKey`, and the two unique indexes described above.
+
+Row counts before and after `prisma db push` were identical across all 15
+tables (92 foods, 199 meals, 491 entries, 652 schedule items, …), and the same
+counts were confirmed again after restoring the pre-verification snapshot.
+
+### Environment variables
+
+`USDA_FDC_API_KEY` — optional, server-side only, documented in `.env.example`
+and the README. Absent, the app says so in the results panel with the signup
+link and carries on. Open Food Facts needs no configuration.
 
 ---
 

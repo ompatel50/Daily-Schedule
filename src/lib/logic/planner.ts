@@ -5,6 +5,11 @@
  * Both live here, pure, for the same reason the schedule engine does — they are
  * decisions with edge cases worth testing directly, and the server action
  * should only be the part that reads and writes rows.
+ *
+ * `planTemplateApplication` is generic over the row type because "stamp a saved
+ * set of rows onto a container, without doubling it by accident" is the same
+ * problem for a planner routine and a meal template. Nutrition reuses it rather
+ * than growing a second copy with its own edge cases.
  */
 
 // ---------------------------------------------------------------------------
@@ -35,13 +40,13 @@ export interface ExistingTemplateRow {
   sourceKey: string | null;
 }
 
-export interface PlannedTemplateRow {
-  row: TemplateRow;
+export interface PlannedTemplateRow<TRow = TemplateRow> {
+  row: TRow;
   index: number;
   sourceKey: string;
 }
 
-export interface TemplatePlan {
+export interface TemplatePlan<TRow = TemplateRow> {
   /**
    * `create`  — write `create`, nothing was there (or the user asked for a
    *             deliberate second copy).
@@ -53,7 +58,7 @@ export interface TemplatePlan {
   action: "create" | "ask" | "keep" | "replace";
   /** Application ordinal the new rows carry. 1 is a first application. */
   ordinal: number;
-  create: PlannedTemplateRow[];
+  create: PlannedTemplateRow<TRow>[];
   /** Ids to delete before writing. Only ever populated for `replace`. */
   remove: string[];
   /** How many rows from this routine already sit on the day. */
@@ -93,16 +98,16 @@ export function nextApplicationOrdinal(existing: ExistingTemplateRow[]): number 
  * retried or double-submitted application cannot write the same row twice even
  * before the database's unique constraint gets involved.
  */
-export function planTemplateApplication({
+export function planTemplateApplication<TRow = TemplateRow>({
   rows,
   existing,
   mode = "auto",
 }: {
-  rows: TemplateRow[];
+  rows: TRow[];
   existing: ExistingTemplateRow[];
   mode?: TemplateApplyMode;
-}): TemplatePlan {
-  const build = (ordinal: number, skipKeys: Set<string>): PlannedTemplateRow[] =>
+}): TemplatePlan<TRow> {
+  const build = (ordinal: number, skipKeys: Set<string>): PlannedTemplateRow<TRow>[] =>
     rows
       .map((row, index) => ({ row, index, sourceKey: templateSourceKey(ordinal, index) }))
       .filter((planned) => !skipKeys.has(planned.sourceKey));

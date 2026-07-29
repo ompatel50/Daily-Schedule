@@ -2,10 +2,25 @@
 
 import * as React from "react";
 import { useRouter } from "next/navigation";
-import { BookmarkPlus, Loader2, Pencil, Trash2, UtensilsCrossed } from "lucide-react";
+import {
+  BookmarkPlus,
+  Copy,
+  Loader2,
+  MoreHorizontal,
+  Pencil,
+  Trash2,
+  UtensilsCrossed,
+} from "lucide-react";
 import { toast } from "sonner";
 
 import { Button } from "@/components/ui/button";
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuSeparator,
+  DropdownMenuTrigger,
+} from "@/components/ui/dropdown-menu";
 import {
   Dialog,
   DialogContent,
@@ -23,9 +38,16 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import { EmptyState } from "@/components/shared/empty-state";
-import { MEAL_TYPE_META, SERVING_UNITS, type MealType, type ServingUnit } from "@/lib/enums";
+import { MEAL_TYPE_META, MEAL_TYPES, type MealType, type ServingUnit } from "@/lib/enums";
+import { shiftDay } from "@/lib/date";
 import { formatNumber } from "@/lib/utils";
-import { deleteMealEntry, saveMealAsTemplate, updateMealEntry } from "@/server/actions/nutrition";
+import {
+  deleteMealEntry,
+  duplicateMealEntry,
+  moveMealEntry,
+  saveMealAsTemplate,
+  updateMealEntry,
+} from "@/server/actions/nutrition";
 
 export interface MealEntryView {
   id: string;
@@ -36,6 +58,12 @@ export interface MealEntryView {
   protein: number;
   carbs: number;
   fat: number;
+  /** Units this food can honestly be measured in — see `lib/logic/servings`. */
+  units: string[];
+  /** Which meal the entry currently sits in, so "move" knows where it is. */
+  mealType: string;
+  /** The day it is logged on. */
+  date: string;
 }
 
 export interface MealView {
@@ -65,8 +93,36 @@ export function MealList({ meals }: { meals: MealView[] }) {
   function remove(entry: MealEntryView) {
     startTransition(async () => {
       const result = await deleteMealEntry(entry.id);
+      // Deleting recomputes the day, the goals, the score and the calendar —
+      // one path, in `recomputeDay`, shared with every other nutrition write.
       if (result.ok) router.refresh();
       else toast.error(result.error);
+    });
+  }
+
+  function move(entry: MealEntryView, to: { mealType?: MealType; date?: string }) {
+    startTransition(async () => {
+      const result = await moveMealEntry({ id: entry.id, ...to });
+      if (result.ok) {
+        toast.success(
+          to.date ? `Moved to ${to.date}` : `Moved to ${MEAL_TYPE_META[to.mealType as MealType].label.toLowerCase()}`,
+        );
+        router.refresh();
+      } else {
+        toast.error(result.error);
+      }
+    });
+  }
+
+  function duplicate(entry: MealEntryView) {
+    startTransition(async () => {
+      const result = await duplicateMealEntry(entry.id);
+      if (result.ok) {
+        toast.success(`Duplicated ${entry.foodName}`);
+        router.refresh();
+      } else {
+        toast.error(result.error);
+      }
     });
   }
 
@@ -117,16 +173,51 @@ export function MealList({ meals }: { meals: MealView[] }) {
                 >
                   <Pencil />
                 </Button>
-                <Button
-                  size="icon-sm"
-                  variant="ghost"
-                  className="text-destructive opacity-0 transition-opacity group-hover:opacity-100"
-                  onClick={() => remove(entry)}
-                  disabled={pending}
-                  aria-label="Delete entry"
-                >
-                  <Trash2 />
-                </Button>
+
+                <DropdownMenu>
+                  <DropdownMenuTrigger asChild>
+                    <Button
+                      size="icon-sm"
+                      variant="ghost"
+                      className="opacity-0 transition-opacity group-hover:opacity-100 data-[state=open]:opacity-100"
+                      aria-label="Entry actions"
+                    >
+                      <MoreHorizontal />
+                    </Button>
+                  </DropdownMenuTrigger>
+                  <DropdownMenuContent align="end" className="w-56">
+                    <DropdownMenuItem onClick={() => setEditing(entry)}>
+                      <Pencil /> Edit quantity
+                    </DropdownMenuItem>
+
+                    {MEAL_TYPES.filter((type) => type !== entry.mealType).map((type) => (
+                      <DropdownMenuItem
+                        key={type}
+                        onClick={() => move(entry, { mealType: type })}
+                      >
+                        Move to {MEAL_TYPE_META[type].label.toLowerCase()}
+                      </DropdownMenuItem>
+                    ))}
+
+                    <DropdownMenuSeparator />
+                    <DropdownMenuItem onClick={() => move(entry, { date: shiftDay(entry.date, -1) })}>
+                      Move to yesterday
+                    </DropdownMenuItem>
+                    <DropdownMenuItem onClick={() => move(entry, { date: shiftDay(entry.date, 1) })}>
+                      Move to tomorrow
+                    </DropdownMenuItem>
+
+                    <DropdownMenuSeparator />
+                    {/* Deliberate duplication, separate from the accidental
+                        kind the idempotency key rejects. */}
+                    <DropdownMenuItem onClick={() => duplicate(entry)}>
+                      <Copy /> Duplicate
+                    </DropdownMenuItem>
+                    <DropdownMenuItem destructive onClick={() => remove(entry)}>
+                      <Trash2 /> Delete
+                    </DropdownMenuItem>
+                  </DropdownMenuContent>
+                </DropdownMenu>
               </div>
             ))}
           </div>
@@ -193,7 +284,9 @@ function EditEntryDialog({ entry, onClose }: { entry: MealEntryView | null; onCl
                 <SelectValue />
               </SelectTrigger>
               <SelectContent>
-                {SERVING_UNITS.map((value) => (
+                {/* Only what this food converts to. A unit that would need a
+                    density we do not have is not offered at all. */}
+                {entry.units.map((value) => (
                   <SelectItem key={value} value={value}>
                     {value}
                   </SelectItem>

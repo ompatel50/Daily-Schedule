@@ -1,13 +1,23 @@
 import { round } from "@/lib/utils";
 import type { ServingUnit } from "@/lib/enums";
+import type { ExtraNutrients } from "@/lib/logic/food";
+import { scaleExtraNutrients } from "@/lib/logic/food";
+import {
+  baseAmountsFor,
+  describeAmount,
+  toGrams,
+  type ServingCapableFood,
+} from "@/lib/logic/servings";
 
 /**
- * All nutrition math lives here so the UI, the server actions and the importer
- * agree on one definition of "how many calories is 1.5 servings".
+ * All nutrition math lives here so the UI, the server actions, the day score
+ * and the importer agree on one definition of "how many calories is 1.5
+ * servings". The unit arithmetic itself lives one level down in
+ * `lib/logic/servings`; this module is what turns an amount into nutrients.
  */
 
-export interface FoodLike {
-  basis: string; // per_100g | per_serving
+export interface FoodLike extends ServingCapableFood {
+  basis: string; // per_100g | per_serving | per_package | per_item
   servingSize: number;
   servingUnit: string;
   calories: number;
@@ -17,6 +27,7 @@ export interface FoodLike {
   fiber: number;
   sugar: number;
   sodium: number;
+  extraNutrients?: ExtraNutrients;
 }
 
 export interface Macros {
@@ -39,45 +50,16 @@ export const EMPTY_MACROS: Macros = {
   sodium: 0,
 };
 
-const GRAMS_PER_OZ = 28.3495;
-
 /**
  * How many "base units" of the food does `quantity` in `unit` represent?
- * A base unit is 100 g for `per_100g` foods, and one serving for `per_serving`.
+ *
+ * A base unit is 100 g for `per_100g` foods and one portion for the others.
+ * Returns 0 where the conversion is not defensible — callers that need to tell
+ * "zero" apart from "cannot be converted" should use `nutrientSnapshotFor`,
+ * which reports it explicitly.
  */
 export function baseUnitsFor(food: FoodLike, quantity: number, unit: ServingUnit | string): number {
-  const qty = Number.isFinite(quantity) ? quantity : 0;
-  if (qty <= 0) return 0;
-
-  if (food.basis === "per_serving") {
-    switch (unit) {
-      case "serving":
-      case "piece":
-        return qty;
-      case "g":
-      case "ml":
-        // Interpret a raw weight against the serving's declared size.
-        return food.servingSize > 0 ? qty / food.servingSize : 0;
-      case "oz":
-        return food.servingSize > 0 ? (qty * GRAMS_PER_OZ) / food.servingSize : 0;
-      default:
-        return qty;
-    }
-  }
-
-  // per_100g
-  switch (unit) {
-    case "serving":
-    case "piece":
-      return (qty * food.servingSize) / 100;
-    case "g":
-    case "ml":
-      return qty / 100;
-    case "oz":
-      return (qty * GRAMS_PER_OZ) / 100;
-    default:
-      return (qty * food.servingSize) / 100;
-  }
+  return baseAmountsFor(food, quantity, unit) ?? 0;
 }
 
 /** Macros for a given quantity of a food, rounded for storage/display. */
@@ -91,6 +73,59 @@ export function macrosFor(food: FoodLike, quantity: number, unit: ServingUnit | 
     fiber: round(food.fiber * units, 1),
     sugar: round(food.sugar * units, 1),
     sodium: round(food.sodium * units, 0),
+  };
+}
+
+/**
+ * Everything a `MealEntry` freezes at log time.
+ *
+ * The macros alone were never quite enough: a food renamed, a serving size
+ * corrected, or a provider record refreshed would leave a historical entry
+ * whose numbers no longer matched anything you could reconstruct. Storing the
+ * amount, the basis and the serving it was computed against means a logged day
+ * stays explainable regardless of what happens to the food afterwards.
+ */
+export interface NutrientSnapshot {
+  macros: Macros;
+  extraNutrients: ExtraNutrients;
+  /** Resolved grams, when the unit could be converted at all. */
+  grams: number | null;
+  /** False when the unit is not valid for this food; nothing should be saved. */
+  convertible: boolean;
+  foodName: string;
+  basis: string;
+  servingSize: number;
+  servingUnit: string;
+  description: string;
+}
+
+export function nutrientSnapshotFor(
+  food: FoodLike & { name?: string },
+  quantity: number,
+  unit: ServingUnit | string,
+): NutrientSnapshot {
+  const amounts = baseAmountsFor(food, quantity, unit);
+  const convertible = amounts !== null;
+  const units = amounts ?? 0;
+
+  return {
+    macros: {
+      calories: round(food.calories * units, 0),
+      protein: round(food.protein * units, 1),
+      carbs: round(food.carbs * units, 1),
+      fat: round(food.fat * units, 1),
+      fiber: round(food.fiber * units, 1),
+      sugar: round(food.sugar * units, 1),
+      sodium: round(food.sodium * units, 0),
+    },
+    extraNutrients: scaleExtraNutrients(food.extraNutrients ?? {}, units),
+    grams: convertible ? toGrams(quantity, unit, food) : null,
+    convertible,
+    foodName: food.name ?? "",
+    basis: food.basis,
+    servingSize: food.servingSize,
+    servingUnit: food.servingUnit,
+    description: describeAmount(food, quantity, unit),
   };
 }
 
@@ -135,13 +170,7 @@ export function macroSplit(macros: Macros): { protein: number; carbs: number; fa
 
 /** Label like "1 serving (150 g)" for a logged entry. */
 export function describeServing(food: FoodLike, quantity: number, unit: string): string {
-  const qty = round(quantity, 2);
-  if (unit === "serving") {
-    const grams = food.basis === "per_100g" ? round(quantity * food.servingSize, 0) : null;
-    const suffix = grams ? ` (${grams} ${food.servingUnit})` : "";
-    return `${qty} ${qty === 1 ? "serving" : "servings"}${suffix}`;
-  }
-  return `${qty} ${unit}`;
+  return describeAmount(food, quantity, unit);
 }
 
 // --- goal estimation --------------------------------------------------------

@@ -431,10 +431,40 @@ model FoodItem {
   userId String?
   user   User?   @relation(fields: [userId], references: [id], onDelete: Cascade)
 
-  name  String
-  brand String?
+  name        String
+  brand       String?
+  description String?
 
-  /// "per_100g" | "per_serving"
+  /// Where this row came from: "local" (bundled) | "custom" (user-made) |
+  /// "usda" | "off". Provider + externalId is the identity of an imported food.
+  provider   String  @default("local")
+  /// The provider's own id — an FDC id, or an Open Food Facts barcode. Null for
+  /// local and custom foods, and SQLite treats NULLs as distinct in a unique
+  /// index, so they never collide with each other.
+  externalId String?
+  barcode    String?
+  /// "generic" (an ingredient — chicken breast, oats) | "branded" (a product).
+  kind       String  @default("generic")
+  /// Human-readable attribution shown in the UI, e.g. "USDA FoodData Central".
+  source     String?
+  /// When the provider record was first pulled, and when it was last refreshed.
+  /// A refresh updates the food but never a `MealEntry` already logged from it.
+  retrievedAt DateTime?
+  refreshedAt DateTime?
+  /// JSON: nutrients beyond the seven first-class columns — saturated fat,
+  /// cholesterol, potassium, calcium, iron, vitamins. Kept whole rather than
+  /// discarded, because the provider will not always be reachable later.
+  extraNutrients String?
+  /// JSON: serving options the provider declared (household measures, package
+  /// size). Only ones with a trustworthy gram weight are offered as conversions.
+  servingOptions String?
+  /// 0–1: how much of the core nutrient set the provider actually supplied.
+  /// Community data is often partial, and the UI says so rather than implying 0.
+  completeness Float?
+  /// True when the row exists only because a provider result was cached.
+  cached Boolean @default(false)
+
+  /// "per_100g" | "per_serving" | "per_package" | "per_item"
   basis String @default("per_100g")
 
   /// Default serving used when logging, expressed in grams for per_100g foods.
@@ -462,8 +492,10 @@ model FoodItem {
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
+  @@unique([provider, externalId])
   @@index([searchKey])
   @@index([userId])
+  @@index([barcode])
 }
 
 model Meal {
@@ -511,11 +543,37 @@ model MealEntry {
   sugar    Float @default(0)
   sodium   Float @default(0)
 
+  /// The rest of the snapshot taken when this entry was logged. A provider
+  /// refresh, a renamed custom food or a corrected serving size must never
+  /// silently move a total that has already been recorded, so everything the
+  /// entry was computed from is frozen here alongside the macros above.
+  foodNameAtLog       String?
+  basisAtLog          String?
+  servingSizeAtLog    Float?
+  servingUnitAtLog    String?
+  /// Resolved grams for this entry, when the unit could be converted at all.
+  gramsAtLog          Float?
+  /// JSON: the extra nutrients scaled to this entry, frozen the same way.
+  extraNutrientsAtLog String?
+
+  /// Client-generated per-save key. A double-click, a retry and a resubmitted
+  /// form all carry the same one, so the unique index below rejects the second
+  /// write instead of relying on a disabled button.
+  idempotencyKey String?
+
+  /// Meal-template application identity, mirroring `ScheduleItem.sourceKey`:
+  /// `<application ordinal>:<row index>`. Applying a template twice by accident
+  /// collides; a deliberate second copy takes the next ordinal and does not.
+  templateId String?
+  sourceKey  String?
+
   sortOrder Int @default(0)
 
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
+  @@unique([mealId, idempotencyKey])
+  @@unique([mealId, templateId, sourceKey])
   @@index([mealId])
 }
 

@@ -150,8 +150,14 @@ export const FOOD_CATEGORIES = [
 ] as const;
 export type FoodCategory = (typeof FOOD_CATEGORIES)[number];
 
-export const SERVING_UNITS = ["serving", "g", "ml", "oz", "piece"] as const;
-export type ServingUnit = (typeof SERVING_UNITS)[number];
+/**
+ * Serving units, defined once in `lib/logic/servings` alongside the conversion
+ * factors and re-exported here so the enums module stays the single import for
+ * UI code. Widening this list is not enough to make a unit usable — the food
+ * must also have the constants to convert it, which `canConvert` decides.
+ */
+export { ALL_SERVING_UNITS as SERVING_UNITS } from "@/lib/logic/servings";
+export type { AnyServingUnit as ServingUnit } from "@/lib/logic/servings";
 
 export const WORKOUT_TYPES = [
   "strength",
