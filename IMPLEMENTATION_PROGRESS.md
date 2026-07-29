@@ -32,7 +32,7 @@ finish the recurrence scopes.
 | 6  | Calendar & insights corrections                    | ✅ done |
 | 7  | Planner duplicate prevention & recurrence          | ✅ done |
 | 15a| Backup coverage for the new tables (pulled forward) | ✅ done |
-| 8  | Dashboard / Today / Planner separation             | ⬜ **next** |
+| 8  | Dashboard / Today / Planner separation             | 🟡 **started — audit + de-duplication done, separation NOT done** |
 | 9  | Nutrition provider architecture & food search      | ⬜ not started |
 | 10 | Workout session system                             | ⬜ not started |
 | 11 | Health imports & health metrics                    | ⬜ not started |
@@ -43,7 +43,8 @@ finish the recurrence scopes.
 | 16 | Accessibility, responsiveness, performance         | ⬜ not started |
 | 17 | Full testing & polish                              | ⬜ not started |
 
-**Current phase:** 8 — Dashboard / Today / Planner separation
+**Current phase:** 8 — Dashboard / Today / Planner separation (**part done, see
+below — the phase is not finished and is not marked finished**)
 
 **The task's stated highest-priority milestone is complete** (central schedule
 engine, scheduled goals, scheduled habits, rest-day behaviour, streaks, day
@@ -268,6 +269,9 @@ Phase 7:
 prisma/migrations-data/002-template-source-keys.ts   sourceKey backfill
 src/lib/logic/planner.ts                      routine identity + overlaps (pure)
 tests/planner.test.ts                         28 tests
+
+Phase 8 (partial):
+src/components/shared/day-score-card.tsx      the one day-score card + scoreTone
 ```
 
 ## Files removed
@@ -466,20 +470,66 @@ integration suite is a real gap and belongs in Phase 17.
 
 ---
 
+## Phase 8 — audit, and the part that is done
+
+### What the three surfaces actually render (audited, not assumed)
+
+| | `/` dashboard | `/today` | `/planner` |
+|---|---|---|---|
+| Server query | `getDayOverview` + `getConsistencyWindow` + 2× `getWindowStats` | `getDayOverview` | `getScheduleItems` + `getScheduleTemplates` |
+| Stat grid | 4 cards (schedule, habits, calories, workouts/wk) | 4 cards (schedule, habits, calories, training) — 3 of 4 are the same metric | none |
+| Day list | read-only preview, next 5 | **editable** `DaySchedule` | **editable** `DaySchedule` |
+| Timeline | none | yes (tab) | yes (side panel) |
+| Day score card | ring + 3 mini stats | ring + explanation line | none |
+| Habits | `HabitChecklist`, capped at 8 | `HabitChecklist`, all | none |
+| Also | 2 charts, quick actions, health rows | meals, workouts, journal, protein | week/month grids, routines |
+
+### Duplication confirmed and removed
+
+1. **`scoreTone` was copy-pasted verbatim** into `src/app/page.tsx` and
+   `src/app/today/page.tsx` — two definitions of the score's colour bands, the
+   exact drift risk this upgrade exists to remove. Now defined once in
+   `src/components/shared/day-score-card.tsx`.
+2. **The day-score card markup was duplicated** — ring, null-vs-zero handling,
+   `ScoreExplanation` trigger. Now one `DayScoreCard`; a surface chooses only
+   its `sublabel` and its footer (mini stats on the dashboard, the explanation
+   line on Today).
+3. **`scoreMessage` in `src/app/today/page.tsx` was dead code** — defined,
+   never called, and carrying a stale assumption (`planned === 0 && score === 0`)
+   from before Phase 5 made an untracked day score `null` rather than `0`.
+   Deleted.
+
+Verified after the change: 9/9 routes return 200, the dashboard and Today
+render the **same** ring value for the same date (94%), the "Why this score?"
+trigger is present on both, and there are zero console errors or warnings.
+
+### What Phase 8 still has to do — NOT done
+
+The de-duplication above is housekeeping. The actual phase — giving each surface
+a distinct job — has **not** been started:
+
+* `/today` and `/planner?view=day` still both render the same editable
+  `DaySchedule` for the same date. A user still has no reason to prefer one.
+* The dashboard's stat grid and Today's stat grid still show three of the same
+  four metrics.
+* `getDayOverview` is called by both `/` and `/today`; a user hitting both pays
+  for it twice.
+* No decision has been made or recorded about which surface owns editing, which
+  owns overview, and what the navigation should imply. That decision is the
+  substance of Phase 8 and should be made explicitly before more code moves.
+
+---
+
 ## Exact next step
 
-**Phase 8 — Dashboard / Today / Planner separation.**
+**Finish Phase 8 — decide and implement the separation.**
 
-The three surfaces currently overlap: `/` (dashboard), `/today` and
-`/planner?view=day` all render largely the same day list via the same
-`DaySchedule` component, and it is not obvious which one a user should open.
-Phase 8 should give each a distinct job — dashboard as an at-a-glance overview
-across domains, Today as the single focused "what now" surface, Planner as the
-editing and scheduling surface — without duplicating the read models.
-
-Start by reading `src/app/page.tsx`, `src/app/today/page.tsx` and
-`src/app/planner/page.tsx` side by side and listing exactly what each renders
-today; several sections are the same server query called three times.
+Proposed split, to be confirmed before implementing: dashboard = cross-domain
+overview and trends, read-only, links out; Today = the single focused "what
+now" surface that owns the editable day plus meals/habits/journal; Planner =
+scheduling and structure (week/month, routines, recurrence) rather than a second
+copy of Today. Under that split the planner's day view keeps the editable list
+because editing is its job, and the dashboard's day preview stays read-only.
 
 Resume with:
 
