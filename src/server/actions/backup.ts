@@ -1,5 +1,9 @@
 "use server";
 
+import { mkdir, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import path from "node:path";
+
 import { revalidatePath } from "next/cache";
 
 import {
@@ -257,7 +261,7 @@ function toCsv(columns: string[], rows: Array<Record<string, unknown>>): string 
 export async function importBackup(
   payload: unknown,
   mode: "merge" | "replace" = "merge",
-): Promise<ActionResult<{ imported: number; tables: string[] }>> {
+): Promise<ActionResult<{ imported: number; tables: string[]; safetySnapshot: string | null }>> {
   const inspection = inspectBackup(payload);
   if (!inspection.ok) return fail(inspection.error ?? "That backup file cannot be imported");
 
@@ -265,41 +269,64 @@ export async function importBackup(
   const user = await getCurrentUser();
   const data = file.data;
 
-  if (mode === "replace") {
-    // Order matters: children before parents, since SQLite enforces FKs.
-    await prisma.scheduleItemTag.deleteMany({ where: { scheduleItem: { userId: user.id } } });
-    await prisma.mealEntry.deleteMany({ where: { meal: { userId: user.id } } });
-    await prisma.mealTemplateItem.deleteMany({ where: { template: { userId: user.id } } });
-    await prisma.workoutSet.deleteMany({ where: { workout: { userId: user.id } } });
-    await prisma.scheduleItem.deleteMany({ where: { userId: user.id } });
-    await prisma.meal.deleteMany({ where: { userId: user.id } });
-    await prisma.mealTemplate.deleteMany({ where: { userId: user.id } });
-    await prisma.workout.deleteMany({ where: { userId: user.id } });
-    await prisma.workoutTemplate.deleteMany({ where: { userId: user.id } });
-    await prisma.habitLog.deleteMany({ where: { userId: user.id } });
-    await prisma.habit.deleteMany({ where: { userId: user.id } });
-    await prisma.healthMetric.deleteMany({ where: { userId: user.id } });
-    await prisma.healthImportBatch.deleteMany({ where: { userId: user.id } });
-    await prisma.journalEntry.deleteMany({ where: { userId: user.id } });
-    await prisma.reminder.deleteMany({ where: { userId: user.id } });
-    await prisma.reminderDelivery.deleteMany({ where: { userId: user.id } });
-    await prisma.favoriteItem.deleteMany({ where: { userId: user.id } });
-    await prisma.goalEntry.deleteMany({ where: { userId: user.id } });
-    await prisma.goal.deleteMany({ where: { userId: user.id } });
-    // Schedules are polymorphic, so they are cleared explicitly rather than
-    // cascading from the goal/habit rows.
-    await prisma.scheduleRuleDay.deleteMany({ where: { rule: { userId: user.id } } });
-    await prisma.scheduleRule.deleteMany({ where: { userId: user.id } });
-    await prisma.scheduleOverride.deleteMany({ where: { userId: user.id } });
-    await prisma.seedRecord.deleteMany({ where: { batch: { userId: user.id } } });
-    await prisma.seedBatch.deleteMany({ where: { userId: user.id } });
-    await prisma.tag.deleteMany({ where: { userId: user.id } });
-    await prisma.foodItem.deleteMany({ where: { userId: user.id } });
-    await prisma.calendarDaySummary.deleteMany({ where: { userId: user.id } });
+  // Safety net: snapshot the current database to the OS temp directory before
+  // anything is written. Best-effort — the UI also downloads one — but it
+  // means even a "replace" import always leaves a way back.
+  let safetySnapshot: string | null = null;
+  try {
+    const snapshot = await exportBackup();
+    if (snapshot.ok) {
+      const dir = path.join(tmpdir(), "personal-os-backups");
+      await mkdir(dir, { recursive: true });
+      safetySnapshot = path.join(dir, `pre-import-${Date.now()}.json`);
+      await writeFile(safetySnapshot, JSON.stringify(snapshot.data), "utf8");
+    }
+  } catch {
+    safetySnapshot = null;
   }
 
   let imported = 0;
   const touchedTables: string[] = [];
+
+  try {
+    // One transaction: a fatal failure mid-restore rolls the whole import back
+    // instead of leaving half a backup applied. Row-level constraint failures
+    // are still skipped inside — a partial recovery of a damaged file beats
+    // none — but the database can never be left between two states.
+    await prisma.$transaction(
+      async (db) => {
+  if (mode === "replace") {
+    // Order matters: children before parents, since SQLite enforces FKs.
+    await db.scheduleItemTag.deleteMany({ where: { scheduleItem: { userId: user.id } } });
+    await db.mealEntry.deleteMany({ where: { meal: { userId: user.id } } });
+    await db.mealTemplateItem.deleteMany({ where: { template: { userId: user.id } } });
+    await db.workoutSet.deleteMany({ where: { workout: { userId: user.id } } });
+    await db.scheduleItem.deleteMany({ where: { userId: user.id } });
+    await db.meal.deleteMany({ where: { userId: user.id } });
+    await db.mealTemplate.deleteMany({ where: { userId: user.id } });
+    await db.workout.deleteMany({ where: { userId: user.id } });
+    await db.workoutTemplate.deleteMany({ where: { userId: user.id } });
+    await db.habitLog.deleteMany({ where: { userId: user.id } });
+    await db.habit.deleteMany({ where: { userId: user.id } });
+    await db.healthMetric.deleteMany({ where: { userId: user.id } });
+    await db.healthImportBatch.deleteMany({ where: { userId: user.id } });
+    await db.journalEntry.deleteMany({ where: { userId: user.id } });
+    await db.reminder.deleteMany({ where: { userId: user.id } });
+    await db.reminderDelivery.deleteMany({ where: { userId: user.id } });
+    await db.favoriteItem.deleteMany({ where: { userId: user.id } });
+    await db.goalEntry.deleteMany({ where: { userId: user.id } });
+    await db.goal.deleteMany({ where: { userId: user.id } });
+    // Schedules are polymorphic, so they are cleared explicitly rather than
+    // cascading from the goal/habit rows.
+    await db.scheduleRuleDay.deleteMany({ where: { rule: { userId: user.id } } });
+    await db.scheduleRule.deleteMany({ where: { userId: user.id } });
+    await db.scheduleOverride.deleteMany({ where: { userId: user.id } });
+    await db.seedRecord.deleteMany({ where: { batch: { userId: user.id } } });
+    await db.seedBatch.deleteMany({ where: { userId: user.id } });
+    await db.tag.deleteMany({ where: { userId: user.id } });
+    await db.foodItem.deleteMany({ where: { userId: user.id } });
+    await db.calendarDaySummary.deleteMany({ where: { userId: user.id } });
+  }
 
   /** Upsert a table's rows, re-pointing every row at the current user. */
   async function restore<T>(key: string, write: (row: T) => Promise<unknown>) {
@@ -328,49 +355,49 @@ export async function importBackup(
 
   await restore<{ id: string }>("tags", (row) => {
     const value = own(dates(row)) as never;
-    return prisma.tag.upsert({ where: { id: row.id }, create: value, update: value });
+    return db.tag.upsert({ where: { id: row.id }, create: value, update: value });
   });
 
   await restore<{ id: string }>("foodItems", (row) => {
     const raw = dates(row) as Record<string, unknown>;
     // Bundled foods keep userId null so they stay shared/global.
     const value = (raw.isCustom ? { ...raw, userId: user.id } : raw) as never;
-    return prisma.foodItem.upsert({ where: { id: row.id }, create: value, update: value });
+    return db.foodItem.upsert({ where: { id: row.id }, create: value, update: value });
   });
 
   await restore<{ id: string }>("scheduleTemplates", (row) => {
     const value = own(dates(row)) as never;
-    return prisma.scheduleTemplate.upsert({ where: { id: row.id }, create: value, update: value });
+    return db.scheduleTemplate.upsert({ where: { id: row.id }, create: value, update: value });
   });
 
   await restore<{ id: string }>("habits", (row) => {
     const value = own(dates(row)) as never;
-    return prisma.habit.upsert({ where: { id: row.id }, create: value, update: value });
+    return db.habit.upsert({ where: { id: row.id }, create: value, update: value });
   });
 
   await restore<{ id: string }>("workoutTemplates", (row) => {
     const value = own(dates(row)) as never;
-    return prisma.workoutTemplate.upsert({ where: { id: row.id }, create: value, update: value });
+    return db.workoutTemplate.upsert({ where: { id: row.id }, create: value, update: value });
   });
 
   await restore<{ id: string }>("workouts", (row) => {
     const value = own(dates(row)) as never;
-    return prisma.workout.upsert({ where: { id: row.id }, create: value, update: value });
+    return db.workout.upsert({ where: { id: row.id }, create: value, update: value });
   });
 
   await restore<{ id: string }>("workoutSets", (row) => {
     const value = dates(row) as never;
-    return prisma.workoutSet.upsert({ where: { id: row.id }, create: value, update: value });
+    return db.workoutSet.upsert({ where: { id: row.id }, create: value, update: value });
   });
 
   // Schedule items reference workouts/meals/habits, so they come after those.
   await restore<{ id: string }>("scheduleItems", (row) => {
     const value = own(dates(row)) as never;
-    return prisma.scheduleItem.upsert({ where: { id: row.id }, create: value, update: value });
+    return db.scheduleItem.upsert({ where: { id: row.id }, create: value, update: value });
   });
 
   await restore<{ scheduleItemId: string; tagId: string }>("scheduleItemTags", (row) =>
-    prisma.scheduleItemTag.upsert({
+    db.scheduleItemTag.upsert({
       where: { scheduleItemId_tagId: { scheduleItemId: row.scheduleItemId, tagId: row.tagId } },
       create: row as never,
       update: {},
@@ -379,26 +406,26 @@ export async function importBackup(
 
   await restore<{ id: string }>("habitLogs", (row) => {
     const value = own(dates(row)) as never;
-    return prisma.habitLog.upsert({ where: { id: row.id }, create: value, update: value });
+    return db.habitLog.upsert({ where: { id: row.id }, create: value, update: value });
   });
 
   await restore<{ id: string }>("meals", (row) => {
     const value = own(dates(row)) as never;
-    return prisma.meal.upsert({ where: { id: row.id }, create: value, update: value });
+    return db.meal.upsert({ where: { id: row.id }, create: value, update: value });
   });
 
   await restore<{ id: string }>("mealEntries", (row) => {
     const value = dates(row) as never;
-    return prisma.mealEntry.upsert({ where: { id: row.id }, create: value, update: value });
+    return db.mealEntry.upsert({ where: { id: row.id }, create: value, update: value });
   });
 
   await restore<{ id: string }>("mealTemplates", (row) => {
     const value = own(dates(row)) as never;
-    return prisma.mealTemplate.upsert({ where: { id: row.id }, create: value, update: value });
+    return db.mealTemplate.upsert({ where: { id: row.id }, create: value, update: value });
   });
 
   await restore<{ id: string }>("mealTemplateItems", (row) =>
-    prisma.mealTemplateItem.upsert({
+    db.mealTemplateItem.upsert({
       where: { id: row.id },
       create: row as never,
       update: row as never,
@@ -408,33 +435,33 @@ export async function importBackup(
   // Batches restore before the metric rows that point at them.
   await restore<{ id: string }>("healthImportBatches", (row) => {
     const value = own(dates(row)) as never;
-    return prisma.healthImportBatch.upsert({ where: { id: row.id }, create: value, update: value });
+    return db.healthImportBatch.upsert({ where: { id: row.id }, create: value, update: value });
   });
 
   await restore<{ id: string }>("healthMetrics", (row) => {
     const value = own(dates(row)) as never;
-    return prisma.healthMetric.upsert({ where: { id: row.id }, create: value, update: value });
+    return db.healthMetric.upsert({ where: { id: row.id }, create: value, update: value });
   });
 
   await restore<{ id: string }>("goals", (row) => {
     const value = own(dates(row)) as never;
-    return prisma.goal.upsert({ where: { id: row.id }, create: value, update: value });
+    return db.goal.upsert({ where: { id: row.id }, create: value, update: value });
   });
 
   await restore<{ id: string }>("goalEntries", (row) => {
     const value = own(dates(row)) as never;
-    return prisma.goalEntry.upsert({ where: { id: row.id }, create: value, update: value });
+    return db.goalEntry.upsert({ where: { id: row.id }, create: value, update: value });
   });
 
   // Schedules come after their owners so the polymorphic ownerId always points
   // at a row that exists by the time the engine reads it.
   await restore<{ id: string }>("scheduleRules", (row) => {
     const value = own(dates(row)) as never;
-    return prisma.scheduleRule.upsert({ where: { id: row.id }, create: value, update: value });
+    return db.scheduleRule.upsert({ where: { id: row.id }, create: value, update: value });
   });
 
   await restore<{ ruleId: string; weekday: number }>("scheduleRuleDays", (row) =>
-    prisma.scheduleRuleDay.upsert({
+    db.scheduleRuleDay.upsert({
       where: { ruleId_weekday: { ruleId: row.ruleId, weekday: row.weekday } },
       create: row as never,
       update: {},
@@ -443,39 +470,39 @@ export async function importBackup(
 
   await restore<{ id: string }>("scheduleOverrides", (row) => {
     const value = own(dates(row)) as never;
-    return prisma.scheduleOverride.upsert({ where: { id: row.id }, create: value, update: value });
+    return db.scheduleOverride.upsert({ where: { id: row.id }, create: value, update: value });
   });
 
   await restore<{ id: string }>("journalEntries", (row) => {
     const value = own(dates(row)) as never;
-    return prisma.journalEntry.upsert({ where: { id: row.id }, create: value, update: value });
+    return db.journalEntry.upsert({ where: { id: row.id }, create: value, update: value });
   });
 
   await restore<{ id: string }>("reminders", (row) => {
     const value = own(dates(row)) as never;
-    return prisma.reminder.upsert({ where: { id: row.id }, create: value, update: value });
+    return db.reminder.upsert({ where: { id: row.id }, create: value, update: value });
   });
 
   await restore<{ id: string }>("reminderDeliveries", (row) => {
     const raw = dates(row) as Record<string, unknown>;
     if (typeof raw.deliveredAt === "string") raw.deliveredAt = new Date(raw.deliveredAt);
     const value = { ...raw, userId: user.id } as never;
-    return prisma.reminderDelivery.upsert({ where: { id: row.id }, create: value, update: value });
+    return db.reminderDelivery.upsert({ where: { id: row.id }, create: value, update: value });
   });
 
   await restore<{ id: string }>("favorites", (row) => {
     const value = own(dates(row)) as never;
-    return prisma.favoriteItem.upsert({ where: { id: row.id }, create: value, update: value });
+    return db.favoriteItem.upsert({ where: { id: row.id }, create: value, update: value });
   });
 
   await restore<{ id: string }>("seedBatches", (row) => {
     const value = own(dates(row)) as never;
-    return prisma.seedBatch.upsert({ where: { id: row.id }, create: value, update: value });
+    return db.seedBatch.upsert({ where: { id: row.id }, create: value, update: value });
   });
 
   await restore<{ id: string; model: string; recordId: string }>("seedRecords", (row) => {
     const value = dates(row) as never;
-    return prisma.seedRecord.upsert({
+    return db.seedRecord.upsert({
       where: { model_recordId: { model: row.model, recordId: row.recordId } },
       create: value,
       update: value,
@@ -485,7 +512,16 @@ export async function importBackup(
   // A v1 backup carries no schedules. Anything that arrives without one gets an
   // every-day rule effective from its own start date — which is exactly how it
   // behaved in the version that wrote the file, so no history changes meaning.
-  await backfillMissingSchedules(user.id);
+  await backfillMissingSchedules(db, user.id);
+      },
+      { timeout: 300_000 },
+    );
+  } catch (error) {
+    return fail(
+      "The import failed and was rolled back — nothing was changed. " +
+        (error instanceof Error ? error.message.slice(0, 300) : ""),
+    );
+  }
 
   // Summaries are derived, so rebuild rather than importing them.
   const earliest = await prisma.scheduleItem.findFirst({
@@ -496,7 +532,7 @@ export async function importBackup(
   await rebuildSummaries(user.id, earliest?.date ?? today(), today());
 
   revalidatePath("/", "layout");
-  return succeed({ imported, tables: touchedTables });
+  return succeed({ imported, tables: touchedTables, safetySnapshot });
 }
 
 /**
@@ -505,11 +541,13 @@ export async function importBackup(
  * Idempotent, and only ever *adds* — a record that already has a schedule is
  * left completely alone.
  */
-async function backfillMissingSchedules(userId: string): Promise<void> {
+type DbClient = Parameters<Parameters<typeof prisma.$transaction>[0]>[0];
+
+async function backfillMissingSchedules(db: DbClient, userId: string): Promise<void> {
   const [goals, habits, rules] = await Promise.all([
-    prisma.goal.findMany({ where: { userId }, select: { id: true, startDate: true, createdAt: true, active: true, endDate: true } }),
-    prisma.habit.findMany({ where: { userId }, select: { id: true, startDate: true, endDate: true, archived: true, timeOfDay: true } }),
-    prisma.scheduleRule.findMany({ where: { userId }, select: { ownerType: true, ownerId: true } }),
+    db.goal.findMany({ where: { userId }, select: { id: true, startDate: true, createdAt: true, active: true, endDate: true } }),
+    db.habit.findMany({ where: { userId }, select: { id: true, startDate: true, endDate: true, archived: true, timeOfDay: true } }),
+    db.scheduleRule.findMany({ where: { userId }, select: { ownerType: true, ownerId: true } }),
   ]);
 
   const have = new Set(rules.map((rule) => `${rule.ownerType}:${rule.ownerId}`));
@@ -518,7 +556,7 @@ async function backfillMissingSchedules(userId: string): Promise<void> {
 
   for (const goal of goals) {
     if (have.has(`goal:${goal.id}`)) continue;
-    await prisma.scheduleRule.create({
+    await db.scheduleRule.create({
       data: {
         userId,
         ownerType: "goal",
@@ -533,7 +571,7 @@ async function backfillMissingSchedules(userId: string): Promise<void> {
 
   for (const habit of habits) {
     if (have.has(`habit:${habit.id}`)) continue;
-    await prisma.scheduleRule.create({
+    await db.scheduleRule.create({
       data: {
         userId,
         ownerType: "habit",

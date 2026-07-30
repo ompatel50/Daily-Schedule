@@ -43,11 +43,11 @@
 | 12 | Demo-data separation & onboarding                  | ✅ done |
 | 13 | Reminders                                          | ✅ done |
 | 14 | Search & command palette                           | ✅ done |
-| 15 | Backup & import updates                            | ⬜ not started |
+| 15 | Backup & import updates                            | ✅ done |
 | 16 | Accessibility, responsiveness, performance         | ⬜ not started |
 | 17 | Full testing & polish                              | ⬜ not started |
 
-**Current phase:** 15 — Backup & import updates (**not started**)
+**Current phase:** 16 — Accessibility, responsiveness, performance (**not started**)
 
 **The task's stated highest-priority milestone is complete** (central schedule
 engine, scheduled goals, scheduled habits, rest-day behaviour, streaks, day
@@ -688,13 +688,17 @@ These are stated plainly so nothing reads as finished when it is not:
    there is no ESLint config committed. Linting has therefore **not** been run.
    Setting it up is a judgement call left for Phase 16/17 because a fresh strict
    config will flag pre-existing code across the whole repo.
-2. ~~Backups do not yet include the new tables.~~ **Fixed** — backup format v2
-   covers `ScheduleRule`, `ScheduleRuleDay`, `ScheduleOverride`, `GoalEntry`,
-   `SeedBatch` and `SeedRecord`, with metadata and a checksum. Still outstanding
-   from Phase 15: the *import UI* does not yet show the preview that
-   `previewBackup()` now returns, there is no automatic pre-import backup, and
-   the restore is not wrapped in a single transaction. A full
-   export→modify→restore round trip has not been executed end to end.
+2. ~~Backups do not yet include the new tables / the import has no preview,
+   no pre-import backup and no transaction.~~ **Fixed — Phase 15 complete.**
+   Format v3 covers every table including `HealthImportBatch` and
+   `ReminderDelivery`; the import UI shows the `previewBackup()` inspection
+   (version, warnings, per-table counts) before anything is written; a backup
+   of the current data auto-downloads on confirm and a copy is written to the
+   OS temp dir; the restore runs in one transaction that rolls back entirely
+   on a fatal failure (row-level constraint failures are still skipped —
+   partial recovery of a damaged file beats none); and the full
+   export→damage→restore round trip has now been executed end to end in a
+   real browser — see the Phase 15 section.
 3. ~~Routine/template application still duplicates.~~ **Fixed in Phase 7.**
    Still outstanding in this area: the four-way choice exists only on the
    **routine bar**; the command palette has no routine-apply entry to route
@@ -1509,14 +1513,52 @@ errors and zero page errors.
 
 ---
 
+## Phase 15 — backup & import updates
+
+Format v3 already carried every new table (asserted both ways by the backup
+suite). This phase closed the four items the original Phase 15 list left
+open:
+
+* **The import shows what it will do before doing it.** Choosing a file now
+  runs `previewBackup()` and opens a dialog with the file's version warnings
+  and per-table record counts; nothing is written until the user confirms,
+  and cancel imports nothing (verified against the database while the dialog
+  was open).
+* **A pre-import backup happens automatically.** Confirming first downloads
+  a `pre-import-backup-<date>.json` of the *current* data, and the server
+  writes a second copy to the OS temp directory (`personal-os-backups/`) —
+  so even a replace import always leaves a way back.
+* **The restore is one transaction.** A fatal failure mid-restore rolls the
+  whole import back with a clear message instead of leaving half a backup
+  applied. Row-level constraint failures inside are still skipped — partial
+  recovery of a damaged file beats none — and the deliberate distinction is
+  documented in the code. `backfillMissingSchedules` runs inside the
+  transaction; summary rebuilding stays outside (derived data, idempotent).
+* **The round trip has now actually been run.** Export through the real UI →
+  delete 50 planner items, mangle a habit's name, delete every hydration
+  metric → import the file back through the real UI. Every table count
+  matched the pre-damage state exactly and the mangled record was restored
+  by id.
+
+**Verification:** 593/593 tests (the backup suite gained the
+transaction/snapshot assertions), typecheck and build clean. Browser
+(Playwright, production build) — **17/17**: v3 export with the new tables
+and exact row counts; preview-writes-nothing; auto-downloaded pre-import
+backup; full round trip byte-equal on counts; a foreign file and a
+newer-version file both refused before anything happens; zero console
+errors and zero page errors.
+
+---
+
 ## Exact next step
 
-**Phase 15 — backup & import updates.** Format v3 already covers every new
-table (the backup suite asserts export and import both walk `BACKUP_TABLES`).
-Still outstanding from the original Phase 15 list: the import UI does not show
-the preview `previewBackup()` returns, there is no automatic pre-import
-backup, the restore is not wrapped in a transaction, and a full
-export→modify→restore round trip has never been executed end to end.
+**Phase 16 — accessibility, responsiveness, performance.** The audit list
+from the task: keyboard navigation, focus visibility, dialog focus trapping,
+form labels, screen-reader names, status semantics, contrast, reduced
+motion, narrow windows, error messages; N+1 queries (`getDayScores` per-day
+loop is the known one), calendar queries, insight aggregation, large health
+imports, dashboard loading. Plus the host-clock stragglers listed in
+known-problems #11.
 
 Also still open from earlier phases:
 
