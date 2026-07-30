@@ -45,9 +45,11 @@
 | 14 | Search & command palette                           | ✅ done |
 | 15 | Backup & import updates                            | ✅ done |
 | 16 | Accessibility, responsiveness, performance         | ✅ done |
-| 17 | Full testing & polish                              | ⬜ not started |
+| 17 | Full testing & polish                              | ✅ done |
 
-**Current phase:** 17 — Full testing & polish (**not started**)
+**Current phase:** — the Preview 3 master upgrade checklist is **complete**.
+See "What remains deliberately open" at the end of this file for the honest
+list of known limits and deferred improvements.
 
 **The task's stated highest-priority milestone is complete** (central schedule
 engine, scheduled goals, scheduled habits, rest-day behaviour, streaks, day
@@ -1616,22 +1618,63 @@ reduced-motion render check passes.
 
 ---
 
-## Exact next step
+## Phase 17 — full regression & polish
 
-**Phase 17 — full regression testing & polish.** Every automated test, type
-check, production build, all routes, console and server logs, cross-feature
-workflows, migration review, backup round trip re-check, privacy review, full
-diff review, dead-code sweep, README/progress final update.
+Run in this order, all against the production build, all passing:
 
-Also still open from earlier phases:
+* **Automated tests:** 593/593 across 21 files. **Type check:** clean.
+  **Build:** clean, 12 routes.
+* **Every route** returns 200 with **zero console errors/warnings and zero
+  uncaught page errors**; the production server log is clean.
+* **Cross-feature chain, end to end in a browser:** a CSV of 15,000 steps
+  imported for today flows through the aggregation module into the day
+  summary (verified in the database), onto the dashboard, and the batch's
+  removal restores the summary to its pre-import value exactly. One
+  assertion in the first draft of this check looked for the steps goal on
+  Today; it renders on Settings — its owning surface under the Phase 8
+  split — which is correct behaviour, and the check was corrected.
+* **Migrations:** `npm run db:migrate` re-run — all three data migrations
+  report "nothing to do".
+* **Backup round trip:** executed end to end in Phase 15 (export → damage →
+  restore, byte-equal counts) and the format re-asserted by the suite.
+* **Privacy review:** no `.env`, database file, ZIP or health export is
+  tracked; the client bundle contains no provider key, no provider host and
+  no health-import server code; the health modules contain no network call
+  (asserted by a committed test); provider search options are structurally
+  sealed (`SEARCH_OPTION_KEYS`).
+* **Diff review:** 6 commits, 79 files, ~8.7k insertions over `main`, all
+  accounted for by Phases 11–17; no temporary or verification scripts live
+  in the repo (they stayed in the session scratchpad).
+* **Dead code:** `getDayScores` (uncalled N+1), `useDateParam` (uncalled),
+  and the legacy `importHealthMetrics`/`markReminderFired` actions were
+  removed in their phases; a final sweep found no further orphans.
 
-* If network access is available, run one live search against each food provider
-  and confirm the normalisers against real payloads — see "Provider verification
-  status" in the Phase 9 section.
-* Wire `setSessionRest` to the UI. The action exists and is tested; nothing calls
-  it, so a session's rest length can currently only come from its template.
+## What remains deliberately open
 
-Resume with:
+Stated plainly, so nothing reads as finished when it is not:
+
+1. **Linting is still not configured** (`next lint` was already broken and
+   deprecated by Next 15 before this upgrade; setting up a fresh strict
+   ESLint config flags pre-existing code repo-wide). A judgement call,
+   documented since Phase 0 — not an accident.
+2. **No live food-provider request has ever been made** — this environment's
+   network policy blocks both hosts. The normalisers are fixture-verified;
+   one live search per provider should be confirmed by a person with
+   network access (Phase 9 section has the details).
+3. **`setSessionRest` still has no UI** — a session's rest length comes from
+   its template (Phase 10 wishlist).
+4. **The committed suite is pure** — database-backed behaviours (unique
+   constraints, transaction rollback, batch removal) are browser-verified
+   and recorded here per phase, not enforced by `npm test`. An integration
+   suite stays the natural next investment.
+5. **`rebuildSummaries` over a multi-year health import is O(days)** —
+   minutes, once, on a first big import (Phase 11 section).
+6. Smaller wishlist items are listed in "Known problems / what is NOT done"
+   above (per-provider result quotas, barcode scanning, rest-timer
+   notification, superset grouping, timeline conflict badges on week/month
+   grids, drag-onto-occupied-slot pre-check).
+
+## Resuming later
 
 ```
 cd /home/user/Daily-Schedule
