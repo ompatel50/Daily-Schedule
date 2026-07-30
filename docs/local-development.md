@@ -69,11 +69,7 @@ email + password form. There is no Google, no OAuth, no separate
 
    ```
    AUTH_SECRET="<generate one: openssl rand -base64 33>"
-   ALLOWED_EMAILS="you@local"
    ```
-
-   `ALLOWED_EMAILS` applies locally exactly as in production, and it fails
-   closed — left empty, nobody can sign in.
 
 2. Restart the dev server and sign in with the account the demo seed
    created:
@@ -85,14 +81,10 @@ email + password form. There is no Google, no OAuth, no separate
    password is only ever set on **local** databases (the seed refuses to run
    against anything else), and only if the account doesn't already have one.
 
-If you used `npm run setup:empty`, there is no account yet — so you can walk
-the real one-time owner flow instead: also set `AUTH_SETUP_TOKEN` in `.env`
-to a long random value (`openssl rand -base64 33`; anything under 32
-characters is ignored and setup stays off), restart, and open
-<http://localhost:3000/setup>. This is the exact flow a fresh deployment
-uses — see [`auth-setup.md`](auth-setup.md). Note that `/setup` only exists
-while **no** account has a password, so after the demo seed it just
-redirects to the sign-in page — by design, not a bug.
+If you used `npm run setup:empty`, there is no account yet — create one the
+way any visitor would: open <http://localhost:3000/signup> and register.
+This is the exact flow a fresh deployment uses (recovery codes and all) —
+see [`auth-setup.md`](auth-setup.md).
 
 ## Commands
 
@@ -140,8 +132,7 @@ server (deliberately — building inside the test run would double its cost):
 
 ```bash
 # terminal 1 — seed the two test accounts, then build and start:
-#   .env needs AUTH_SECRET set and ALLOWED_EMAILS containing
-#   you@local and alice@example.com (the test accounts)
+#   .env needs AUTH_SECRET set
 npm run seed:e2e
 npm run build
 npm start

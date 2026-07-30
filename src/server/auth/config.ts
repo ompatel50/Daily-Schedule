@@ -9,19 +9,19 @@
  * validates the session JWT, it never performs a sign-in.
  *
  * Security posture:
- *  - Sign-in is in-app email + password only. No OAuth provider, no external
- *    identity service, no public registration; the one-time owner setup page
- *    (/setup) is gated by a server-side token and disables itself.
- *  - The server-side email allowlist still applies on top of the password
- *    check, and fails closed when missing (src/server/auth/credentials.ts).
+ *  - Sign-in is in-app email + password only. No OAuth provider and no
+ *    external identity service. Registration is public self-serve
+ *    (/signup): anyone can create an account, and every account is fully
+ *    isolated to its own rows by the per-user checks on every query.
  *  - Sessions are stateless JWTs (no session table), 30-day maximum. Each
  *    token carries the account's `tokenVersion`; a password change bumps the
  *    version, so every previously issued token dies on its next request
  *    (checked in src/server/auth/current-user.ts, costing no extra query).
  *  - `authorized` is what the middleware enforces: every route except the
- *    sign-in/setup pages and the few public endpoints requires a session.
- *    Middleware is the outer fence only — every server action and query
- *    independently resolves the user from the session.
+ *    public auth pages (sign-in, sign-up, forgot-password) and the few
+ *    public endpoints requires a session. Middleware is the outer fence
+ *    only — every server action and query independently resolves the user
+ *    from the session.
  */
 import type { NextAuthConfig } from "next-auth";
 
@@ -38,10 +38,11 @@ export const authConfig = {
   callbacks: {
     authorized({ auth, request }) {
       const { pathname } = request.nextUrl;
-      // Public: the sign-in and one-time setup pages, the Auth.js endpoints,
-      // the PWA assets and the cron endpoint (which enforces its own
-      // CRON_SECRET check).
-      if (pathname === "/signin" || pathname === "/setup") return true;
+      // Public: the auth pages (sign-in, sign-up, forgot-password), the
+      // Auth.js endpoints, the PWA assets and the cron endpoint (which
+      // enforces its own CRON_SECRET check).
+      if (pathname === "/signin" || pathname === "/signup" || pathname === "/forgot-password")
+        return true;
       if (pathname.startsWith("/api/auth")) return true;
       if (pathname === "/sw.js" || pathname === "/manifest.webmanifest") return true;
       if (pathname.startsWith("/icons/") || pathname === "/api/reminders/run") return true;

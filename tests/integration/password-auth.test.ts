@@ -1,12 +1,14 @@
 /**
  * The credential policy, end to end against a real user table: this file
  * pins what verifyCredentials (src/server/auth/credentials.ts) — the exact
- * function production sign-in runs — does with correct, wrong, unknown,
- * non-allowlisted and locked-out credentials, including the DB side effects
+ * function production sign-in runs — does with correct, wrong, unknown
+ * and locked-out credentials, including the DB side effects
  * (lastLoginAt, failedLoginCount, lastFailedLoginAt, lockedUntil) that the
  * lockout and audit-trail features depend on.
  *
  * The invariants that must never regress:
+ *   - ANY existing account with the right password signs in — no allowlist,
+ *     no per-email approval (the public sign-up model),
  *   - every failure mode returns the same bare null (enumeration resistance),
  *   - 5 consecutive failures lock the account, and while locked even the
  *     CORRECT password is refused,
@@ -121,18 +123,17 @@ describe("verifyCredentials — failure paths", () => {
     expect(await prisma.user.findUnique({ where: { email: "nobody@test.local" } })).toBeNull();
   });
 
-  it("returns null for a non-allowlisted user even with the correct password", async () => {
-    // outsider@test.local is NOT in the ALLOWED_EMAILS the setup file plants.
+  it("signs in ANY existing account with the right password — no allowlist, no approval step", async () => {
+    // A second, freshly self-served account nobody "allowed": public
+    // sign-up means the password is the whole test.
     await prisma.user.create({
-      data: { email: "outsider@test.local", name: "Outsider", passwordHash },
+      data: { email: "newcomer@test.local", name: "Newcomer", passwordHash },
     });
 
-    expect(await verifyCredentials("outsider@test.local", PASSWORD)).toBeNull();
-
-    // The refusal happens before password judgment — it is not a "failure"
-    // that should march the account toward a lockout.
-    const row = await authRow("outsider@test.local");
-    expect(row.failedLoginCount).toBe(0);
+    const user = await verifyCredentials("newcomer@test.local", PASSWORD);
+    expect(user).not.toBeNull();
+    expect(user?.email).toBe("newcomer@test.local");
+    expect((await authRow("newcomer@test.local")).lastLoginAt).not.toBeNull();
   });
 
   it("returns null for a missing password or empty email without touching the counters", async () => {

@@ -1,8 +1,10 @@
 /**
  * The account-resolution invariant behind every query and action, against a
- * real user table: getCurrentUser returns a row only for a session whose user
- * exists AND is allowlisted, and the allowlist is re-read per request so a
- * change locks accounts out (or in) immediately.
+ * real user table: getCurrentUser returns a row only for a session that
+ * names an existing user AND carries that user's current tokenVersion.
+ * There is no allowlist and no per-email gate — ANY account resolves; what
+ * revokes access is the tokenVersion bump (password change, "sign out
+ * everywhere"), pinned in depth by session-invalidation.test.ts.
  *
  * Auth.js itself (cookie/JWT machinery) is stubbed out by
  * vitest.integration.config.ts, so no real sign-in happens here — the
@@ -10,7 +12,7 @@
  * what this file proves is the DB-level invariant every request depends on
  * after sign-in.
  */
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { beforeEach, describe, expect, it } from "vitest";
 
 import { prisma } from "@/lib/prisma";
 import { getCurrentUser, requireCurrentUser } from "@/server/auth/current-user";
@@ -20,16 +22,9 @@ import type { User } from "./helpers";
 
 let alice: User;
 
-// tests/integration/setup.ts sets the allowlist; every mutation restores it.
-const ALLOWLIST = process.env.ALLOWED_EMAILS;
-
 beforeEach(async () => {
   await resetDatabase();
   ({ alice } = await twoUsers());
-});
-
-afterEach(() => {
-  process.env.ALLOWED_EMAILS = ALLOWLIST;
 });
 
 describe("getCurrentUser", () => {
@@ -38,7 +33,7 @@ describe("getCurrentUser", () => {
     expect(await getCurrentUser()).toBeNull();
   });
 
-  it("returns the database row for an allowlisted session user", async () => {
+  it("returns the database row for a session user", async () => {
     actAs(alice);
     const user = await getCurrentUser();
     expect(user).not.toBeNull();
@@ -55,23 +50,19 @@ describe("getCurrentUser", () => {
     await expect(requireCurrentUser()).rejects.toThrowError(/NEXT_REDIRECT/);
   });
 
-  it("returns null for a user whose email is not allowlisted", async () => {
-    const outsider = await createUser("outsider@test.local", "Outsider");
-    actAs(outsider);
-    expect(await getCurrentUser()).toBeNull();
+  it("resolves ANY existing account — there is no allowlist and no per-email gate", async () => {
+    // A brand-new self-serve account nobody "approved": it simply works.
+    const newcomer = await createUser("newcomer@test.local", "Newcomer");
+    actAs(newcomer);
+    expect((await getCurrentUser())?.id).toBe(newcomer.id);
   });
 
-  it("re-reads the allowlist per request — adding and removing an email applies immediately", async () => {
-    const outsider = await createUser("outsider@test.local", "Outsider");
-    actAs(outsider);
-    expect(await getCurrentUser()).toBeNull();
-
-    // Case-insensitive: the env list is upper-cased, the row is lower-case.
-    process.env.ALLOWED_EMAILS = `${ALLOWLIST},OUTSIDER@TEST.LOCAL`;
-    expect((await getCurrentUser())?.id).toBe(outsider.id);
-
-    // Removing the email locks the account out on its very next request.
-    process.env.ALLOWED_EMAILS = ALLOWLIST;
+  it("returns null for a session whose tokenVersion predates the row's — revocation is the version bump", async () => {
+    actAs(alice); // captures tokenVersion as it is right now
+    await prisma.user.update({
+      where: { id: alice.id },
+      data: { tokenVersion: { increment: 1 } },
+    });
     expect(await getCurrentUser()).toBeNull();
   });
 });

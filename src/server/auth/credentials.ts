@@ -6,9 +6,9 @@
  * what production runs.
  *
  * Enumeration resistance: every failure — unknown email, wrong password,
- * not-allowlisted, locked account — returns the same `null`, and an unknown
- * email still pays for a full scrypt verification against a dummy hash so
- * timing reveals nothing either.
+ * locked account — returns the same `null`, and an unknown email still pays
+ * for a full scrypt verification against a dummy hash so timing reveals
+ * nothing either.
  *
  * Throttling is per-account and stored on the User row (serverless instances
  * share nothing but the database): 5 consecutive failures lock the account
@@ -21,7 +21,6 @@ import "server-only";
 import type { User } from "@prisma/client";
 
 import { prisma } from "@/lib/prisma";
-import { isAllowedEmail } from "./allowlist";
 import { dummyHash, hashPassword, needsRehash, verifyPassword } from "./password";
 
 export const MAX_FAILED_ATTEMPTS = 5;
@@ -72,16 +71,9 @@ export async function verifyCredentials(
       await prisma.user.findUnique({ where: { email }, omit: { passwordHash: false } })
     : null;
 
-  // Unknown account (or one that never finished setup): burn the same scrypt
-  // time as a real verification, then refuse.
+  // Unknown account (or a legacy row that never got a password): burn the
+  // same scrypt time as a real verification, then refuse.
   if (!user?.passwordHash) {
-    await verifyPassword(password, await dummyHash());
-    return null;
-  }
-
-  // The allowlist applies to password sign-in exactly as it did to OAuth,
-  // and it fails closed when unconfigured.
-  if (!isAllowedEmail(user.email)) {
     await verifyPassword(password, await dummyHash());
     return null;
   }

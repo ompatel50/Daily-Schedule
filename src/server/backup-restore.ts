@@ -260,7 +260,15 @@ export async function restoreBackupForUser(
     .map((row) => ({ provider: row.provider as string, externalId: row.externalId as string }));
   const existingExternal = externalKeys.length
     ? await prisma.foodItem.findMany({
-        where: { OR: externalKeys.map((key) => ({ provider: key.provider, externalId: key.externalId })) },
+        // Only genuinely GLOBAL cache rows are reusable across accounts.
+        // Without the userId filter, a (provider, externalId) key held by
+        // another user's personal row would attach this import's meals to
+        // that row — cross-tenant references, and their replace-mode
+        // restore would then brick on the MealEntry Restrict FK.
+        where: {
+          userId: null,
+          OR: externalKeys.map((key) => ({ provider: key.provider, externalId: key.externalId })),
+        },
         select: { id: true, provider: true, externalId: true },
       })
     : [];
@@ -289,13 +297,26 @@ export async function restoreBackupForUser(
 
     const newId = remapId(userId, oldId);
     foodIdMap.set(oldId, newId);
-    const isProviderCached = externalKey !== null && sanitized.cached === true;
+    // Every row created from a user's file belongs to that user. A restore
+    // must never write into the shared userId:null cache — a crafted backup
+    // could otherwise plant "provider" rows (fake macros, hijacked barcodes,
+    // verified flags) that every account on the server would see and that
+    // would pre-empt the real provider result forever. Any row still
+    // carrying an externalId here (it matched no real global row above) also
+    // loses it: that identity slot is reserved for data the server actually
+    // fetched from the provider, and NULLS-DISTINCT semantics keep stripped
+    // copies from ever colliding with it or each other. Keyed on externalId
+    // ALONE, not the (provider, externalId) pair — `provider` has a schema
+    // default, so a crafted row can omit it while keeping an externalId, and
+    // keying on the pair would let that row through to squat the
+    // ("local", externalId) global slot (after which a second import of the
+    // same file would abort on the meal-entry FK). The meal history behind
+    // it is untouched — entries carry their own frozen nutrition snapshot.
     foodRowsToCreate.push({
       ...sanitized,
       id: newId,
-      // Provider-cached rows stay in the shared cache (the same place a live
-      // search would have put them); everything else belongs to the importer.
-      userId: isProviderCached ? null : userId,
+      userId,
+      ...(typeof sanitized.externalId === "string" ? { externalId: null, cached: false } : {}),
     });
   }
 

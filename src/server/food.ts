@@ -237,8 +237,10 @@ export async function getCachedFood(
   externalId: string,
 ): Promise<NormalizedFood | null> {
   if (!externalId) return null;
-  const row = await prisma.foodItem.findUnique({
-    where: { provider_externalId: { provider, externalId } },
+  // Only the shared cache answers here. A user-owned row holding provider
+  // identity (legacy restores) is someone's personal record, not the cache.
+  const row = await prisma.foodItem.findFirst({
+    where: { provider, externalId, userId: null },
   });
   return row ? rowToNormalizedFood(row) : null;
 }
@@ -262,6 +264,26 @@ export async function cacheFood(food: NormalizedFood): Promise<FoodItem> {
     // Nothing to key on: a food with no provider id is not cacheable.
     return prisma.foodItem.create({
       data: { ...data, cached: false, retrievedAt: now, refreshedAt: now },
+    });
+  }
+
+  // The (provider, externalId) slot belongs to the SHARED cache. If a
+  // user-owned row holds it (legacy data from before restores stopped
+  // writing provider identity), it must be neither flipped to global nor
+  // overwritten with fresh data — that would silently mutate, and expose,
+  // someone's personal record. Move it aside instead: content and ownership
+  // intact, identity stripped. One-time per legacy row.
+  const occupant = await prisma.foodItem.findUnique({
+    where: { provider_externalId: { provider: food.provider, externalId: food.externalId } },
+    select: { id: true, userId: true },
+  });
+  if (occupant && occupant.userId !== null) {
+    // updateMany, not update: if the occupant is gone by now (a concurrent
+    // cache write moved it aside first) this is a harmless no-op rather than
+    // a P2025 that would abort the caller's food logging.
+    await prisma.foodItem.updateMany({
+      where: { id: occupant.id, userId: { not: null } },
+      data: { externalId: null, cached: false },
     });
   }
 
@@ -292,8 +314,10 @@ export async function materializeFood(
 
   if (!externalId) return null;
 
-  const cached = await prisma.foodItem.findUnique({
-    where: { provider_externalId: { provider, externalId } },
+  // The shared cache, or the user's own row carrying this identity — never
+  // another account's personal record that happens to hold the same key.
+  const cached = await prisma.foodItem.findFirst({
+    where: { provider, externalId, OR: [{ userId: null }, { userId }] },
   });
   if (cached) return cached;
 
@@ -386,6 +410,10 @@ export function clearFoodRefreshState(): void {
  * foods will retype the same term within a minute. This keeps that from
  * becoming two identical provider round-trips; it is not a substitute for the
  * durable cache above, which is what survives a restart and works offline.
+ *
+ * INVARIANT: only REMOTE provider results (public data) may ever be memoized
+ * here. The key carries no userId, so memoizing local matches — which include
+ * a user's private custom foods — would serve one account's rows to another.
  */
 const searchMemo = new Map<string, { at: number; results: NormalizedFood[] }>();
 

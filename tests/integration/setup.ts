@@ -15,5 +15,3 @@ if (!/personal_os_test|_test\b/.test(url)) {
 
 process.env.DATABASE_URL = url;
 process.env.DIRECT_DATABASE_URL = url;
-// The users the tests sign in as must pass the live allowlist check.
-process.env.ALLOWED_EMAILS = "alice@test.local,bob@test.local,owner@test.local";

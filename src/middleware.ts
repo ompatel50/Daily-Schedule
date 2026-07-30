@@ -3,9 +3,9 @@
  *
  * Runs on the Edge runtime, so it uses the edge-safe `authConfig` (JWT check
  * only, no database). The `authorized` callback in that config is the policy:
- * everything except /signin, the one-time /setup page and the Auth.js
- * endpoints requires a session, and unauthenticated visitors are redirected
- * to the sign-in page.
+ * everything except the public auth pages (/signin, /signup,
+ * /forgot-password) and the Auth.js endpoints requires a session, and
+ * unauthenticated visitors are redirected to the sign-in page.
  *
  * This is deliberately NOT the only protection. Middleware can be bypassed by
  * misconfiguration and never sees server-action internals, so every query and
