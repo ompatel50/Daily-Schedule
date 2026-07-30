@@ -205,42 +205,9 @@ export async function deleteReminder(id: string): Promise<ActionResult<null>> {
   return succeed(null);
 }
 
-export async function markReminderFired(id: string): Promise<ActionResult<null>> {
-  const user = await getCurrentUser();
-  const reminder = await prisma.reminder.findFirst({ where: { id, userId: user.id } });
-  if (!reminder) return fail("Reminder not found");
-
-  const next = nextOccurrence(reminder.remindAt, reminder.repeat);
-  await prisma.reminder.update({
-    where: { id },
-    data: {
-      lastFiredAt: new Date(),
-      remindAt: next ?? reminder.remindAt,
-      enabled: next !== null,
-    },
-  });
-
-  return succeed(null);
-}
-
-function nextOccurrence(from: Date, repeat: string): Date | null {
-  const next = new Date(from);
-  switch (repeat) {
-    case "daily":
-      next.setDate(next.getDate() + 1);
-      return next;
-    case "weekdays":
-      do {
-        next.setDate(next.getDate() + 1);
-      } while (next.getDay() === 0 || next.getDay() === 6);
-      return next;
-    case "weekly":
-      next.setDate(next.getDate() + 7);
-      return next;
-    default:
-      return null;
-  }
-}
+// `markReminderFired` moved: delivery is recorded by `recordReminderDelivery`
+// in src/server/reminders.ts, keyed per occurrence so it is exactly-once even
+// across tabs. The watcher calls it via src/server/actions/reminders.ts.
 
 // --- settings ---------------------------------------------------------------
 

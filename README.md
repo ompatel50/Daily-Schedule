@@ -321,7 +321,12 @@ if two surfaces ever claim the same job.
 * **Export/import**: full JSON backup, per-table CSV export, and JSON restore in merge or replace
   mode.
 * **Dark mode**, following the system by default.
-* **Reminders**: desktop notifications and toasts while the app is open.
+* **Reminders**: desktop notifications and toasts while the app is open — and
+  **schedule-aware**: nothing fires on a rest day, for something not scheduled today, for an
+  archived habit, for an item already completed / excused / skipped, or for a times-per-week
+  habit whose weekly target is already met. Every occurrence is delivered exactly once (a ledger
+  keyed per occurrence survives reloads and multiple tabs), and where browser notifications are
+  blocked or unsupported, the in-app toast still appears.
 
 ---
 

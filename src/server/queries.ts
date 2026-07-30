@@ -492,13 +492,8 @@ export async function getJournalEntries(from: DayKey, to: DayKey) {
   });
 }
 
-export async function getReminders() {
-  const user = await getCurrentUser();
-  return prisma.reminder.findMany({
-    where: { userId: user.id },
-    orderBy: { remindAt: "asc" },
-  });
-}
+// Raw reminder rows are no longer handed to the client: the watcher consumes
+// the schedule-aware feed from src/server/reminders.ts instead.
 
 // --- aggregate views --------------------------------------------------------
 

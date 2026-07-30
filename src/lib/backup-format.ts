@@ -15,8 +15,9 @@
  * v2 — adds the shared scheduling tables (`scheduleRules`, `scheduleRuleDays`,
  *      `scheduleOverrides`), manual goal outcomes (`goalEntries`) and demo-data
  *      identification (`seedBatches`, `seedRecords`), plus richer metadata.
- * v3 — adds health import batches (`healthImportBatches`); health metric rows
- *      now carry fingerprints, intervals, sleep stages and batch links.
+ * v3 — adds health import batches (`healthImportBatches`) and the reminder
+ *      delivery ledger (`reminderDeliveries`); health metric rows now carry
+ *      fingerprints, intervals, sleep stages and batch links.
  *
  * A v1 or v2 file restores into a v3 app unchanged: the missing tables simply
  * have no rows, `npm run db:migrate` backfills an every-day schedule for
@@ -77,6 +78,7 @@ export const BACKUP_TABLES = [
   "scheduleOverrides",
   "journalEntries",
   "reminders",
+  "reminderDeliveries",
   "favorites",
   "seedBatches",
   "seedRecords",

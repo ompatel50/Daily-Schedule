@@ -41,13 +41,13 @@
 | 10 | Workout session system                             | ✅ done |
 | 11 | Health imports & health metrics                    | ✅ done |
 | 12 | Demo-data separation & onboarding                  | ✅ done |
-| 13 | Reminders                                          | ⬜ not started |
+| 13 | Reminders                                          | ✅ done |
 | 14 | Search & command palette                           | ⬜ not started |
 | 15 | Backup & import updates                            | ⬜ not started |
 | 16 | Accessibility, responsiveness, performance         | ⬜ not started |
 | 17 | Full testing & polish                              | ⬜ not started |
 
-**Current phase:** 13 — Reminders (**not started**)
+**Current phase:** 14 — Search & command palette (**not started**)
 
 **The task's stated highest-priority milestone is complete** (central schedule
 engine, scheduled goals, scheduled habits, rest-day behaviour, streaks, day
@@ -710,9 +710,12 @@ These are stated plainly so nothing reads as finished when it is not:
    is what the manual fingerprint is for), so the edited value is still part
    of the batch and leaves with it. A record is "yours" when you *created* it,
    not when you edited a demo one.
-5. **Reminders are not schedule-aware yet** — `reminder-watcher.tsx` still fires
-   from the old `Reminder` table. The `reminderEnabled`/`reminderMinute` fields
-   on `ScheduleRule` are written by the editor but **not yet consumed**.
+5. ~~Reminders are not schedule-aware yet.~~ **Fixed in Phase 13** — see the
+   Phase 13 section. `reminderEnabled`/`reminderMinute` are now consumed for
+   both habits and goals. Remaining honest limits: reminders still only fire
+   while a tab is open (stated in Settings; a local-first app with no server
+   cannot do better), and the rest-timer-reaches-zero notification from the
+   Phase 10 wishlist is still not built.
 6. ~~Nutrition still searches only the bundled local food table.~~ **Fixed in
    Phase 9** — provider architecture, USDA and Open Food Facts, local caching,
    offline behaviour. **But no live provider request has ever been made** (the
@@ -1401,15 +1404,81 @@ made — fixed the same way.)
 
 ---
 
+## Phase 13 — schedule-aware reminders
+
+### The design
+
+**All the knowledge is server-side, in one place.** The watcher used to be
+handed raw `Reminder` rows and knew nothing about schedules. It is now a dumb
+poller fed by `getReminderFeed()` (`src/server/reminders.ts`), which resolves
+today through the same schedule engine, habit views and goal evaluations
+everything else uses; the yes/no decision itself is pure —
+`src/lib/logic/reminders.ts` — and returns a *reason* when silent
+(`rest_day | not_scheduled | excused | canceled | completed | inactive |
+disabled | delivered | no_time | future | already_fired`), so the tests
+assert why a reminder stayed quiet, not merely that it did.
+
+**What never fires:** anything on a rest day or an unscheduled/excused/
+cancelled date (engine statuses map 1:1 to suppressions); archived habits
+and disabled rules; a habit already done or a goal already met today; a
+times-per-week item once the weekly target is reached (before that it
+reminds on any available day); a classic reminder attached to a planner item
+that is done (completed) or skipped (cancelled); and any occurrence already
+delivered.
+
+**Exactly-once is a database key, not a component ref.** New
+`ReminderDelivery` table, unique on `(userId, key)` with keys like
+`habit:<id>:<date>` / `goal:<id>:<date>` / `reminder:<id>:<instant>`. The
+watcher records a delivery when it fires; a second tab racing the first hits
+the unique constraint and does nothing. Rows older than 7 days are swept
+opportunistically. The table rides in backup format v3.
+
+**`reminderEnabled`/`reminderMinute` on `ScheduleRule` are finally consumed**
+— for habits *and* goals — with the rule's scheduled time as fallback and
+silence (`no_time`) when nothing says when. Fire times are local wall-clock
+strings (`YYYY-MM-DDTHH:mm:00`): in a local-first app the browser's clock IS
+the user's clock.
+
+**The tab-open-all-day case:** the watcher refreshes the feed every 5 minutes
+and on window focus, so a habit ticked in another tab stops nagging without a
+reload. The in-app toast is the fallback wherever browser notifications are
+unavailable, denied or unsupported — stated in Settings rather than papered
+over. `markReminderFired` and `getReminders` were deleted (superseded).
+Stale occurrences (>60 min past) are dropped for the day rather than
+surfacing hours late.
+
+### Files
+
+```
+src/lib/logic/reminders.ts        the decision (pure)
+src/server/reminders.ts           the feed + the delivery ledger
+src/server/actions/reminders.ts   watcher's two actions
+tests/reminders.test.ts           24 tests
+```
+
+### Phase 13 verification
+
+`npm test` 586/586 (24 new), typecheck and build clean. Browser verification
+(Playwright, production build, user timezone aligned with the browser clock
+as it is on a real machine) — **14/14 checks**: a due classic reminder and a
+due habit reminder both fire as toasts; a reminder attached to a done planner
+item, a habit not scheduled today, a habit already done and an archived habit
+all stay silent (asserted on the delivery ledger, not just the screen —
+exactly two rows exist and they are the two allowed occurrences); the
+one-shot reminder is disabled with `lastFiredAt` set after firing; a reload
+re-delivers nothing; zero console errors and zero page errors. Verification
+caught a real defect: the watcher's first check raced the Toaster's mount
+during hydration and could swallow the visible toast — the first check now
+waits a beat.
+
+---
+
 ## Exact next step
 
-**Phase 13 — schedule-aware reminders.** `reminder-watcher.tsx` still fires
-from the old `Reminder` table with no knowledge of schedules: nothing suppresses
-a reminder on a rest day, for an inactive habit, for a completed/excused/
-cancelled item, or for an occurrence already delivered. The
-`reminderEnabled`/`reminderMinute` fields on `ScheduleRule` are written by the
-schedule editor but consumed by nothing. In-app fallback behaviour is needed
-where browser notifications are unavailable.
+**Phase 14 — global search & command palette.** The palette exists with
+navigation and quick actions; global search across app entities (items,
+habits, goals, foods, workouts, journal) with keyboard accessibility is the
+outstanding piece.
 
 Also still open from earlier phases:
 

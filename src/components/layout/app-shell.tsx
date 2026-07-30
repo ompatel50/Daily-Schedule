@@ -6,14 +6,21 @@ import { Sidebar } from "@/components/layout/sidebar";
 import { Topbar } from "@/components/layout/topbar";
 import { QuickAddDialog } from "@/components/planner/quick-add-dialog";
 import { ReminderWatcher } from "@/components/shared/reminder-watcher";
-import { getReminders, getToday, getUser } from "@/server/queries";
+import { getToday, getUser } from "@/server/queries";
+import { getReminderFeed } from "@/server/reminders";
 
 /**
  * Server Component shell: the chrome renders on the server, and only the
  * interactive bits (palette, shortcuts, quick add) ship as client components.
  */
 export async function AppShell({ children }: { children: ReactNode }) {
-  const [user, reminders, todayKey] = await Promise.all([getUser(), getReminders(), getToday()]);
+  const [user, reminderFeed, todayKey] = await Promise.all([
+    getUser(),
+    // Schedule-aware: rest days, overrides, completions and archived habits
+    // are already filtered out server-side.
+    getReminderFeed(),
+    getToday(),
+  ]);
 
   return (
     <div className="flex min-h-screen">
@@ -26,16 +33,7 @@ export async function AppShell({ children }: { children: ReactNode }) {
       <CommandPalette />
       <QuickAddDialog />
       <KeyboardShortcuts />
-      <ReminderWatcher
-        reminders={reminders
-          .filter((reminder) => reminder.enabled)
-          .map((reminder) => ({
-            id: reminder.id,
-            title: reminder.title,
-            message: reminder.message,
-            remindAt: reminder.remindAt.toISOString(),
-          }))}
-      />
+      <ReminderWatcher initial={reminderFeed} />
     </div>
   );
 }

@@ -43,6 +43,7 @@ export async function exportBackup(): Promise<ActionResult<BackupFile>> {
     scheduleOverrides,
     journalEntries,
     reminders,
+    reminderDeliveries,
     favorites,
     tags,
     seedBatches,
@@ -72,6 +73,7 @@ export async function exportBackup(): Promise<ActionResult<BackupFile>> {
     prisma.scheduleOverride.findMany({ where: { userId: user.id } }),
     prisma.journalEntry.findMany({ where: { userId: user.id } }),
     prisma.reminder.findMany({ where: { userId: user.id } }),
+    prisma.reminderDelivery.findMany({ where: { userId: user.id } }),
     prisma.favoriteItem.findMany({ where: { userId: user.id } }),
     prisma.tag.findMany({ where: { userId: user.id } }),
     prisma.seedBatch.findMany({ where: { userId: user.id } }),
@@ -103,6 +105,7 @@ export async function exportBackup(): Promise<ActionResult<BackupFile>> {
     scheduleOverrides,
     journalEntries,
     reminders,
+    reminderDeliveries,
     favorites,
     seedBatches,
     seedRecords,
@@ -279,6 +282,7 @@ export async function importBackup(
     await prisma.healthImportBatch.deleteMany({ where: { userId: user.id } });
     await prisma.journalEntry.deleteMany({ where: { userId: user.id } });
     await prisma.reminder.deleteMany({ where: { userId: user.id } });
+    await prisma.reminderDelivery.deleteMany({ where: { userId: user.id } });
     await prisma.favoriteItem.deleteMany({ where: { userId: user.id } });
     await prisma.goalEntry.deleteMany({ where: { userId: user.id } });
     await prisma.goal.deleteMany({ where: { userId: user.id } });
@@ -450,6 +454,13 @@ export async function importBackup(
   await restore<{ id: string }>("reminders", (row) => {
     const value = own(dates(row)) as never;
     return prisma.reminder.upsert({ where: { id: row.id }, create: value, update: value });
+  });
+
+  await restore<{ id: string }>("reminderDeliveries", (row) => {
+    const raw = dates(row) as Record<string, unknown>;
+    if (typeof raw.deliveredAt === "string") raw.deliveredAt = new Date(raw.deliveredAt);
+    const value = { ...raw, userId: user.id } as never;
+    return prisma.reminderDelivery.upsert({ where: { id: row.id }, create: value, update: value });
   });
 
   await restore<{ id: string }>("favorites", (row) => {

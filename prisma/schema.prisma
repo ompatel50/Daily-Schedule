@@ -61,6 +61,7 @@ model User {
   daySummaries      CalendarDaySummary[]
   journalEntries    JournalEntry[]
   reminders         Reminder[]
+  reminderDeliveries ReminderDelivery[]
   favorites         FavoriteItem[]
   tags              Tag[]
   scheduleRules     ScheduleRule[]
@@ -1042,6 +1043,21 @@ model Reminder {
   updatedAt DateTime @updatedAt
 
   @@index([userId, enabled])
+}
+
+/// One row per delivered reminder occurrence. The unique key is what makes
+/// delivery exactly-once across reloads and re-renders: `habit:<id>:<date>`,
+/// `goal:<id>:<date>` or `reminder:<id>:<instant>`.
+model ReminderDelivery {
+  id     String @id @default(cuid())
+  userId String
+  user   User   @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  key         String
+  deliveredAt DateTime @default(now())
+
+  @@unique([userId, key])
+  @@index([userId, deliveredAt])
 }
 
 /// Generic "pin this" across domains — foods, workouts, templates, habits.
