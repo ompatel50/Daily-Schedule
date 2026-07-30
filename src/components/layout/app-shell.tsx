@@ -6,6 +6,7 @@ import { Sidebar } from "@/components/layout/sidebar";
 import { Topbar } from "@/components/layout/topbar";
 import { QuickAddDialog } from "@/components/planner/quick-add-dialog";
 import { ReminderWatcher } from "@/components/shared/reminder-watcher";
+import { UISync } from "@/components/layout/ui-sync";
 import { getToday, getUser } from "@/server/queries";
 import { getReminderFeed } from "@/server/reminders";
 
@@ -30,6 +31,7 @@ export async function AppShell({ children }: { children: ReactNode }) {
         <main className="flex-1 animate-fade-in px-4 py-6 lg:px-8 lg:py-8">{children}</main>
       </div>
 
+      <UISync todayKey={todayKey} />
       <CommandPalette />
       <QuickAddDialog />
       <KeyboardShortcuts />

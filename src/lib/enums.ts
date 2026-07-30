@@ -24,55 +24,55 @@ export const CATEGORY_META: Record<
   work: {
     label: "Work",
     dot: "bg-blue-500",
-    chip: "bg-blue-500/10 text-blue-600 dark:text-blue-400 border-blue-500/20",
+    chip: "bg-blue-500/10 text-blue-700 dark:text-blue-400 border-blue-500/20",
     bar: "border-l-blue-500",
   },
   personal: {
     label: "Personal",
     dot: "bg-slate-500",
-    chip: "bg-slate-500/10 text-slate-600 dark:text-slate-300 border-slate-500/20",
+    chip: "bg-slate-500/10 text-slate-700 dark:text-slate-300 border-slate-500/20",
     bar: "border-l-slate-400",
   },
   health: {
     label: "Health",
     dot: "bg-sky-500",
-    chip: "bg-sky-500/10 text-sky-600 dark:text-sky-400 border-sky-500/20",
+    chip: "bg-sky-500/10 text-sky-700 dark:text-sky-400 border-sky-500/20",
     bar: "border-l-sky-500",
   },
   fitness: {
     label: "Fitness",
     dot: "bg-violet-500",
-    chip: "bg-violet-500/10 text-violet-600 dark:text-violet-400 border-violet-500/20",
+    chip: "bg-violet-500/10 text-violet-700 dark:text-violet-400 border-violet-500/20",
     bar: "border-l-violet-500",
   },
   meal: {
     label: "Meal",
     dot: "bg-orange-500",
-    chip: "bg-orange-500/10 text-orange-600 dark:text-orange-400 border-orange-500/20",
+    chip: "bg-orange-500/10 text-orange-800 dark:text-orange-400 border-orange-500/20",
     bar: "border-l-orange-500",
   },
   learning: {
     label: "Learning",
     dot: "bg-amber-500",
-    chip: "bg-amber-500/10 text-amber-600 dark:text-amber-400 border-amber-500/20",
+    chip: "bg-amber-500/10 text-amber-800 dark:text-amber-400 border-amber-500/20",
     bar: "border-l-amber-500",
   },
   admin: {
     label: "Admin",
     dot: "bg-zinc-500",
-    chip: "bg-zinc-500/10 text-zinc-600 dark:text-zinc-300 border-zinc-500/20",
+    chip: "bg-zinc-500/10 text-zinc-700 dark:text-zinc-300 border-zinc-500/20",
     bar: "border-l-zinc-500",
   },
   social: {
     label: "Social",
     dot: "bg-pink-500",
-    chip: "bg-pink-500/10 text-pink-600 dark:text-pink-400 border-pink-500/20",
+    chip: "bg-pink-500/10 text-pink-700 dark:text-pink-400 border-pink-500/20",
     bar: "border-l-pink-500",
   },
   rest: {
     label: "Rest",
     dot: "bg-teal-500",
-    chip: "bg-teal-500/10 text-teal-600 dark:text-teal-400 border-teal-500/20",
+    chip: "bg-teal-500/10 text-teal-700 dark:text-teal-400 border-teal-500/20",
     bar: "border-l-teal-500",
   },
 };
@@ -83,8 +83,8 @@ export type Priority = (typeof PRIORITIES)[number];
 export const PRIORITY_META: Record<Priority, { label: string; chip: string; rank: number }> = {
   low: { label: "Low", chip: "text-muted-foreground", rank: 0 },
   medium: { label: "Medium", chip: "text-foreground", rank: 1 },
-  high: { label: "High", chip: "text-amber-600 dark:text-amber-400", rank: 2 },
-  urgent: { label: "Urgent", chip: "text-red-600 dark:text-red-400", rank: 3 },
+  high: { label: "High", chip: "text-amber-800 dark:text-amber-400", rank: 2 },
+  urgent: { label: "Urgent", chip: "text-red-700 dark:text-red-400", rank: 3 },
 };
 
 export const ITEM_STATUSES = ["planned", "done", "skipped"] as const;
@@ -101,12 +101,12 @@ export const HABIT_CATEGORIES = [
 export type HabitCategory = (typeof HABIT_CATEGORIES)[number];
 
 export const HABIT_CATEGORY_META: Record<HabitCategory, { label: string; chip: string }> = {
-  health: { label: "Health", chip: "bg-emerald-500/10 text-emerald-600 dark:text-emerald-400" },
-  productivity: { label: "Productivity", chip: "bg-blue-500/10 text-blue-600 dark:text-blue-400" },
-  learning: { label: "Learning", chip: "bg-amber-500/10 text-amber-600 dark:text-amber-400" },
-  hygiene: { label: "Hygiene", chip: "bg-cyan-500/10 text-cyan-600 dark:text-cyan-400" },
-  mindfulness: { label: "Mindfulness", chip: "bg-violet-500/10 text-violet-600 dark:text-violet-400" },
-  personal: { label: "Personal", chip: "bg-pink-500/10 text-pink-600 dark:text-pink-400" },
+  health: { label: "Health", chip: "bg-emerald-500/10 text-emerald-700 dark:text-emerald-400" },
+  productivity: { label: "Productivity", chip: "bg-blue-500/10 text-blue-700 dark:text-blue-400" },
+  learning: { label: "Learning", chip: "bg-amber-500/10 text-amber-800 dark:text-amber-400" },
+  hygiene: { label: "Hygiene", chip: "bg-cyan-500/10 text-cyan-700 dark:text-cyan-400" },
+  mindfulness: { label: "Mindfulness", chip: "bg-violet-500/10 text-violet-700 dark:text-violet-400" },
+  personal: { label: "Personal", chip: "bg-pink-500/10 text-pink-700 dark:text-pink-400" },
 };
 
 export const TIMES_OF_DAY = ["morning", "afternoon", "evening", "before_bed", "anytime"] as const;
@@ -180,77 +180,77 @@ export const WORKOUT_TYPE_META: Record<
 > = {
   strength: {
     label: "Strength",
-    chip: "bg-violet-500/10 text-violet-600 dark:text-violet-400",
+    chip: "bg-violet-500/10 text-violet-700 dark:text-violet-400",
     tracksSets: true,
     tracksDistance: false,
     met: 5,
   },
   cardio: {
     label: "Cardio",
-    chip: "bg-rose-500/10 text-rose-600 dark:text-rose-400",
+    chip: "bg-rose-500/10 text-rose-700 dark:text-rose-400",
     tracksSets: false,
     tracksDistance: false,
     met: 7,
   },
   walking: {
     label: "Walking",
-    chip: "bg-teal-500/10 text-teal-600 dark:text-teal-400",
+    chip: "bg-teal-500/10 text-teal-700 dark:text-teal-400",
     tracksSets: false,
     tracksDistance: true,
     met: 3.5,
   },
   running: {
     label: "Running",
-    chip: "bg-orange-500/10 text-orange-600 dark:text-orange-400",
+    chip: "bg-orange-500/10 text-orange-800 dark:text-orange-400",
     tracksSets: false,
     tracksDistance: true,
     met: 9.8,
   },
   cycling: {
     label: "Cycling",
-    chip: "bg-amber-500/10 text-amber-600 dark:text-amber-400",
+    chip: "bg-amber-500/10 text-amber-800 dark:text-amber-400",
     tracksSets: false,
     tracksDistance: true,
     met: 7.5,
   },
   swimming: {
     label: "Swimming",
-    chip: "bg-sky-500/10 text-sky-600 dark:text-sky-400",
+    chip: "bg-sky-500/10 text-sky-700 dark:text-sky-400",
     tracksSets: false,
     tracksDistance: true,
     met: 8,
   },
   yoga: {
     label: "Yoga",
-    chip: "bg-emerald-500/10 text-emerald-600 dark:text-emerald-400",
+    chip: "bg-emerald-500/10 text-emerald-700 dark:text-emerald-400",
     tracksSets: false,
     tracksDistance: false,
     met: 3,
   },
   mobility: {
     label: "Mobility",
-    chip: "bg-cyan-500/10 text-cyan-600 dark:text-cyan-400",
+    chip: "bg-cyan-500/10 text-cyan-700 dark:text-cyan-400",
     tracksSets: true,
     tracksDistance: false,
     met: 2.5,
   },
   hiit: {
     label: "HIIT",
-    chip: "bg-red-500/10 text-red-600 dark:text-red-400",
+    chip: "bg-red-500/10 text-red-700 dark:text-red-400",
     tracksSets: true,
     tracksDistance: false,
     met: 10,
   },
   sport: {
     label: "Sport",
-    chip: "bg-blue-500/10 text-blue-600 dark:text-blue-400",
+    chip: "bg-blue-500/10 text-blue-700 dark:text-blue-400",
     tracksSets: false,
     tracksDistance: true,
     met: 7,
   },
   custom: {
     label: "Custom",
-    chip: "bg-slate-500/10 text-slate-600 dark:text-slate-300",
+    chip: "bg-slate-500/10 text-slate-700 dark:text-slate-300",
     tracksSets: true,
     tracksDistance: true,
     met: 5,

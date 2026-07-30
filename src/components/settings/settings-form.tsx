@@ -150,12 +150,12 @@ export function SettingsForm({
             />
           </div>
           <div className="space-y-1.5">
-            <Label>Sex</Label>
+            <Label htmlFor="s-sex">Sex</Label>
             <Select
               value={form.sex ?? "unset"}
               onValueChange={(value) => set("sex", value === "unset" ? null : value)}
             >
-              <SelectTrigger>
+              <SelectTrigger id="s-sex">
                 <SelectValue />
               </SelectTrigger>
               <SelectContent>
@@ -167,12 +167,12 @@ export function SettingsForm({
             </Select>
           </div>
           <div className="space-y-1.5">
-            <Label>Activity level</Label>
+            <Label htmlFor="s-activity">Activity level</Label>
             <Select
               value={form.activityLevel}
               onValueChange={(value) => set("activityLevel", value)}
             >
-              <SelectTrigger>
+              <SelectTrigger id="s-activity">
                 <SelectValue />
               </SelectTrigger>
               <SelectContent>
@@ -188,9 +188,9 @@ export function SettingsForm({
 
         <div className="grid gap-3 sm:grid-cols-4">
           <div className="space-y-1.5">
-            <Label>Units</Label>
+            <Label htmlFor="s-units">Units</Label>
             <Select value={form.unitSystem} onValueChange={(value) => set("unitSystem", value)}>
-              <SelectTrigger>
+              <SelectTrigger id="s-units">
                 <SelectValue />
               </SelectTrigger>
               <SelectContent>
@@ -200,12 +200,12 @@ export function SettingsForm({
             </Select>
           </div>
           <div className="space-y-1.5">
-            <Label>Week starts on</Label>
+            <Label htmlFor="s-weekstart">Week starts on</Label>
             <Select
               value={String(form.weekStartsOn)}
               onValueChange={(value) => set("weekStartsOn", Number(value))}
             >
-              <SelectTrigger>
+              <SelectTrigger id="s-weekstart">
                 <SelectValue />
               </SelectTrigger>
               <SelectContent>
@@ -215,12 +215,12 @@ export function SettingsForm({
             </Select>
           </div>
           <div className="space-y-1.5">
-            <Label>Day starts</Label>
+            <Label htmlFor="s-daystart">Day starts</Label>
             <Select
               value={String(form.dayStartHour)}
               onValueChange={(value) => set("dayStartHour", Number(value))}
             >
-              <SelectTrigger>
+              <SelectTrigger id="s-daystart">
                 <SelectValue />
               </SelectTrigger>
               <SelectContent>
@@ -233,12 +233,12 @@ export function SettingsForm({
             </Select>
           </div>
           <div className="space-y-1.5">
-            <Label>Day ends</Label>
+            <Label htmlFor="s-dayend">Day ends</Label>
             <Select
               value={String(form.dayEndHour)}
               onValueChange={(value) => set("dayEndHour", Number(value))}
             >
-              <SelectTrigger>
+              <SelectTrigger id="s-dayend">
                 <SelectValue />
               </SelectTrigger>
               <SelectContent>

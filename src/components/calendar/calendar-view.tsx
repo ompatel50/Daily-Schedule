@@ -17,7 +17,7 @@ import {
 
 import { ConsistencyHeatmap, type HeatDay, type HeatFilter } from "@/components/calendar/consistency-heatmap";
 import { SectionCard } from "@/components/shared/section-card";
-import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
+import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { formatDay, isSameMonth } from "@/lib/date";
 import {
   CALENDAR_STATE_META,
@@ -34,22 +34,22 @@ import { cn, formatNumber } from "@/lib/utils";
 const STATE_STYLES: Record<CalendarDayState, { cell: string; chip: string; icon: typeof Circle }> = {
   completed: {
     cell: "border-l-2 border-l-emerald-500 bg-emerald-500/[0.07]",
-    chip: "bg-emerald-500/15 text-emerald-600 dark:text-emerald-400",
+    chip: "bg-emerald-500/15 text-emerald-700 dark:text-emerald-400",
     icon: CheckCircle2,
   },
   partial: {
     cell: "border-l-2 border-l-amber-500 bg-amber-500/[0.05]",
-    chip: "bg-amber-500/15 text-amber-600 dark:text-amber-400",
+    chip: "bg-amber-500/15 text-amber-800 dark:text-amber-400",
     icon: CircleDashed,
   },
   missed: {
     cell: "border-l-2 border-l-rose-500 bg-rose-500/[0.05]",
-    chip: "bg-rose-500/15 text-rose-600 dark:text-rose-400",
+    chip: "bg-rose-500/15 text-rose-700 dark:text-rose-400",
     icon: AlertCircle,
   },
   rest: {
     cell: "border-l-2 border-l-teal-400/60 bg-teal-500/[0.04]",
-    chip: "bg-teal-500/10 text-teal-600 dark:text-teal-400",
+    chip: "bg-teal-500/10 text-teal-700 dark:text-teal-400",
     icon: Moon,
   },
   future: {
@@ -129,6 +129,11 @@ export function CalendarView({
                 </TabsTrigger>
               ))}
             </TabsList>
+            {/* The heatmap renders outside the Tabs tree; mounted empty stubs
+                keep every trigger's aria-controls valid. */}
+            {FILTERS.map((option) => (
+              <TabsContent key={option.value} value={option.value} forceMount hidden />
+            ))}
           </Tabs>
         }
       >
@@ -201,7 +206,7 @@ export function CalendarView({
                     "flex min-h-[86px] flex-col gap-1 border-b border-r p-1.5 transition-colors hover:bg-accent/40",
                     "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring",
                     style.cell,
-                    outside && "bg-muted/20 opacity-50",
+                    outside && "bg-muted/20",
                     day === today && "ring-1 ring-inset ring-domain-planner/40",
                     day === selected && "ring-2 ring-inset ring-domain-planner",
                   )}

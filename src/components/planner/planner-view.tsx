@@ -10,7 +10,7 @@ import { MonthGrid } from "@/components/planner/month-grid";
 import { ScheduleItemDialog, type ScheduleItemDraft } from "@/components/planner/schedule-item-dialog";
 import { Timeline } from "@/components/planner/timeline";
 import { WeekGrid } from "@/components/planner/week-grid";
-import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
+import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import type { ScheduleRowItem } from "@/components/planner/schedule-row";
 import { findConflicts } from "@/lib/logic/planner";
 
@@ -86,6 +86,12 @@ export function PlannerView({
           <TabsTrigger value="week">Week</TabsTrigger>
           <TabsTrigger value="month">Month</TabsTrigger>
         </TabsList>
+        {/* The real panels render below, outside the Tabs tree. These mounted,
+            empty stubs keep every trigger's aria-controls pointing at a real
+            element, which assistive tech (and axe) require. */}
+        <TabsContent value="day" forceMount hidden />
+        <TabsContent value="week" forceMount hidden />
+        <TabsContent value="month" forceMount hidden />
       </Tabs>
 
       {view === "day" && dayConflicts.length > 0 && (

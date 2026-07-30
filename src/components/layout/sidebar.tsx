@@ -55,7 +55,7 @@ export function Sidebar({ userName }: { userName: string }) {
               <span className="truncate">{item.label}</span>
               <kbd
                 className={cn(
-                  "ml-auto text-[10px] font-medium uppercase text-muted-foreground/60 opacity-0 transition-opacity group-hover:opacity-100",
+                  "ml-auto text-[10px] font-medium uppercase text-muted-foreground opacity-0 transition-opacity group-hover:opacity-100",
                   active && "opacity-100",
                 )}
               >

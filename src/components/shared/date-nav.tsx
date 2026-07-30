@@ -119,9 +119,3 @@ export function DateNav({
   );
 }
 
-/** Small helper for links that need to preserve the current date param. */
-export function useDateParam(fallback: DayKey = today()): DayKey {
-  const searchParams = useSearchParams();
-  const value = searchParams.get("date");
-  return value && /^\d{4}-\d{2}-\d{2}$/.test(value) ? value : fallback;
-}

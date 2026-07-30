@@ -44,10 +44,10 @@
 | 13 | Reminders                                          | ✅ done |
 | 14 | Search & command palette                           | ✅ done |
 | 15 | Backup & import updates                            | ✅ done |
-| 16 | Accessibility, responsiveness, performance         | ⬜ not started |
+| 16 | Accessibility, responsiveness, performance         | ✅ done |
 | 17 | Full testing & polish                              | ⬜ not started |
 
-**Current phase:** 16 — Accessibility, responsiveness, performance (**not started**)
+**Current phase:** 17 — Full testing & polish (**not started**)
 
 **The task's stated highest-priority milestone is complete** (central schedule
 engine, scheduled goals, scheduled habits, rest-day behaviour, streaks, day
@@ -767,14 +767,14 @@ These are stated plainly so nothing reads as finished when it is not:
     duplication this upgrade exists to delete) or request-level caching, which
     does not help across two separate page loads anyway. The separation is now
     about responsibility, not query count. Left as a deliberate non-goal.
-11. **The host-clock fix is partial.** `isToday` / `isPast` / `isFuture` /
-    `relativeDayLabel` now accept a reference day, and the Dashboard, Today,
-    Planner, Calendar and the topbar pass the user's. Still on the host clock:
-    `consistency-heatmap.tsx`, `quick-add-dialog.tsx`, `template-bar.tsx`,
-    `workout-manager.tsx`, `habit-dialog.tsx` (new-habit start date) and the
-    `ui-store` default context date. None of them decide a score; they mislabel
-    a day for the hours the two zones disagree. Finishing this belongs with the
-    accessibility/polish work in Phase 16/17.
+11. ~~The host-clock fix is partial.~~ **Finished in Phase 16.** The app shell
+    now syncs the server-resolved today into the UI store on every render
+    (`UISync` → `ui-store.todayKey`), and the last host-clock readers —
+    quick add (context date and labels), the command palette's quick-add
+    entry, the workout manager (repeat-session date and history labels), the
+    new-habit start date and the consistency heatmap's today ring — all read
+    it. The host clock remains only as the pre-sync fallback inside the store
+    and the `lib/date` helpers' default parameter.
 12. **There is still no rendering test.** The Phase 8 separation is enforced by
     `tests/surfaces.test.ts` at the level of the ownership *declaration* — if a
     future edit adds `conflicts` to Today's `owns`, or flips a planning
@@ -1550,15 +1550,78 @@ errors and zero page errors.
 
 ---
 
+## Phase 16 — accessibility, responsiveness, performance
+
+### Accessibility: audited with axe, not assumed
+
+`axe-core` (dev dependency) now drives a WCAG 2.0 A+AA audit across all ten
+routes against the production build. Start of phase: **20 violation groups**,
+including critical ones. End of phase: **zero serious/critical/moderate/minor
+violations on every route.** What the audit caught, and the fixes:
+
+* **Unlabelled form controls** (critical): eight Radix selects in Settings
+  and two in the backup panel had visual `<Label>`s with no association —
+  every select now has an `id` + `htmlFor`.
+* **182 nameless links** on the calendar: heatmap day squares were bare
+  colour swatches; each now carries an aria-label with the date and score
+  ("Tuesday, July 28, 2026 — score 94 of 100").
+* **Invalid `aria-controls`** (critical): the planner and calendar use Tabs
+  as segmented controls with panels rendered elsewhere; mounted hidden
+  `TabsContent` stubs keep every trigger pointing at a real element.
+* **Nameless progress bars**: every bar in the app sits next to the number
+  it visualises, so `Progress` is now `aria-hidden` by default (opt back in
+  with `aria-hidden={false}` + a label where no text equivalent exists).
+* **Contrast**: light-mode `--muted-foreground` darkened 47%→40% lightness
+  (one variable fixing dozens of nodes); category/habit/workout chips and
+  status text moved from `*-600` to `*-700`/`*-800` in light mode (dark mode
+  untouched); the completed-row de-emphasis changed from opacity-60/50 —
+  which dragged its text below 4.5:1 — to opacity-90 (+`grayscale` for
+  skipped), keeping the visual distinction without the illegibility; the
+  timeline's done/skipped blocks likewise.
+* **Reduced motion**: a `prefers-reduced-motion` block collapses fades,
+  slides and transitions to near-instant, keeping a slow spinner rotation so
+  "busy" stays distinguishable from "stuck". Render verified under the
+  preference.
+
+Pre-existing and re-verified rather than new: dialog focus trapping, the
+palette's full keyboard path, `g`-chord navigation, and per-control focus
+rings. The audit ran in light mode; dark mode shares the structural fixes
+and its `*-400-on-dark` chip text was left as is.
+
+### The host clock is finally out of the client
+
+`UISync` pushes the server-resolved today into the UI store on every shell
+render; quick add, the palette, the workout manager, the habit dialog and
+the heatmap's today ring read it (known-problems #11 closed).
+
+### Performance
+
+* `getDayScores` — the known per-day N+1 — turned out to have **no callers**
+  (everything reads the `CalendarDaySummary` cache); deleted rather than
+  optimised.
+* The audit confirmed no route ships more than ~320 kB first-load JS and the
+  per-domain reads are already batched (Phase 5/8 work); no new indexes were
+  justified beyond those added with the Phase 11 schema.
+* Still deliberately not done: batching `rebuildSummaries` for multi-year
+  imports (noted in known-problems #8) — one-time cost, would need a
+  restructuring of `recomputeDay` that Phase 17 regression coverage should
+  precede.
+
+### Verification
+
+593/593 tests, typecheck and build clean. Playwright: axe 0 violations on
+10/10 routes; 0 px horizontal overflow at 768 px and 1024 px on all ten
+routes; zero console errors/warnings and zero page errors throughout;
+reduced-motion render check passes.
+
+---
+
 ## Exact next step
 
-**Phase 16 — accessibility, responsiveness, performance.** The audit list
-from the task: keyboard navigation, focus visibility, dialog focus trapping,
-form labels, screen-reader names, status semantics, contrast, reduced
-motion, narrow windows, error messages; N+1 queries (`getDayScores` per-day
-loop is the known one), calendar queries, insight aggregation, large health
-imports, dashboard loading. Plus the host-clock stragglers listed in
-known-problems #11.
+**Phase 17 — full regression testing & polish.** Every automated test, type
+check, production build, all routes, console and server logs, cross-feature
+workflows, migration review, backup round trip re-check, privacy review, full
+diff review, dead-code sweep, README/progress final update.
 
 Also still open from earlier phases:
 

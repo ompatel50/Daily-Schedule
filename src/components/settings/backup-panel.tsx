@@ -202,9 +202,9 @@ export function BackupPanel() {
 
           <div className="flex flex-wrap items-end gap-3 border-t pt-4">
             <div className="min-w-[180px] flex-1 space-y-1.5">
-              <Label>CSV export</Label>
+              <Label htmlFor="backup-csv-table">CSV export</Label>
               <Select value={csvTable} onValueChange={(value) => setCsvTable(value as CsvTable)}>
-                <SelectTrigger>
+                <SelectTrigger id="backup-csv-table">
                   <SelectValue />
                 </SelectTrigger>
                 <SelectContent>
@@ -232,9 +232,9 @@ export function BackupPanel() {
       >
         <div className="flex flex-wrap items-end gap-3">
           <div className="min-w-[180px] flex-1 space-y-1.5">
-            <Label>Import mode</Label>
+            <Label htmlFor="backup-import-mode">Import mode</Label>
             <Select value={mode} onValueChange={(value) => setMode(value as "merge" | "replace")}>
-              <SelectTrigger>
+              <SelectTrigger id="backup-import-mode">
                 <SelectValue />
               </SelectTrigger>
               <SelectContent>

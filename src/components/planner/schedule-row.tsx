@@ -118,8 +118,8 @@ export function ScheduleRow({
       className={cn(
         "group flex items-start gap-3 rounded-lg border border-l-[3px] bg-card px-3 py-2.5 transition-colors",
         meta.bar,
-        done && "opacity-60",
-        skipped && "opacity-50",
+        done && "opacity-90",
+        skipped && "opacity-90 grayscale",
         sortableState.isDragging && "z-10 opacity-80 shadow-lg",
         pending && "pointer-events-none opacity-70",
         !compact && "hover:bg-accent/40",
@@ -180,14 +180,14 @@ export function ScheduleRow({
         </div>
 
         {conflict && (
-          <p className="mt-1 inline-flex items-center gap-1 text-xs text-amber-600 dark:text-amber-500">
+          <p className="mt-1 inline-flex items-center gap-1 text-xs text-amber-800 dark:text-amber-400">
             <TriangleAlert className="h-3 w-3 shrink-0" aria-hidden />
             <span>Overlaps {conflict}</span>
           </p>
         )}
 
         {!compact && item.notes && (
-          <p className="mt-1 line-clamp-2 text-xs text-muted-foreground/80">{item.notes}</p>
+          <p className="mt-1 line-clamp-2 text-xs text-muted-foreground">{item.notes}</p>
         )}
       </div>
 

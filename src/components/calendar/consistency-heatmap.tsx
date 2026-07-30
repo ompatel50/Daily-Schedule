@@ -7,6 +7,7 @@ import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip
 import { HEAT_CLASSES, heatLevel, type HeatLevel } from "@/lib/logic/scoring";
 import { formatDay, isToday, weekdayOf } from "@/lib/date";
 import { cn, formatNumber } from "@/lib/utils";
+import { useUIStore } from "@/store/ui-store";
 
 export interface HeatDay {
   date: string;
@@ -44,6 +45,9 @@ export function ConsistencyHeatmap({
   byDate: Record<string, HeatDay>;
   filter: HeatFilter;
 }) {
+  // The user's today (synced from the server) decides which square gets the
+  // ring — not the host clock.
+  const todayKey = useUIStore((state) => state.todayKey);
   // Pad the start so every column is a full Sunday→Saturday week.
   const padded = React.useMemo(() => {
     const lead = weekdayOf(days[0]);
@@ -72,10 +76,16 @@ export function ConsistencyHeatmap({
                     <TooltipTrigger asChild>
                       <Link
                         href={`/today?date=${day}`}
+                        aria-label={
+                          summary
+                            ? `${formatDay(day, "EEEE, MMMM d, yyyy")} — score ${summary.score} of 100`
+                            : `${formatDay(day, "EEEE, MMMM d, yyyy")} — nothing tracked`
+                        }
                         className={cn(
                           "h-3.5 w-3.5 rounded-[3px] transition-transform hover:scale-125",
                           HEAT_CLASSES[level as HeatLevel],
-                          isToday(day) && "ring-1 ring-foreground ring-offset-1 ring-offset-background",
+                          isToday(day, todayKey) &&
+                            "ring-1 ring-foreground ring-offset-1 ring-offset-background",
                         )}
                       />
                     </TooltipTrigger>

@@ -393,7 +393,7 @@ export default async function InsightsPage() {
                     <Badge variant="muted" className="shrink-0 text-[10px]">
                       {habit.completionRate}%
                     </Badge>
-                    <span className="tabular w-10 shrink-0 text-right text-xs text-orange-500">
+                    <span className="tabular w-10 shrink-0 text-right text-xs text-orange-700 dark:text-orange-400">
                       🔥 {habit.streak}
                     </span>
                   </div>
@@ -412,7 +412,7 @@ function Reading({ label, value, goal }: { label: string; value: string; goal?: 
     <div className="flex items-center justify-between border-b pb-1.5 last:border-0">
       <div>
         <p className="text-muted-foreground">{label}</p>
-        {goal && <p className="text-[10px] text-muted-foreground/70">{goal}</p>}
+        {goal && <p className="text-[10px] text-muted-foreground">{goal}</p>}
       </div>
       <span className="tabular font-medium">{value}</span>
     </div>

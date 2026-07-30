@@ -30,7 +30,6 @@ import {
   CommandShortcut,
 } from "@/components/ui/command";
 import { NAV_ITEMS } from "@/lib/navigation";
-import { today } from "@/lib/date";
 import type { SearchHit } from "@/lib/logic/search";
 import { globalSearch } from "@/server/actions/search";
 import { useUIStore } from "@/store/ui-store";
@@ -136,7 +135,7 @@ export function CommandPalette() {
         ))}
 
         <CommandGroup heading="Actions">
-          <CommandItem value="quick add task schedule item new" onSelect={() => run(() => openQuickAdd(today()))}>
+          <CommandItem value="quick add task schedule item new" onSelect={() => run(() => openQuickAdd())}>
             <Plus /> Quick add to planner
             <CommandShortcut>N</CommandShortcut>
           </CommandItem>
