@@ -16,7 +16,9 @@
     "test": "vitest run",
     "test:watch": "vitest",
     "test:integration": "node scripts/run-integration-tests.mjs",
+    "seed:e2e": "node scripts/seed-e2e-users.mjs",
     "test:e2e": "playwright test",
+    "auth:reset-password": "node scripts/reset-password.mjs",
     "db:generate": "prisma generate",
     "db:studio": "prisma studio",
     "predb:seed": "node scripts/ensure-env.mjs",
@@ -38,7 +40,6 @@
     "seed": "tsx prisma/seed.ts"
   },
   "dependencies": {
-    "@auth/prisma-adapter": "^2.11.3",
     "@dnd-kit/core": "^6.3.1",
     "@dnd-kit/modifiers": "^9.0.0",
     "@dnd-kit/sortable": "^10.0.0",

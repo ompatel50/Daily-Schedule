@@ -13,8 +13,7 @@
  * only ever seeds through the explicit in-app "Start with sample data"
  * choice, into the signed-in user's own empty account).
  */
-import { PrismaClient } from "@prisma/client";
-
+import { createDbClient } from "./db-client";
 import { seedDemoData } from "./demo-data";
 
 const LOCAL_HOSTS = new Set(["localhost", "127.0.0.1", "::1", "[::1]", "db", "postgres"]);
@@ -34,7 +33,7 @@ if (!LOCAL_HOSTS.has(host) && process.env.SEED_ALLOW_REMOTE !== "1") {
   process.exit(1);
 }
 
-const prisma = new PrismaClient();
+const prisma = createDbClient();
 
 seedDemoData(prisma)
   .catch((error) => {

@@ -2,61 +2,70 @@
  * Edge-safe Auth.js configuration.
  *
  * This module is imported by the middleware, which runs on the Edge runtime —
- * it must never import Prisma, `server-only`, or anything Node-specific. The
- * full server-side instance (adapter, dev sign-in) lives in
- * `src/server/auth/index.ts` and spreads this config.
+ * it must never import Prisma, `node:crypto`, `server-only`, or anything
+ * Node-specific. The full server-side instance (the password provider, which
+ * needs the database) lives in `src/server/auth/index.ts` and spreads this
+ * config; that is why `providers` is empty here — the middleware only
+ * validates the session JWT, it never performs a sign-in.
  *
  * Security posture:
- *  - Google OAuth is the only real sign-in method; there is no registration.
- *  - `signIn` refuses any email that is not on the server-side allowlist,
- *    even after Google has authenticated it. It also fails closed when the
- *    allowlist is missing entirely.
- *  - Sessions are stateless JWTs (no session table), 30-day maximum.
+ *  - Sign-in is in-app email + password only. No OAuth provider, no external
+ *    identity service, no public registration; the one-time owner setup page
+ *    (/setup) is gated by a server-side token and disables itself.
+ *  - The server-side email allowlist still applies on top of the password
+ *    check, and fails closed when missing (src/server/auth/credentials.ts).
+ *  - Sessions are stateless JWTs (no session table), 30-day maximum. Each
+ *    token carries the account's `tokenVersion`; a password change bumps the
+ *    version, so every previously issued token dies on its next request
+ *    (checked in src/server/auth/current-user.ts, costing no extra query).
  *  - `authorized` is what the middleware enforces: every route except the
- *    sign-in page and the auth endpoints requires a session. Middleware is
- *    the outer fence only — every server action and query independently
- *    resolves the user from the session (src/server/auth/current-user.ts).
+ *    sign-in/setup pages and the few public endpoints requires a session.
+ *    Middleware is the outer fence only — every server action and query
+ *    independently resolves the user from the session.
  */
 import type { NextAuthConfig } from "next-auth";
-import Google from "next-auth/providers/google";
-
-import { allowlistConfigured, isAllowedEmail } from "./allowlist";
 
 export const authConfig = {
-  providers: [Google],
+  providers: [],
   session: {
     strategy: "jwt",
-    maxAge: 30 * 24 * 60 * 60, // 30 days; the allowlist re-check makes revocation immediate anyway
+    maxAge: 30 * 24 * 60 * 60, // 30 days; tokenVersion makes revocation immediate anyway
   },
   pages: {
     signIn: "/signin",
     error: "/signin", // error codes surface as ?error= on our own page, never a technical page
   },
   callbacks: {
-    signIn({ user, profile }) {
-      // Fail closed: no allowlist configured means nobody signs in.
-      if (!allowlistConfigured()) return false;
-      const email = user.email ?? profile?.email;
-      return isAllowedEmail(email);
-    },
     authorized({ auth, request }) {
       const { pathname } = request.nextUrl;
-      // Public: the sign-in page, the Auth.js endpoints, the PWA assets and
-      // the cron endpoint (which enforces its own CRON_SECRET check).
-      if (pathname === "/signin" || pathname.startsWith("/api/auth")) return true;
+      // Public: the sign-in and one-time setup pages, the Auth.js endpoints,
+      // the PWA assets and the cron endpoint (which enforces its own
+      // CRON_SECRET check).
+      if (pathname === "/signin" || pathname === "/setup") return true;
+      if (pathname.startsWith("/api/auth")) return true;
       if (pathname === "/sw.js" || pathname === "/manifest.webmanifest") return true;
       if (pathname.startsWith("/icons/") || pathname === "/api/reminders/run") return true;
       if (pathname === "/api/health") return true;
       return Boolean(auth?.user);
     },
     jwt({ token, user }) {
-      // On first sign-in `user` is the database row; persist its id so every
-      // later request can resolve the account without a session table.
-      if (user?.id) token.sub = user.id;
+      // On sign-in `user` is the verified database row (see the password
+      // provider); persist its id and token version so every later request
+      // can resolve and validate the account without a session table.
+      if (user?.id) {
+        token.sub = user.id;
+        token.tv = user.tokenVersion ?? 0;
+      }
       return token;
     },
     session({ session, token }) {
-      if (token.sub && session.user) session.user.id = token.sub;
+      if (token.sub && session.user) {
+        session.user.id = token.sub;
+        // Deliberately NOT defaulted: a token without the claim (e.g. issued
+        // by the pre-password build) must fail the strict version comparison
+        // in current-user.ts, not silently match version 0.
+        session.user.tokenVersion = token.tv;
+      }
       return session;
     },
   },

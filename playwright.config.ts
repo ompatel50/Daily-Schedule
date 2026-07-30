@@ -4,8 +4,10 @@ import { defineConfig, devices } from "@playwright/test";
  * End-to-end rendering suite. It runs against an ALREADY-RUNNING production
  * server — there is deliberately no `webServer` block, because building inside
  * the test run would double its cost and race concurrent dev servers. The
- * integrator starts the app first (`npm run build && npm start`) with
- * `DANGEROUSLY_ENABLE_DEV_LOGIN=1` so the suite can sign in without Google,
+ * integrator prepares the database (`prisma migrate deploy`, then
+ * `npm run seed:e2e` to create the two test accounts with the known e2e
+ * password — the app never creates accounts at sign-in), starts the app
+ * (`npm run build && npm start` with AUTH_SECRET and ALLOWED_EMAILS set),
  * then runs `npx playwright test` (suggested package script: `test:e2e`).
  *
  * Browsers are never downloaded here: the pre-installed cache is resolved via

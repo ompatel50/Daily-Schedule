@@ -37,23 +37,60 @@ Then **redeploy** — environment changes only take effect on the next deploy.
 
 Push notifications are sent by a scheduled run of `/api/reminders/run`, which
 evaluates every opted-in user's reminder feed in *that user's* timezone and
-pushes what is due.
+pushes what is due. Something has to call that endpoint regularly. On the
+free setup, two things do — and it matters which one is which.
 
-* **On Vercel this is already wired up.** The repository's `vercel.json`
-  declares a cron that calls the endpoint every 5 minutes; Vercel picks the
-  file up automatically on deploy and, because `CRON_SECRET` is set, sends it
-  as an `Authorization: Bearer` header with each call. The endpoint refuses
-  anything else — 503 when no secret is configured, 401 for a wrong header.
-  Nothing to configure beyond step 2.
-* **Plan limits, stated plainly:** Vercel crons run against the production
-  deployment only, and on some plans (Hobby, historically) crons cannot run
-  as often as every 5 minutes — check your plan's cron limits. A slower cron
-  means later reminders; an occurrence more than **30 minutes** past its time
-  is skipped rather than delivered absurdly late.
-* **Any external scheduler works identically**: something that sends
-  `GET https://YOUR-DOMAIN/api/reminders/run` with the header
-  `Authorization: Bearer <your CRON_SECRET>` every 5 minutes — a
-  cron-as-a-service, a Raspberry Pi, anything.
+### The built-in daily run (safety net, not the delivery path)
+
+The repository's `vercel.json` declares one Vercel cron, **once a day**.
+That is deliberate, not an oversight:
+
+* Vercel's free Hobby plan only allows daily crons. A more frequent schedule
+  in `vercel.json` is not quietly ignored — it makes the **whole deploy
+  fail**. Leave the file as it is.
+* Hobby crons also fire *sometime within* the scheduled hour, not at the
+  exact minute.
+* The runner skips any reminder occurrence more than **30 minutes** past its
+  time rather than delivering it absurdly late.
+
+Put those together and a daily cron alone can never deliver timely push — by
+the time it fires, almost everything due that day is already past the
+30-minute window and is skipped. The daily run is a safety net and a daily
+proof the pipeline works, nothing more. (Vercel does handle its own
+authentication: because `CRON_SECRET` is set, it sends the
+`Authorization: Bearer` header with each call automatically.)
+
+### The primary path: a free external scheduler (cron-job.org)
+
+Timely delivery comes from a scheduler outside Vercel calling the same
+endpoint every 10–15 minutes. [cron-job.org](https://cron-job.org) does this
+well: free, **no credit card**, and it can send the required header.
+
+1. Create a free account at **cron-job.org**.
+2. Create a cronjob with the URL
+   `https://your-app.vercel.app/api/reminders/run` (your real deployed
+   address).
+3. In the job's settings, add one request header:
+   * Name: `Authorization`
+   * Value: `Bearer YOUR_CRON_SECRET` — the word `Bearer`, a space, then the
+     exact value of the `CRON_SECRET` you set in step 2.
+4. Set the schedule to **every 10 or 15 minutes**. That sits well inside the
+   30-minute late window, so reminders arrive close to their time.
+5. Save, then check the job's execution history: `200` is healthy. A `401`
+   means the header value doesn't match `CRON_SECRET`; a `503` means
+   `CRON_SECRET` isn't set on the deployment at all.
+
+This cadence is also friendly to a free Neon database: each call wakes it
+briefly (the occasional 1–3 second cold start is normal), and every 10–15
+minutes stays comfortably inside Neon's free monthly compute allowance.
+
+### Alternative: a GitHub Actions scheduled workflow
+
+If the repository is public on GitHub, a scheduled Actions workflow that
+sends the same request — `GET` the URL with the same `Authorization: Bearer`
+header — is also free and works just as well. cron-job.org is the simpler of
+the two to set up; either is fine, and they can even coexist, because the
+delivery ledger (below) prevents duplicates.
 
 ## Step 4 — Enable it on each device
 

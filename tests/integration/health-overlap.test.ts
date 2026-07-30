@@ -20,7 +20,8 @@ import {
 import { fingerprintFor, manualDailyFingerprint } from "@/lib/logic/health-import/rollup";
 import { actAs, resetDatabase, twoUsers } from "./helpers";
 
-import type { HealthMetric, User } from "@prisma/client";
+import type { HealthMetric } from "@prisma/client";
+import type { User } from "./helpers";
 
 let alice: User;
 

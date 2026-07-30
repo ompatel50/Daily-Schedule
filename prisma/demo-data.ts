@@ -20,7 +20,11 @@
  * The user row is never overwritten: the CLI upsert only ever creates, and the
  * in-app path passes the existing user through untouched.
  */
-import type { PrismaClient } from "@prisma/client";
+import type { DbClient } from "./db-client";
+import { hashPassword } from "../scripts/lib/password-hash.mjs";
+
+/** CLI-seed sign-in for local development; printed by `npm run db:seed`. */
+export const LOCAL_DEV_PASSWORD = "local-dev-password";
 import { addDays, format, subDays } from "date-fns";
 
 import { SEED_FOODS } from "../src/lib/data/foods";
@@ -74,7 +78,7 @@ function intBetween(min: number, max: number): number {
 }
 
 export async function seedDemoData(
-  prisma: PrismaClient,
+  prisma: DbClient,
   options: SeedOptions = {},
 ): Promise<SeedCounts> {
   console.log("Seeding Personal OS…");
@@ -105,6 +109,27 @@ export async function seedDemoData(
         },
         update: {},
       });
+
+  // CLI seeding only (never the in-app sample-data path): give the local dev
+  // account a password so `npm run setup` ends with a sign-in that works.
+  // The seed CLI refuses non-local databases, so this known password can
+  // never reach a hosted deployment. Existing passwords are never touched.
+  if (!options.userId) {
+    const cred = await prisma.user.findUniqueOrThrow({
+      where: { email: "you@local" },
+      select: { passwordHash: true },
+    });
+    if (!cred.passwordHash) {
+      await prisma.user.update({
+        where: { email: "you@local" },
+        data: {
+          passwordHash: await hashPassword(LOCAL_DEV_PASSWORD),
+          passwordUpdatedAt: new Date(),
+        },
+      });
+    }
+    console.log(`Local sign-in: you@local / ${LOCAL_DEV_PASSWORD}`);
+  }
 
   // Clear this user's records so re-seeding is clean. On the in-app path the
   // database is empty by precondition, so this deletes nothing.
@@ -976,7 +1001,7 @@ export const DEMO_MODEL_ORDER = [
 ] as const;
 export type DemoModel = (typeof DEMO_MODEL_ORDER)[number];
 
-async function recordSeedBatch(prisma: PrismaClient, userId: string): Promise<number> {
+async function recordSeedBatch(prisma: DbClient, userId: string): Promise<number> {
   const owned = { where: { userId }, select: { id: true } } as const;
   const idsByModel: Array<[DemoModel, { id: string }[]]> = [
     ["MealEntry", await prisma.mealEntry.findMany({ where: { meal: { userId } }, select: { id: true } })],

@@ -17,7 +17,7 @@ import {
 import { fingerprintFor } from "@/lib/logic/health-import/rollup";
 import { actAs, resetDatabase, twoUsers } from "./helpers";
 
-import type { User } from "@prisma/client";
+import type { User } from "./helpers";
 
 let alice: User;
 let bob: User;

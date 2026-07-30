@@ -36,17 +36,36 @@ datasource db {
 model User {
   id        String   @id @default(cuid())
   name      String
+  /// The sign-in identifier. Kept nullable deliberately: a row without an
+  /// email (or without a password) simply can never sign in — the credential
+  /// check and the allowlist both fail closed on null — and forcing NOT NULL
+  /// here would make the migration fail on any historical row rather than
+  /// harmlessly stranding it.
   email     String?  @unique
   timezone  String   @default("America/New_York")
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
-  // --- authentication (Auth.js) ---------------------------------------------
-  /// Set by the OAuth provider on first sign-in. The app itself never emails.
-  emailVerified DateTime?
-  /// Profile picture URL from the OAuth provider, shown in the topbar.
-  image         String?
-  accounts      Account[]
+  // --- authentication (in-app password, Auth.js credentials) -----------------
+  /// scrypt hash in the self-describing `scrypt$logN$r$p$salt$hash` format
+  /// (src/server/auth/password.ts). Null only before the one-time owner setup
+  /// has attached a password; an account without one cannot sign in.
+  passwordHash      String?
+  /// Bumped on password change/reset and "sign out everywhere". Sessions are
+  /// stateless JWTs carrying this value; a mismatch on any request means the
+  /// token was issued before the bump and is treated as signed out.
+  tokenVersion      Int       @default(0)
+  /// Consecutive failed sign-in attempts; reset on success and when an
+  /// expired lockout is first observed (so the threshold after a lockout is
+  /// a full window again, not a single failure).
+  failedLoginCount  Int       @default(0)
+  /// While set and in the future, every sign-in attempt fails — including
+  /// ones with the correct password — with the same generic message.
+  lockedUntil       DateTime?
+  passwordUpdatedAt DateTime?
+  /// "Was that me?" — the single-owner audit trail, shown in Settings.
+  lastLoginAt       DateTime?
+  lastFailedLoginAt DateTime?
 
   // Personal context used by nutrition / health calculations.
   birthDate     String? // YYYY-MM-DD
@@ -96,30 +115,10 @@ model User {
   onboardingState String @default("{}")
 }
 
-/// One linked OAuth account (Google). Shape follows the Auth.js Prisma
-/// adapter contract, but the token columns are deliberately left null: the
-/// app never calls the provider's APIs after sign-in, so access/refresh/id
-/// tokens are stripped before the row is written (see src/server/auth).
-/// Sessions are stateless JWTs — there is no Session table on purpose.
-model Account {
-  id                String  @id @default(cuid())
-  userId            String
-  type              String
-  provider          String
-  providerAccountId String
-  refresh_token     String?
-  access_token      String?
-  expires_at        Int?
-  token_type        String?
-  scope             String?
-  id_token          String?
-  session_state     String?
-
-  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
-
-  @@unique([provider, providerAccountId])
-  @@index([userId])
-}
+// Authentication is in-app email+password (no OAuth provider, no Account
+// table) and sessions are stateless JWTs — there is no Session table on
+// purpose. The former Google-era Account table was dropped by the
+// password_auth migration; it only ever held token-stripped link rows.
 
 // ---------------------------------------------------------------------------
 // Scheduling — one shared engine for goals and habits

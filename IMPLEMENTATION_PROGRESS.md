@@ -2553,3 +2553,83 @@ gained a Guides table and had its stale claims corrected surgically.
   smoke script provided) and real push delivery over HTTPS (transport
   verified with a mock; setup guide provided). Deployment itself is the
   human credential step, with the runbook written.
+
+---
+
+## Phase 29 — private password sign-in, no Google Cloud, no credit card
+
+The hosted app's Google OAuth sign-in is gone. Sign-in is now an email +
+password held by this app alone, chosen so the entire hosted stack —
+authentication included — runs with **no Google Cloud project, no OAuth
+client, no billing account, no credit card and no paid trial anywhere**.
+
+**The pre-web checkpoint is untouched:** the complete local SQLite app
+remains commit `f5b4fe1d950abf56cc11ae97d2750ac714d365fb` (local tag
+`preview3-complete-before-web`).
+
+### What replaced Google
+
+* **Hashing** — Node's built-in scrypt (no new dependency): N=2^16, r=8,
+  64-byte keys, 16-byte random salts, NFKC-normalized input, stored as
+  self-describing `scrypt$logN$r$p$salt$hash` so cost can be raised later
+  and old hashes upgrade transparently on the next successful sign-in.
+  Verify-time parameter caps stop a tampered row from allocating
+  unbounded memory. One implementation (`scripts/lib/password-hash.mjs`)
+  is shared verbatim by the app, the recovery CLI and the seeds.
+* **Policy** (`src/server/auth/credentials.ts`) — every failure (unknown
+  email, wrong password, not allowlisted, locked) returns the identical
+  result and burns a real scrypt verification against a dummy hash, so
+  neither the response nor its timing says whether an account exists.
+  Five consecutive failures lock the account 15 minutes; the lock refuses
+  even the correct password (else it would be a guessing oracle); an
+  expired lock forgives the whole counter, so a lockout can never decay
+  into "one wrong guess re-locks forever". `ALLOWED_EMAILS` still gates
+  authorization, fails closed, and is re-checked on every request.
+* **Sessions** — stateless JWTs now carry the account's `tokenVersion`;
+  `getCurrentUser` compares it against the row on every request at zero
+  extra queries. Password change and "Sign out everywhere" bump the
+  version — every other device is out immediately. Google-era tokens
+  carry no version claim and the migration bumped existing rows to 1, so
+  **every pre-upgrade session is dead by construction** (rotating
+  `AUTH_SECRET` at cutover is documented as belt-and-braces).
+* **Bootstrap** — a one-time `/setup` page, live only while
+  `AUTH_SETUP_TOKEN` (≥ 32 chars, enforced) is set AND no account has a
+  password. Constant-time token compare, 1s delay on rejection, a
+  transactional re-check so concurrent submissions cannot both win, and
+  password rules (≥ 12 chars, not built around the email's local part).
+  It attaches the password to an existing row with the same email, so a
+  Google-era deployment keeps all its data. Completing setup closes the
+  page everywhere; docs say to delete the token afterwards.
+* **Recovery** — `scripts/reset-password.mjs` (also
+  `npm run auth:reset-password`): direct-database password reset with a
+  hidden prompt, same shared hash code, clears lockout, bumps
+  tokenVersion. There is deliberately no email-based reset — this app
+  sends no email; recovery proof is database access.
+* **Exposure hardening** — the Prisma client omits `passwordHash`
+  globally (runtime and types, via the shared `prisma/db-client.ts`
+  factory); exactly two call sites opt back in. Backup exports carry
+  profile fields only — no email, no hash, no lockout/session state —
+  and the restore side already whitelisted. `CRON_SECRET` comparison is
+  now constant-time. Settings gained a "Sign-in & security" panel:
+  change password, sign out everywhere, last sign-in / last failed
+  attempt ("was that me?").
+
+### Free-tier corrections found by audit
+
+* `vercel.json`'s `*/5` cron **failed the entire deploy on Vercel
+  Hobby** (daily-only there) — it now ships a daily schedule, and the
+  docs make a free external scheduler (cron-job.org, no card, custom
+  Authorization header, 10–15 min cadence) the primary path for timely
+  push reminders, sized to stay inside Neon's free compute allowance.
+* The deployment guide now recommends creating the database directly at
+  neon.tech (free, no card) and pasting connection strings by hand,
+  because the Vercel Marketplace storage flow can demand a payment
+  method. The repo is public, so GitHub Actions CI minutes are free.
+
+### Removed outright
+
+Google provider, `@auth/prisma-adapter`, the `Account` table,
+`User.emailVerified`/`image`, the `DANGEROUSLY_ENABLE_DEV_LOGIN`
+passwordless backdoor (local dev now signs in with the seeded
+`you@local` / `local-dev-password`, e2e via `npm run seed:e2e`), and the
+`AUTH_GOOGLE_ID`/`AUTH_GOOGLE_SECRET` variables.

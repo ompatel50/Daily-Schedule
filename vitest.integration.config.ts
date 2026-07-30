@@ -13,18 +13,10 @@ export default defineConfig({
       { find: "server-only", replacement: path.resolve(__dirname, "./tests/stubs/server-only.ts") },
       { find: "next/cache", replacement: path.resolve(__dirname, "./tests/stubs/next-cache.ts") },
       {
-        find: "next-auth/providers/google",
-        replacement: path.resolve(__dirname, "./tests/stubs/next-auth-provider.ts"),
-      },
-      {
         find: "next-auth/providers/credentials",
         replacement: path.resolve(__dirname, "./tests/stubs/next-auth-provider.ts"),
       },
       { find: "next-auth", replacement: path.resolve(__dirname, "./tests/stubs/next-auth.ts") },
-      {
-        find: "@auth/prisma-adapter",
-        replacement: path.resolve(__dirname, "./tests/stubs/prisma-adapter.ts"),
-      },
       { find: "@", replacement: path.resolve(__dirname, "./src") },
     ],
   },

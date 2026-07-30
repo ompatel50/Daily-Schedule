@@ -82,8 +82,32 @@ export async function exportBackup(): Promise<ActionResult<BackupFile>> {
     prisma.seedRecord.findMany({ where: { batch: { userId: user.id } } }),
   ]);
 
+  // Profile/settings only — never authentication material. A backup lands in
+  // cloud drives and email attachments; it must not carry the password hash,
+  // token version or lockout state (and the restore side only ever reads the
+  // safe profile fields anyway — see SAFE_PROFILE_FIELDS in backup-restore).
+  const exportedUser = {
+    id: user.id,
+    name: user.name,
+    timezone: user.timezone,
+    birthDate: user.birthDate,
+    heightCm: user.heightCm,
+    sex: user.sex,
+    activityLevel: user.activityLevel,
+    theme: user.theme,
+    weekStartsOn: user.weekStartsOn,
+    unitSystem: user.unitSystem,
+    dayStartHour: user.dayStartHour,
+    dayEndHour: user.dayEndHour,
+    scoreWeights: user.scoreWeights,
+    scoreOptionalTasks: user.scoreOptionalTasks,
+    onboardingState: user.onboardingState,
+    createdAt: user.createdAt,
+    updatedAt: user.updatedAt,
+  };
+
   const data = {
-    users: [user],
+    users: [exportedUser],
     tags,
     scheduleItems,
     scheduleItemTags,

@@ -25,7 +25,7 @@ import { GET as cronRoute } from "@/app/api/reminders/run/route";
 import { actAs, resetDatabase, twoUsers } from "./helpers";
 
 import type { NextRequest } from "next/server";
-import type { User } from "@prisma/client";
+import type { User } from "./helpers";
 
 let alice: User;
 let bob: User;

@@ -19,6 +19,12 @@ import { auth } from "@/server/auth";
 import { isAllowedEmail } from "@/server/auth/allowlist";
 import { prisma } from "@/lib/prisma";
 
+/**
+ * What the rest of the app receives as "the user": every User column except
+ * the password hash, which the Prisma client omits globally (src/lib/prisma).
+ */
+export type CurrentUser = Omit<User, "passwordHash">;
+
 /** The session, or null. Cached per request. */
 export const getSession = cache(async (): Promise<Session | null> => {
   return auth();
@@ -28,13 +34,17 @@ export const getSession = cache(async (): Promise<Session | null> => {
  * The signed-in, allowlisted user's database row, or null.
  * Cached per request — repeated calls across a render cost one query total.
  */
-export const getCurrentUser = cache(async (): Promise<User | null> => {
+export const getCurrentUser = cache(async (): Promise<CurrentUser | null> => {
   const session = await getSession();
   const id = session?.user?.id;
   if (!id) return null;
   const user = await prisma.user.findUnique({ where: { id } });
   if (!user) return null;
   if (!isAllowedEmail(user.email)) return null;
+  // A token issued before the last password change (or "sign out everywhere")
+  // carries a stale version — and a token with NO version predates password
+  // auth entirely. Both are treated as signed out. Same row, no extra query.
+  if (session.user.tokenVersion !== user.tokenVersion) return null;
   return user;
 });
 
@@ -50,7 +60,7 @@ export async function requireSession(): Promise<Session> {
  * imports as `getCurrentUser` (via src/lib/db.ts): pages, queries and server
  * actions all refuse to run without an authenticated, allowlisted account.
  */
-export async function requireCurrentUser(): Promise<User> {
+export async function requireCurrentUser(): Promise<CurrentUser> {
   const user = await getCurrentUser();
   if (!user) redirect("/signin");
   return user;

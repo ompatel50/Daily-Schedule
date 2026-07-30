@@ -12,19 +12,31 @@ import type { Page } from "@playwright/test";
  * - alice@example.com: the account the mutating flows (workout template,
  *   manual health metric) run against — every mutation cleans up after itself
  *   or replaces the same record on re-runs.
+ *
+ * Both accounts are created by `npm run seed:e2e` (scripts/seed-e2e-users.mjs)
+ * with E2E_PASSWORD before the server starts — the password provider never
+ * creates accounts at sign-in, exactly like production.
  */
 export const STORAGE = {
   you: path.join(__dirname, ".auth/you.json"),
   alice: path.join(__dirname, ".auth/alice.json"),
 } as const;
 
+/** Must match scripts/seed-e2e-users.mjs (overridable via E2E_USER_PASSWORD). */
+export const E2E_PASSWORD = process.env.E2E_USER_PASSWORD || "e2e-password-123";
+
 /** A context with no cookies at all — the signed-out visitor. */
 export const SIGNED_OUT = { cookies: [], origins: [] };
 
-/** Walks the /signin dev form (requires DANGEROUSLY_ENABLE_DEV_LOGIN=1). */
-export async function signInWithDevForm(page: Page, email: string): Promise<void> {
+/** Walks the real /signin form — the same path a human takes. */
+export async function signInWithPassword(
+  page: Page,
+  email: string,
+  password: string = E2E_PASSWORD,
+): Promise<void> {
   await page.goto("/signin");
-  await page.locator("#dev-email").fill(email);
-  await page.getByRole("button", { name: "Sign in without Google" }).click();
+  await page.locator("#email").fill(email);
+  await page.locator("#password").fill(password);
+  await page.getByRole("button", { name: "Sign in" }).click();
   await page.waitForURL("/");
 }

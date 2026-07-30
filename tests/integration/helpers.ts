@@ -1,12 +1,26 @@
 import { expect } from "vitest";
 
 import { prisma } from "@/lib/prisma";
-import type { User } from "@prisma/client";
+import type { User as FullUser } from "@prisma/client";
 
-/** Sign the stubbed session in as this user (or out with null). */
+/** What user queries return under the global passwordHash omit. */
+export type User = Omit<FullUser, "passwordHash">;
+
+/**
+ * Sign the stubbed session in as this user (or out with null). The session
+ * carries the tokenVersion from the user object AT THIS MOMENT — pass a
+ * stale row to simulate a token issued before a password change.
+ */
 export function actAs(user: User | null): void {
   (globalThis as { __TEST_SESSION__?: unknown }).__TEST_SESSION__ = user
-    ? { user: { id: user.id, email: user.email, name: user.name } }
+    ? {
+        user: {
+          id: user.id,
+          email: user.email,
+          name: user.name,
+          tokenVersion: user.tokenVersion,
+        },
+      }
     : null;
 }
 
@@ -22,7 +36,7 @@ export async function resetDatabase(): Promise<void> {
 }
 
 export async function createUser(email: string, name = email.split("@")[0]): Promise<User> {
-  return prisma.user.create({ data: { email, name, emailVerified: new Date() } });
+  return prisma.user.create({ data: { email, name } });
 }
 
 /** Two users with a little data each — the standard isolation fixture. */

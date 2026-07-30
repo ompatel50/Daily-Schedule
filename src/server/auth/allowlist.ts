@@ -3,7 +3,7 @@
  *
  * Personal OS is a private app with no public registration: an account exists
  * only for the email addresses the owner has listed in `ALLOWED_EMAILS`
- * (comma-separated, case-insensitive). Google may authenticate anyone; this
+ * (comma-separated, case-insensitive). Knowing a password is not enough; this
  * list decides who is *authorized*, and it is enforced twice — at sign-in and
  * again on every authenticated request (so removing an email locks that
  * account out immediately, without waiting for its session to expire).

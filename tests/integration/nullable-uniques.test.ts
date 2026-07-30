@@ -11,7 +11,7 @@ import { beforeEach, describe, expect, it } from "vitest";
 import { prisma } from "@/lib/prisma";
 import { expectUniqueViolation, resetDatabase, twoUsers } from "./helpers";
 
-import type { User } from "@prisma/client";
+import type { User } from "./helpers";
 
 let alice: User;
 
