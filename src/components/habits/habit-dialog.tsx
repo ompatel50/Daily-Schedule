@@ -30,8 +30,8 @@ import {
   type ScheduleDraft,
 } from "@/components/shared/schedule-editor";
 import { HABIT_CATEGORIES, HABIT_CATEGORY_META, type HabitCategory } from "@/lib/enums";
-import { today } from "@/lib/date";
 import { archiveHabit, deleteHabit, saveHabit } from "@/server/actions/habits";
+import { useUIStore } from "@/store/ui-store";
 
 export interface HabitDraft {
   id?: string;
@@ -49,12 +49,12 @@ const APPLY_OPTIONS = [
   { value: "all", label: "Recalculate all history", hint: "Past streaks and scores may change" },
 ];
 
-function blankHabit(): HabitDraft {
+function blankHabit(startDate: string): HabitDraft {
   return {
     name: "",
     description: null,
     category: "health",
-    startDate: today(),
+    startDate,
     endDate: null,
     archived: false,
     schedule: emptyScheduleDraft(),
@@ -75,18 +75,20 @@ export function HabitDialog({
   const router = useRouter();
   const isEdit = Boolean(habit?.id);
   const [pending, startTransition] = React.useTransition();
-  const [form, setForm] = React.useState<HabitDraft>(habit ?? blankHabit());
+  // New habits start on the user's today (synced from the server), not the host's.
+  const todayKey = useUIStore((state) => state.todayKey);
+  const [form, setForm] = React.useState<HabitDraft>(habit ?? blankHabit(todayKey));
   const [apply, setApply] = React.useState("forward");
   const [errors, setErrors] = React.useState<Record<string, string[] | undefined>>({});
   const [confirmingDelete, setConfirmingDelete] = React.useState(false);
 
   React.useEffect(() => {
     if (!open) return;
-    setForm(habit ?? blankHabit());
+    setForm(habit ?? blankHabit(todayKey));
     setApply("forward");
     setErrors({});
     setConfirmingDelete(false);
-  }, [open, habit]);
+  }, [open, habit, todayKey]);
 
   function set<K extends keyof HabitDraft>(key: K, value: HabitDraft[K]) {
     setForm((current) => ({ ...current, [key]: value }));

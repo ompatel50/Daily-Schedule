@@ -11,6 +11,10 @@ const Progress = React.forwardRef<
   <ProgressPrimitive.Root
     ref={ref}
     className={cn("relative h-2 w-full overflow-hidden rounded-full bg-secondary", className)}
+    // Every bar in this app sits next to the number it visualises, so the bar
+    // itself is decorative for assistive tech. Pass aria-hidden={false} plus an
+    // aria-label to opt a bar back in where no text equivalent exists.
+    aria-hidden
     {...props}
   >
     <ProgressPrimitive.Indicator

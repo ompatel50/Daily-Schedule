@@ -11,6 +11,7 @@
 import { prisma } from "@/lib/db";
 import { type DayKey, dayRange, daysBetween } from "@/lib/date";
 import { emptyFacts, type GoalFacts } from "@/lib/logic/goals";
+import { aggregateDayAll } from "@/lib/logic/health";
 
 /**
  * Measures what actually happened, per day, from the records the app already
@@ -20,67 +21,12 @@ import { emptyFacts, type GoalFacts } from "@/lib/logic/goals";
  *
  * One batched read per domain across the whole range: the calendar asks for a
  * month at a time and must not turn that into 30 round trips.
+ *
+ * Health metrics are combined by the one aggregation module in
+ * `src/lib/logic/health.ts` — sum-per-device-then-best-device for cumulative
+ * metrics, latest for weight, stage-aware for sleep — so goals, the Health
+ * page and the trends cannot disagree about what a day's number is.
  */
-
-/**
- * Health metrics need type-specific aggregation. Summing body weight across a
- * week is meaningless; summing steps is not. And because a day can carry the
- * same metric from several sources (manual entry *and* an Apple Health import),
- * the within-day rule has to de-duplicate rather than add them together.
- */
-type DailyAggregation = "max" | "sum" | "latest" | "average";
-
-const METRIC_DAILY_RULE: Record<string, DailyAggregation> = {
-  // Cumulative daily totals: several sources describe the same day, so take the
-  // most complete one instead of adding them up.
-  steps: "max",
-  active_calories: "max",
-  resting_calories: "max",
-  hydration_ml: "max",
-  sleep_hours: "max",
-  // Point-in-time readings.
-  body_weight: "latest",
-  body_fat: "latest",
-  resting_hr: "average",
-  hrv: "average",
-  blood_pressure: "latest",
-  mood: "latest",
-  energy: "latest",
-};
-
-export function dailyRuleFor(type: string): DailyAggregation {
-  return METRIC_DAILY_RULE[type] ?? "max";
-}
-
-/** Whether adding this metric across days is meaningful. */
-export function isAdditiveMetric(type: string): boolean {
-  const rule = dailyRuleFor(type);
-  return rule === "max" || rule === "sum";
-}
-
-function reduceMetric(
-  rule: DailyAggregation,
-  rows: Array<{ value: number; recordedAt: Date | null; createdAt: Date }>,
-): number {
-  if (rows.length === 0) return 0;
-  switch (rule) {
-    case "sum":
-      return rows.reduce((total, row) => total + row.value, 0);
-    case "average":
-      return rows.reduce((total, row) => total + row.value, 0) / rows.length;
-    case "latest": {
-      const sorted = [...rows].sort(
-        (a, b) =>
-          (a.recordedAt?.getTime() ?? a.createdAt.getTime()) -
-          (b.recordedAt?.getTime() ?? b.createdAt.getTime()),
-      );
-      return sorted[sorted.length - 1].value;
-    }
-    case "max":
-    default:
-      return rows.reduce((best, row) => Math.max(best, row.value), Number.NEGATIVE_INFINITY);
-  }
-}
 
 export interface FactsOptions {
   /** Whether low-priority planner items count as required. */
@@ -116,7 +62,19 @@ export async function measureFactsByDay(
     }),
     prisma.healthMetric.findMany({
       where: { userId, date: range },
-      select: { date: true, type: true, value: true, recordedAt: true, createdAt: true },
+      select: {
+        date: true,
+        type: true,
+        subtype: true,
+        value: true,
+        unit: true,
+        source: true,
+        sourceApp: true,
+        recordedAt: true,
+        startAt: true,
+        endAt: true,
+        createdAt: true,
+      },
     }),
     prisma.workout.findMany({
       where: { userId, date: range, status: "completed" },
@@ -148,35 +106,21 @@ export async function measureFactsByDay(
   }
 
   // --- health metrics -------------------------------------------------------
-  const metricGroups = new Map<string, typeof metrics>();
+  const metricsByDay = new Map<string, typeof metrics>();
   for (const metric of metrics) {
-    const key = `${metric.date}|${metric.type}`;
-    const group = metricGroups.get(key);
+    const group = metricsByDay.get(metric.date);
     if (group) group.push(metric);
-    else metricGroups.set(key, [metric]);
+    else metricsByDay.set(metric.date, [metric]);
   }
 
-  for (const [key, rows] of metricGroups) {
-    const [date, type] = key.split("|");
+  for (const [date, rows] of metricsByDay) {
     const facts = byDay.get(date);
     if (!facts) continue;
-    const value = reduceMetric(dailyRuleFor(type), rows);
-    switch (type) {
-      case "steps":
-        facts.steps = value;
-        break;
-      case "active_calories":
-        facts.activeCalories = value;
-        break;
-      case "sleep_hours":
-        facts.sleepHours = value;
-        break;
-      case "hydration_ml":
-        facts.hydrationMl = value;
-        break;
-      default:
-        break;
-    }
+    const aggregated = aggregateDayAll(rows);
+    facts.steps = aggregated.get("steps")?.value ?? facts.steps;
+    facts.activeCalories = aggregated.get("active_calories")?.value ?? facts.activeCalories;
+    facts.sleepHours = aggregated.get("sleep_hours")?.value ?? facts.sleepHours;
+    facts.hydrationMl = aggregated.get("hydration_ml")?.value ?? facts.hydrationMl;
   }
 
   // --- workouts -------------------------------------------------------------

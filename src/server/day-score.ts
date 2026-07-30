@@ -265,27 +265,10 @@ function exclusionReasonFor(status: string): ScoreExclusion["reason"] {
   }
 }
 
-/**
- * Scores for a contiguous range, used by the calendar and insights.
- *
- * Sequential rather than parallel on purpose: SQLite serialises writes and this
- * keeps memory flat when a month or a half-year is requested.
- */
-export async function getDayScores(
-  userId: string,
-  from: DayKey,
-  to: DayKey,
-  settings: ScheduleSettings,
-  options: DayScoreOptions = {},
-): Promise<Map<DayKey, DayScore>> {
-  const scores = new Map<DayKey, DayScore>();
-  if (daysBetween(from, to) < 0) return scores;
-
-  for (const date of dayRange(from, to)) {
-    scores.set(date, await getDayScore(userId, date, settings, options));
-  }
-  return scores;
-}
+// NOTE: a range variant (`getDayScores`) used to live here, looping
+// `getDayScore` per day — several queries × days. Nothing ever called it (the
+// calendar and insights read the `CalendarDaySummary` cache, which
+// `rebuildSummaries` maintains), so it was removed rather than optimised.
 
 /** The options a user's settings imply. Keeps callers from re-deriving them. */
 export function scoreOptionsFor(user: {

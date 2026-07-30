@@ -10,6 +10,7 @@
  */
 import { prisma } from "@/lib/db";
 import { type DayKey, dayRange, daysBetween, weekRange } from "@/lib/date";
+import { aggregateDayAll } from "@/lib/logic/health";
 import { round, sum } from "@/lib/utils";
 import { getDayScore, scoreOptionsFor } from "@/server/day-score";
 import { getHabitDayTotals } from "@/server/habits";
@@ -46,7 +47,22 @@ export async function recomputeDay(userId: string, date: DayKey): Promise<void> 
       where: { userId, date, status: "completed" },
       select: { durationMin: true, caloriesBurned: true },
     }),
-    prisma.healthMetric.findMany({ where: { userId, date }, select: { type: true, value: true } }),
+    prisma.healthMetric.findMany({
+      where: { userId, date },
+      select: {
+        date: true,
+        type: true,
+        subtype: true,
+        value: true,
+        unit: true,
+        source: true,
+        sourceApp: true,
+        recordedAt: true,
+        startAt: true,
+        endAt: true,
+        createdAt: true,
+      },
+    }),
     // The score comes from the one central service — the same call the
     // Dashboard, Today, the calendar detail and Insights all make. This table
     // caches its answer; it does not compute a second one.
@@ -76,7 +92,10 @@ export async function recomputeDay(userId: string, date: DayKey): Promise<void> 
   const workoutMinutes = sum(workouts, (workout) => workout.durationMin);
   const caloriesBurned = sum(workouts, (workout) => workout.caloriesBurned ?? 0);
 
-  const metricValue = (type: string) => metrics.find((metric) => metric.type === type)?.value ?? null;
+  // A day can carry many rows per metric (samples, several devices); the one
+  // aggregation module decides what the day's number is.
+  const aggregated = aggregateDayAll(metrics);
+  const metricValue = (type: string) => aggregated.get(type)?.value ?? null;
 
   const data = {
     plannedCount,

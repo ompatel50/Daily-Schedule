@@ -11,7 +11,8 @@ import { EmptyState } from "@/components/shared/empty-state";
 import { SectionCard } from "@/components/shared/section-card";
 import { WorkoutDialog, type WorkoutDraft } from "@/components/workouts/workout-dialog";
 import { WORKOUT_TYPE_META, type WorkoutType } from "@/lib/enums";
-import { formatDay, formatDuration, relativeDayLabel, today } from "@/lib/date";
+import { formatDay, formatDuration, relativeDayLabel } from "@/lib/date";
+import { useUIStore } from "@/store/ui-store";
 import { formatPace, pacePerKm, totalVolume } from "@/lib/logic/workouts";
 import { cn, formatNumber } from "@/lib/utils";
 import { startSession } from "@/server/actions/session";
@@ -31,8 +32,8 @@ export interface WorkoutTemplateView {
 }
 
 /** "Today · Jul 28", "Monday · Jul 27", or just "Jul 25" for older entries. */
-function dateLabel(date: string): string {
-  const relative = relativeDayLabel(date);
+function dateLabel(date: string, reference: string): string {
+  const relative = relativeDayLabel(date, reference);
   const absolute = formatDay(date, "MMM d");
   return relative === absolute ? absolute : `${relative} · ${absolute}`;
 }
@@ -53,6 +54,8 @@ export function WorkoutManager({
 }) {
   const router = useRouter();
   const searchParams = useSearchParams();
+  // The user's today, synced from the server — never the host clock.
+  const todayKey = useUIStore((state) => state.todayKey);
   const [dialogOpen, setDialogOpen] = React.useState(false);
   const [editing, setEditing] = React.useState<WorkoutDraft | null>(null);
   const [busy, setBusy] = React.useState<string | null>(null);
@@ -95,7 +98,8 @@ export function WorkoutManager({
   function repeat(workout: WorkoutView) {
     setBusy(workout.id);
     startTransition(async () => {
-      const result = await startSession({ date: today(), fromWorkoutId: workout.id });
+      // The user's today from the synced store, not the host clock.
+      const result = await startSession({ date: todayKey, fromWorkoutId: workout.id });
       setBusy(null);
       if (!result.ok) {
         toast.error(result.error);
@@ -214,7 +218,7 @@ export function WorkoutManager({
                     <span className="ml-auto text-xs text-muted-foreground">
                       {/* Avoid "Jul 25 · Jul 25" — relativeDayLabel already
                           falls back to the short date for older entries. */}
-                      {dateLabel(workout.date)}
+                      {dateLabel(workout.date, todayKey)}
                     </span>
                     <Button
                       size="icon-sm"
@@ -249,7 +253,7 @@ export function WorkoutManager({
                   </p>
 
                   {workout.notes && (
-                    <p className="mt-1 line-clamp-2 text-xs text-muted-foreground/80">{workout.notes}</p>
+                    <p className="mt-1 line-clamp-2 text-xs text-muted-foreground">{workout.notes}</p>
                   )}
                 </div>
               );

@@ -3,52 +3,87 @@
 import * as React from "react";
 import { toast } from "sonner";
 
-import { markReminderFired } from "@/server/actions/health";
-
-export interface WatchedReminder {
-  id: string;
-  title: string;
-  message: string | null;
-  remindAt: string;
-}
+import { isDeliverable, type ReminderOccurrence } from "@/lib/logic/reminders";
+import { deliverReminderAction, getReminderFeedAction } from "@/server/actions/reminders";
 
 /**
  * Desktop-web reminders, kept deliberately modest: while a tab is open we poll
  * once a minute and fire a toast plus (if the user has granted permission) a
  * Notification. There is no service worker and no background delivery — a
  * local-first app with no server can't promise that, and pretending otherwise
- * would be worse than being upfront.
+ * would be worse than being upfront. The toast IS the fallback when browser
+ * notifications are unavailable or denied.
+ *
+ * All schedule awareness lives server-side in the feed: this component fires
+ * whatever it is given, records the delivery (exactly-once via the occurrence
+ * key), and re-fetches every few minutes so a habit ticked in another tab
+ * stops nagging without a reload.
  */
-export function ReminderWatcher({ reminders }: { reminders: WatchedReminder[] }) {
+
+const FEED_REFRESH_MS = 5 * 60 * 1000;
+
+export function ReminderWatcher({ initial }: { initial: ReminderOccurrence[] }) {
+  const [feed, setFeed] = React.useState(initial);
   const firedRef = React.useRef<Set<string>>(new Set());
 
+  React.useEffect(() => setFeed(initial), [initial]);
+
+  // Refresh the feed periodically and when the tab regains focus, so state
+  // changes made elsewhere (another tab, another device writing the DB) are
+  // honoured without a navigation.
   React.useEffect(() => {
-    if (reminders.length === 0) return;
+    let cancelled = false;
+    async function refresh() {
+      try {
+        const result = await getReminderFeedAction();
+        if (!cancelled && result.ok) setFeed(result.data);
+      } catch {
+        // Offline or server restarting — keep the last feed and try later.
+      }
+    }
+    const interval = setInterval(refresh, FEED_REFRESH_MS);
+    const onFocus = () => void refresh();
+    window.addEventListener("focus", onFocus);
+    return () => {
+      cancelled = true;
+      clearInterval(interval);
+      window.removeEventListener("focus", onFocus);
+    };
+  }, []);
+
+  React.useEffect(() => {
+    if (feed.length === 0) return;
 
     function check() {
       const now = Date.now();
-      for (const reminder of reminders) {
-        const due = new Date(reminder.remindAt).getTime();
-        if (Number.isNaN(due) || due > now) continue;
-        // Don't resurface reminders that are more than an hour stale.
-        if (now - due > 60 * 60 * 1000) continue;
-        if (firedRef.current.has(reminder.id)) continue;
+      for (const occurrence of feed) {
+        const due = new Date(occurrence.fireAt).getTime();
+        if (Number.isNaN(due) || !isDeliverable(due, now)) continue;
+        if (firedRef.current.has(occurrence.key)) continue;
 
-        firedRef.current.add(reminder.id);
-        toast(reminder.title, { description: reminder.message ?? undefined, duration: 10000 });
+        firedRef.current.add(occurrence.key);
+        toast(occurrence.title, {
+          description: occurrence.message ?? undefined,
+          duration: 10000,
+        });
 
         if (typeof Notification !== "undefined" && Notification.permission === "granted") {
-          new Notification(reminder.title, { body: reminder.message ?? undefined });
+          new Notification(occurrence.title, { body: occurrence.message ?? undefined });
         }
 
-        void markReminderFired(reminder.id);
+        void deliverReminderAction({ key: occurrence.key, reminderId: occurrence.reminderId });
       }
     }
 
-    check();
+    // The first check waits a beat: firing during hydration can race the
+    // Toaster's mount and silently swallow the toast half of the delivery.
+    const first = setTimeout(check, 1500);
     const interval = setInterval(check, 60_000);
-    return () => clearInterval(interval);
-  }, [reminders]);
+    return () => {
+      clearTimeout(first);
+      clearInterval(interval);
+    };
+  }, [feed]);
 
   return null;
 }

@@ -24,7 +24,9 @@
     "db:migrate": "tsx prisma/migrate-data.ts",
     "db:reset": "prisma db push --force-reset && npm run db:seed",
     "presetup": "node scripts/ensure-env.mjs",
-    "setup": "prisma generate && prisma db push && npm run db:migrate && npm run db:seed"
+    "setup": "prisma generate && prisma db push && npm run db:migrate && npm run db:seed",
+    "presetup:empty": "node scripts/ensure-env.mjs",
+    "setup:empty": "prisma generate && prisma db push && npm run db:migrate"
   },
   "prisma": {
     "seed": "tsx prisma/seed.ts"
@@ -69,6 +71,7 @@
     "@types/react": "19.2.2",
     "@types/react-dom": "19.2.2",
     "autoprefixer": "^10.4.21",
+    "axe-core": "^4.12.1",
     "postcss": "^8.5.6",
     "prisma": "6.19.3",
     "tailwindcss": "^3.4.19",

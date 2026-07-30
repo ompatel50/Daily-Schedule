@@ -1,0 +1,8 @@
+metricType,value,unit,date,startTime,endTime,subtype,source,externalId,notes
+steps,8450,,2026-01-05,,,,,ex-001,
+active_calories,520,kcal,2026-01-05,,,,,,
+hydration_ml,2.1,l,2026-01-05,,,,,,logged in litres
+body_weight,79.4,kg,2026-01-05,2026-01-05T07:10:00,,,,,morning weigh-in
+sleep_hours,7.5,h,2026-01-05,2026-01-04T23:05:00,2026-01-05T06:35:00,,,,
+resting_hr,56,bpm,2026-01-05,,,,,,
+distance_km,4.2,km,2026-01-05,,,,estimated,,evening walk

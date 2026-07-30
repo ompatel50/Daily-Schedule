@@ -2,13 +2,17 @@ import type { Metadata } from "next";
 import { Bell, Database, Keyboard } from "lucide-react";
 
 import { BackupPanel } from "@/components/settings/backup-panel";
+import { DemoPanel } from "@/components/settings/demo-panel";
 import { GoalsPanel } from "@/components/settings/goals-panel";
 import { SettingsForm } from "@/components/settings/settings-form";
 import { NotificationsPanel } from "@/components/settings/notifications-panel";
 import { PageHeader } from "@/components/shared/page-header";
 import { SectionCard } from "@/components/shared/section-card";
 import { KEYBOARD_SHORTCUTS } from "@/lib/navigation";
-import { getGoalRows, getHabitOptions, getLatestMetrics, getUser } from "@/server/queries";
+import { parseOnboardingState } from "@/lib/logic/onboarding";
+import { getDemoStatus } from "@/server/demo";
+import { getGoalRows, getHabitOptions, getUser } from "@/server/queries";
+import { getLatestMetricValues } from "@/server/health";
 import { scheduleSettingsFor } from "@/server/schedule";
 
 export const metadata: Metadata = { title: "Settings" };
@@ -17,12 +21,14 @@ export const dynamic = "force-dynamic";
 export default async function SettingsPage() {
   const user = await getUser();
   const settings = scheduleSettingsFor(user);
-  const [goals, habits, latest] = await Promise.all([
+  const [goals, habits, latest, demoStatus] = await Promise.all([
     getGoalRows(),
     getHabitOptions(),
-    getLatestMetrics(),
+    getLatestMetricValues(),
+    getDemoStatus(user.id),
   ]);
   const weight = latest.get("body_weight");
+  const onboarding = parseOnboardingState(user.onboardingState);
 
   return (
     <div className="mx-auto max-w-4xl">
@@ -56,6 +62,13 @@ export default async function SettingsPage() {
         />
 
         <NotificationsPanel />
+
+        <DemoPanel
+          demoLoaded={demoStatus.batch !== null}
+          demoRecordCount={demoStatus.batch?.recordCount ?? 0}
+          canLoad={demoStatus.canLoad}
+          checklistDismissed={onboarding.dismissed}
+        />
 
         <div id="backup">
           <BackupPanel />
@@ -91,14 +104,13 @@ export default async function SettingsPage() {
           <div className="space-y-2 text-sm text-muted-foreground">
             <p>
               Everything lives in a local SQLite file (<code className="text-xs">prisma/dev.db</code>).
-              No account, no sync, no third-party API calls — the food database ships with the app
-              rather than querying a nutrition service.
+              No account, no sync. The bundled food database works offline; online food search is
+              optional, sends only your search term, and never your records.
             </p>
             <p>
-              To back up manually, copy that file, or use the JSON export above. Health metrics and
-              workouts carry <code className="text-xs">source</code> and{" "}
-              <code className="text-xs">externalId</code> columns so an Apple Health or watch export
-              can be imported later without touching anything you entered by hand.
+              To back up manually, copy that file, or use the JSON export above. Apple Health and
+              CSV imports happen on the Health page — files are parsed locally, deduplicated, and
+              removable again batch by batch without touching anything you entered by hand.
             </p>
           </div>
         </SectionCard>

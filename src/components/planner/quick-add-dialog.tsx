@@ -38,6 +38,7 @@ export function QuickAddDialog() {
   const open = useUIStore((state) => state.quickAddOpen);
   const setOpen = useUIStore((state) => state.setQuickAddOpen);
   const contextDate = useUIStore((state) => state.contextDate);
+  const todayKey = useUIStore((state) => state.todayKey);
 
   const [text, setText] = React.useState("");
   const [pending, startTransition] = React.useTransition();
@@ -59,7 +60,9 @@ export function QuickAddDialog() {
       const result = await quickAddScheduleItem({ text: value, date: contextDate });
       if (result.ok) {
         toast.success("Added to your planner", {
-          description: preview ? `${preview.title} · ${relativeDayLabel(preview.date)}` : undefined,
+          description: preview
+            ? `${preview.title} · ${relativeDayLabel(preview.date, todayKey)}`
+            : undefined,
         });
         setText("");
         setOpen(false);
@@ -105,7 +108,7 @@ export function QuickAddDialog() {
               <Badge variant="outline" className={CATEGORY_META[preview.category as ScheduleCategory]?.chip}>
                 {CATEGORY_META[preview.category as ScheduleCategory]?.label}
               </Badge>
-              <Badge variant="muted">{relativeDayLabel(preview.date)}</Badge>
+              <Badge variant="muted">{relativeDayLabel(preview.date, todayKey)}</Badge>
               <Badge variant="muted">
                 {formatTimeRange(preview.startMinute, preview.endMinute, preview.allDay)}
               </Badge>
@@ -138,7 +141,7 @@ export function QuickAddDialog() {
 
           <div className="flex items-center justify-between">
             <p className="text-xs text-muted-foreground">
-              Adding to <span className="font-medium">{relativeDayLabel(contextDate)}</span>
+              Adding to <span className="font-medium">{relativeDayLabel(contextDate, todayKey)}</span>
             </p>
             <Button onClick={submit} disabled={!text.trim() || pending} className="gap-1.5">
               {pending ? <Loader2 className="animate-spin" /> : <CornerDownLeft />}

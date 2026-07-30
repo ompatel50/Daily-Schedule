@@ -24,6 +24,19 @@ export interface ProviderSearchOptions {
 }
 
 /**
+ * Runtime mirror of the interface above, asserted at the type level so it
+ * cannot drift. Tests read this to prove the privacy boundary structurally:
+ * adding any field through which personal data could travel fails the suite.
+ */
+export const SEARCH_OPTION_KEYS = ["limit", "signal", "preferBranded"] as const satisfies
+  readonly (keyof ProviderSearchOptions)[];
+type AssertsAllKeysListed = Exclude<keyof ProviderSearchOptions, (typeof SEARCH_OPTION_KEYS)[number]> extends never
+  ? true
+  : never;
+const _searchOptionKeysComplete: AssertsAllKeysListed = true;
+void _searchOptionKeysComplete;
+
+/**
  * Why a provider produced nothing. Distinguishing these is the difference
  * between "no such food" and "we could not ask", which the UI must not blur.
  */

@@ -11,6 +11,8 @@ import {
 } from "@/lib/date";
 import { MEAL_TYPE_META, type MealType } from "@/lib/enums";
 import { describeGoalTarget } from "@/lib/logic/goals";
+import { aggregateDayAll } from "@/lib/logic/health";
+import { emptySearchRows, type SearchRows } from "@/lib/logic/search";
 import {
   describeSchedule,
   resolveEffectiveSchedule,
@@ -390,18 +392,9 @@ export async function getHealthMetrics(from: DayKey, to: DayKey, types?: string[
   });
 }
 
-export async function getLatestMetrics() {
-  const user = await getCurrentUser();
-  const rows = await prisma.healthMetric.findMany({
-    where: { userId: user.id },
-    orderBy: { date: "desc" },
-    take: 400,
-  });
-
-  const latest = new Map<string, (typeof rows)[number]>();
-  for (const row of rows) if (!latest.has(row.type)) latest.set(row.type, row);
-  return latest;
-}
+// Latest-per-metric moved to `getLatestMetricValues` in src/server/health.ts,
+// which aggregates a day's rows through the central module and converts to the
+// user's display units instead of returning whichever raw row sorted first.
 
 export async function getGoals() {
   const user = await getCurrentUser();
@@ -500,13 +493,8 @@ export async function getJournalEntries(from: DayKey, to: DayKey) {
   });
 }
 
-export async function getReminders() {
-  const user = await getCurrentUser();
-  return prisma.reminder.findMany({
-    where: { userId: user.id },
-    orderBy: { remindAt: "asc" },
-  });
-}
+// Raw reminder rows are no longer handed to the client: the watcher consumes
+// the schedule-aware feed from src/server/reminders.ts instead.
 
 // --- aggregate views --------------------------------------------------------
 
@@ -574,6 +562,9 @@ export async function getDayOverview(date: DayKey = today()) {
     nutrition,
     workouts,
     metrics,
+    // A day can carry several rows per metric (manual + import, or per-device);
+    // the one aggregation module decides the day's number.
+    metricSummary: aggregateDayAll(metrics),
     goals,
     journal,
     weekSummaries,
@@ -611,43 +602,58 @@ export async function getConsistencyWindow(days = 182, end: DayKey = today()) {
 }
 
 /** Cross-domain search backing the command palette's "find anything". */
-export async function searchEverything(query: string, limit = 8) {
+export async function searchEverything(query: string, limit = 8): Promise<SearchRows> {
   const term = query.trim();
-  if (term.length < 2) {
-    return { items: [], workouts: [], foods: [], habits: [], journal: [] };
-  }
+  if (term.length < 2) return emptySearchRows();
 
   const user = await getCurrentUser();
-  const [items, workouts, foods, habits, journal] = await Promise.all([
-    prisma.scheduleItem.findMany({
-      where: { userId: user.id, title: { contains: term } },
-      orderBy: { date: "desc" },
-      take: limit,
-    }),
-    prisma.workout.findMany({
-      where: { userId: user.id, name: { contains: term } },
-      orderBy: { date: "desc" },
-      take: limit,
-    }),
-    prisma.foodItem.findMany({
-      where: { OR: [{ userId: null }, { userId: user.id }], searchKey: { contains: term.toLowerCase() } },
-      take: limit,
-    }),
-    prisma.habit.findMany({
-      where: { userId: user.id, name: { contains: term } },
-      take: limit,
-    }),
-    prisma.journalEntry.findMany({
-      where: {
-        userId: user.id,
-        OR: [{ content: { contains: term } }, { title: { contains: term } }],
-      },
-      orderBy: { date: "desc" },
-      take: limit,
-    }),
-  ]);
+  const [items, workouts, foods, habits, goals, journal, routines, workoutTemplates, mealTemplates] =
+    await Promise.all([
+      prisma.scheduleItem.findMany({
+        where: { userId: user.id, title: { contains: term } },
+        orderBy: { date: "desc" },
+        take: limit,
+      }),
+      prisma.workout.findMany({
+        where: { userId: user.id, name: { contains: term } },
+        orderBy: { date: "desc" },
+        take: limit,
+      }),
+      prisma.foodItem.findMany({
+        where: { OR: [{ userId: null }, { userId: user.id }], searchKey: { contains: term.toLowerCase() } },
+        take: limit,
+      }),
+      prisma.habit.findMany({
+        where: { userId: user.id, name: { contains: term } },
+        take: limit,
+      }),
+      prisma.goal.findMany({
+        where: { userId: user.id, archivedAt: null, label: { contains: term } },
+        take: limit,
+      }),
+      prisma.journalEntry.findMany({
+        where: {
+          userId: user.id,
+          OR: [{ content: { contains: term } }, { title: { contains: term } }],
+        },
+        orderBy: { date: "desc" },
+        take: limit,
+      }),
+      prisma.scheduleTemplate.findMany({
+        where: { userId: user.id, name: { contains: term } },
+        take: limit,
+      }),
+      prisma.workoutTemplate.findMany({
+        where: { userId: user.id, name: { contains: term } },
+        take: limit,
+      }),
+      prisma.mealTemplate.findMany({
+        where: { userId: user.id, name: { contains: term } },
+        take: limit,
+      }),
+    ]);
 
-  return { items, workouts, foods, habits, journal };
+  return { items, workouts, foods, habits, goals, journal, routines, workoutTemplates, mealTemplates };
 }
 
 /** Totals over a window, used by Insights and the weekly review. */

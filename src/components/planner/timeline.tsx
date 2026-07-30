@@ -126,8 +126,8 @@ export function Timeline({
                 className={cn(
                   "absolute overflow-hidden rounded-md border border-l-[3px] bg-card px-2 py-1 text-left shadow-sm transition-shadow hover:shadow-md",
                   meta.bar,
-                  item.status === "done" && "opacity-60",
-                  item.status === "skipped" && "opacity-45",
+                  item.status === "done" && "opacity-90",
+                  item.status === "skipped" && "opacity-90 grayscale",
                 )}
                 style={{
                   top: (item.start - bounds.from) * PX_PER_MINUTE,

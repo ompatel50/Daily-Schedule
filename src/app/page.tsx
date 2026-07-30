@@ -14,6 +14,7 @@ import {
 } from "lucide-react";
 
 import { DashboardQuickActions } from "@/components/dashboard/quick-actions";
+import { OnboardingCard } from "@/components/dashboard/onboarding-card";
 import { TrendAreaChart, CategoryBarChart } from "@/components/shared/charts";
 import { DayScoreCard } from "@/components/shared/day-score-card";
 import { EmptyState } from "@/components/shared/empty-state";
@@ -32,9 +33,11 @@ import {
   shiftDay,
   today,
 } from "@/lib/date";
+import { parseOnboardingState } from "@/lib/logic/onboarding";
 import { trendDelta } from "@/lib/logic/scoring";
 import { SURFACE_ROLES, surfaceHref } from "@/lib/logic/surfaces";
 import { cn, formatNumber, pct, sum } from "@/lib/utils";
+import { getDemoStatus } from "@/server/demo";
 import { getConsistencyWindow, getDayOverview, getToday, getWindowStats } from "@/server/queries";
 
 export const dynamic = "force-dynamic";
@@ -50,8 +53,21 @@ export default async function DashboardPage() {
     getWindowStats(shiftDay(date, -13), shiftDay(date, -7)),
   ]);
 
-  const { user, schedule, nutrition, workouts, dueHabits, restingHabits, habitsDone, goals, metrics } =
-    overview;
+  const onboarding = parseOnboardingState(overview.user.onboardingState);
+  // The demo status is only needed while the checklist is showing.
+  const demoStatus = onboarding.dismissed ? null : await getDemoStatus(overview.user.id);
+
+  const {
+    user,
+    schedule,
+    nutrition,
+    workouts,
+    dueHabits,
+    restingHabits,
+    habitsDone,
+    goals,
+    metricSummary,
+  } = overview;
 
   const calorieGoal = goals.get("calories")?.target ?? 0;
   const stepGoal = goals.get("steps")?.target ?? 0;
@@ -62,8 +78,8 @@ export default async function DashboardPage() {
   // read the same object for this date, so they cannot disagree.
   const { score } = overview;
 
-  const steps = metrics.find((metric) => metric.type === "steps")?.value ?? 0;
-  const sleep = metrics.find((metric) => metric.type === "sleep_hours")?.value ?? null;
+  const steps = metricSummary.get("steps")?.value ?? 0;
+  const sleep = metricSummary.get("sleep_hours")?.value ?? null;
 
   const remaining = schedule.filter((item) => item.status === "planned");
   const missed = schedule.filter((item) => item.status === "skipped");
@@ -108,6 +124,10 @@ export default async function DashboardPage() {
           </Button>
         }
       />
+
+      {!onboarding.dismissed && (
+        <OnboardingCard state={onboarding} canLoadSample={demoStatus?.canLoad ?? false} />
+      )}
 
       {/*
         Rolling-week tiles, each a link to the surface that owns the number.
@@ -368,7 +388,7 @@ export default async function DashboardPage() {
             accent="text-domain-health"
             action={
               <Button asChild variant="ghost" size="sm">
-                <Link href="/insights">
+                <Link href="/health">
                   Trends <ArrowRight />
                 </Link>
               </Button>

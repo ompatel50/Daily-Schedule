@@ -4,8 +4,10 @@ const nextConfig = {
   // The app is a single-user local tool; keep the dev experience noise-free.
   eslint: { ignoreDuringBuilds: true },
   experimental: {
-    // Server Actions receive small JSON payloads (import/restore is the biggest).
-    serverActions: { bodySizeLimit: "8mb" },
+    // Server Actions receive JSON payloads and file uploads. The ceiling exists
+    // for the Apple Health import — a multi-year export.zip is large, and it is
+    // parsed locally and discarded rather than stored.
+    serverActions: { bodySizeLimit: "400mb" },
   },
 };
 

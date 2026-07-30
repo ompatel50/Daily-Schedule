@@ -104,10 +104,17 @@ describe("the backup covers every table the app writes", () => {
 
   it("clears the scheduling tables in replace mode", () => {
     // Replace mode that skipped these would leave orphaned schedules pointing at
-    // deleted goals, which the engine would then resolve against.
-    expect(source).toContain("prisma.scheduleRule.deleteMany");
-    expect(source).toContain("prisma.scheduleRuleDay.deleteMany");
-    expect(source).toContain("prisma.scheduleOverride.deleteMany");
-    expect(source).toContain("prisma.goalEntry.deleteMany");
+    // deleted goals, which the engine would then resolve against. The deletes
+    // run inside the restore transaction, hence `db.` rather than `prisma.`.
+    expect(source).toContain("db.scheduleRule.deleteMany");
+    expect(source).toContain("db.scheduleRuleDay.deleteMany");
+    expect(source).toContain("db.scheduleOverride.deleteMany");
+    expect(source).toContain("db.goalEntry.deleteMany");
+  });
+
+  it("wraps the restore in one transaction with a pre-import snapshot", () => {
+    expect(source).toContain("prisma.$transaction(");
+    expect(source).toContain("rolled back");
+    expect(source).toContain("pre-import-");
   });
 });

@@ -20,7 +20,7 @@
     --secondary-foreground: 222 47% 15%;
 
     --muted: 210 40% 96%;
-    --muted-foreground: 215 16% 47%;
+    --muted-foreground: 215 16% 40%;
 
     --accent: 210 40% 94%;
     --accent-foreground: 222 47% 15%;
@@ -112,5 +112,23 @@
   /* Numeric columns read better tabular */
   .tabular {
     font-variant-numeric: tabular-nums;
+  }
+}
+
+/* Respect the OS-level motion preference: fades, slides and spinners collapse
+   to (near-)instant state changes. Progress spinners keep a slow rotation so
+   "busy" remains distinguishable from "stuck". */
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+    scroll-behavior: auto !important;
+  }
+  .animate-spin {
+    animation-duration: 1.5s !important;
+    animation-iteration-count: infinite !important;
   }
 }

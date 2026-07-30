@@ -5,7 +5,16 @@ import { useRouter } from "next/navigation";
 import { AlertTriangle, Download, FileJson, Loader2, Upload } from "lucide-react";
 import { toast } from "sonner";
 
+import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from "@/components/ui/dialog";
 import { Label } from "@/components/ui/label";
 import {
   Select,
@@ -15,9 +24,16 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import { SectionCard } from "@/components/shared/section-card";
-import type { CsvTable } from "@/lib/backup-format";
+import type { BackupCompatibility, CsvTable } from "@/lib/backup-format";
 import { toDayKey } from "@/lib/date";
-import { exportBackup, exportCsv, importBackup, resetAllData } from "@/server/actions/backup";
+import { formatNumber } from "@/lib/utils";
+import {
+  exportBackup,
+  exportCsv,
+  importBackup,
+  previewBackup,
+  resetAllData,
+} from "@/server/actions/backup";
 
 const CSV_TABLES: Array<{ value: CsvTable; label: string }> = [
   { value: "schedule", label: "Schedule items" },
@@ -82,33 +98,63 @@ export function BackupPanel() {
     }
   }
 
+  const [pending, setPending] = React.useState<{
+    parsed: unknown;
+    inspection: BackupCompatibility;
+    fileName: string;
+  } | null>(null);
+
+  // Step 1: parse and inspect — nothing is written until the preview is
+  // confirmed, and the preview says exactly what the file contains.
   async function onFile(event: React.ChangeEvent<HTMLInputElement>) {
     const file = event.target.files?.[0];
     event.target.value = "";
     if (!file) return;
 
-    if (
-      mode === "replace" &&
-      !window.confirm("Replace mode deletes all current data before importing. Continue?")
-    ) {
-      return;
-    }
-
     setBusy("import");
     try {
       const text = await file.text();
       const parsed = JSON.parse(text);
-      const result = await importBackup(parsed, mode);
+      const result = await previewBackup(parsed);
+      if (!result.ok || !result.data.ok) {
+        toast.error(!result.ok ? result.error : (result.data.error ?? "That file cannot be imported"));
+        return;
+      }
+      setPending({ parsed, inspection: result.data, fileName: file.name });
+    } catch {
+      toast.error("That file isn't valid JSON");
+    } finally {
+      setBusy(null);
+    }
+  }
+
+  // Step 2: confirm — a backup of the *current* data downloads first, so even
+  // a replace import always leaves a local way back.
+  async function confirmImport() {
+    if (!pending) return;
+    setBusy("import");
+    try {
+      const safety = await exportBackup();
+      if (safety.ok) {
+        download(
+          `pre-import-backup-${toDayKey(new Date())}.json`,
+          JSON.stringify(safety.data),
+          "application/json",
+        );
+      }
+
+      const result = await importBackup(pending.parsed, mode);
       if (result.ok) {
         toast.success(`Imported ${result.data.imported} records`, {
-          description: result.data.tables.join(", "),
+          description:
+            result.data.tables.slice(0, 8).join(", ") +
+            (result.data.tables.length > 8 ? "…" : ""),
         });
+        setPending(null);
         router.refresh();
       } else {
         toast.error(result.error);
       }
-    } catch {
-      toast.error("That file isn't valid JSON");
     } finally {
       setBusy(null);
     }
@@ -156,9 +202,9 @@ export function BackupPanel() {
 
           <div className="flex flex-wrap items-end gap-3 border-t pt-4">
             <div className="min-w-[180px] flex-1 space-y-1.5">
-              <Label>CSV export</Label>
+              <Label htmlFor="backup-csv-table">CSV export</Label>
               <Select value={csvTable} onValueChange={(value) => setCsvTable(value as CsvTable)}>
-                <SelectTrigger>
+                <SelectTrigger id="backup-csv-table">
                   <SelectValue />
                 </SelectTrigger>
                 <SelectContent>
@@ -186,9 +232,9 @@ export function BackupPanel() {
       >
         <div className="flex flex-wrap items-end gap-3">
           <div className="min-w-[180px] flex-1 space-y-1.5">
-            <Label>Import mode</Label>
+            <Label htmlFor="backup-import-mode">Import mode</Label>
             <Select value={mode} onValueChange={(value) => setMode(value as "merge" | "replace")}>
-              <SelectTrigger>
+              <SelectTrigger id="backup-import-mode">
                 <SelectValue />
               </SelectTrigger>
               <SelectContent>
@@ -204,9 +250,68 @@ export function BackupPanel() {
           <input ref={fileRef} type="file" accept="application/json,.json" hidden onChange={onFile} />
         </div>
         <p className="mt-3 text-xs text-muted-foreground">
-          Records are matched by id, so importing the same backup twice won&apos;t create duplicates.
-          Day summaries are recomputed automatically afterwards.
+          You&apos;ll see what the file contains before anything is written, and a backup of your
+          current data downloads automatically first. Records are matched by id, so importing the
+          same backup twice won&apos;t create duplicates. The restore runs in one transaction — a
+          failure rolls everything back — and day summaries are recomputed afterwards.
         </p>
+
+        <Dialog open={pending !== null} onOpenChange={(open) => !open && setPending(null)}>
+          <DialogContent className="max-h-[85vh] max-w-lg overflow-y-auto">
+            {pending && (
+              <>
+                <DialogHeader>
+                  <DialogTitle>Import this backup?</DialogTitle>
+                  <DialogDescription>
+                    {pending.fileName} · {formatNumber(pending.inspection.total)} records ·{" "}
+                    {mode === "replace"
+                      ? "replace mode deletes all current data first"
+                      : "merge mode keeps existing records and adds or updates"}
+                  </DialogDescription>
+                </DialogHeader>
+
+                {pending.inspection.warnings.length > 0 && (
+                  <ul className="list-disc space-y-1 rounded-lg border border-amber-500/30 bg-amber-500/5 p-3 pl-7 text-xs">
+                    {pending.inspection.warnings.map((warning, index) => (
+                      <li key={index}>{warning}</li>
+                    ))}
+                  </ul>
+                )}
+
+                <div className="flex flex-wrap gap-1">
+                  {Object.entries(pending.inspection.counts)
+                    .filter(([, count]) => count > 0)
+                    .sort(([, a], [, b]) => b - a)
+                    .map(([table, count]) => (
+                      <Badge key={table} variant="muted" className="text-[10px]">
+                        {table} × {formatNumber(count)}
+                      </Badge>
+                    ))}
+                </div>
+
+                <p className="text-xs text-muted-foreground">
+                  A backup of your current data downloads automatically before anything is written,
+                  and a copy is kept in the system temp folder. A failure rolls the whole import
+                  back.
+                </p>
+
+                <DialogFooter className="gap-2">
+                  <Button variant="outline" onClick={() => setPending(null)} disabled={busy !== null}>
+                    Cancel — import nothing
+                  </Button>
+                  <Button
+                    variant={mode === "replace" ? "destructive" : "default"}
+                    onClick={confirmImport}
+                    disabled={busy !== null}
+                  >
+                    {busy === "import" && <Loader2 className="animate-spin" />}
+                    {mode === "replace" ? "Replace my data with this backup" : "Import backup"}
+                  </Button>
+                </DialogFooter>
+              </>
+            )}
+          </DialogContent>
+        </Dialog>
       </SectionCard>
 
       <SectionCard title="Danger zone" icon={AlertTriangle} accent="text-destructive">

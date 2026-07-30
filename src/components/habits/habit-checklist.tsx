@@ -157,7 +157,7 @@ export function HabitChecklist({
                     {habit.weekDone}/{habit.weekTarget} this week
                   </span>
                 ) : habit.streak > 0 ? (
-                  <span className="inline-flex shrink-0 items-center gap-0.5 text-xs font-medium text-orange-500">
+                  <span className="inline-flex shrink-0 items-center gap-0.5 text-xs font-medium text-orange-700 dark:text-orange-400">
                     <Flame className="h-3 w-3" aria-hidden="true" />
                     {habit.streak}
                     <span className="sr-only">

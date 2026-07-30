@@ -4,7 +4,7 @@
 > work in a new session, **read this file first**, then run
 > `git log --oneline -12 && npm test`.
 
-**Branch:** `claude/personal-os-phase-8-or6v6y` (restarted from `main` after PR #5 merged; the session's branch name is fixed and now carries Phase 9)
+**Branch:** `claude/personal-os-preview-3-upgrade-msj3sz` (this session's assigned branch, started from `main` after PR #6 merged; carries Phase 11 onward)
 
 > Note on branch naming: the task text asked for `feature/personal-os-preview-3`.
 > The session environment mandates development and pushes on a
@@ -39,25 +39,30 @@
 | 8  | Dashboard / Today / Planner separation             | ✅ done |
 | 9  | Nutrition provider architecture & food search      | ✅ done (providers built + tested against fixtures; **no live API call was possible** — see below) |
 | 10 | Workout session system                             | ✅ done |
-| 11 | Health imports & health metrics                    | ⬜ not started |
-| 12 | Demo-data separation & onboarding                  | ⬜ not started |
-| 13 | Reminders                                          | ⬜ not started |
-| 14 | Search & command palette                           | ⬜ not started |
-| 15 | Backup & import updates                            | ⬜ not started |
-| 16 | Accessibility, responsiveness, performance         | ⬜ not started |
-| 17 | Full testing & polish                              | ⬜ not started |
+| 11 | Health imports & health metrics                    | ✅ done |
+| 12 | Demo-data separation & onboarding                  | ✅ done |
+| 13 | Reminders                                          | ✅ done |
+| 14 | Search & command palette                           | ✅ done |
+| 15 | Backup & import updates                            | ✅ done |
+| 16 | Accessibility, responsiveness, performance         | ✅ done |
+| 17 | Full testing & polish                              | ✅ done |
 
-**Current phase:** 11 — Health imports & health metrics (**not started**)
+**Current phase:** — the Preview 3 master upgrade checklist is **complete**.
+See "What remains deliberately open" at the end of this file for the honest
+list of known limits and deferred improvements.
 
 **The task's stated highest-priority milestone is complete** (central schedule
 engine, scheduled goals, scheduled habits, rest-day behaviour, streaks, day
 score, calendar/insights consistency). Phase 7 closed the last outstanding bug
 from the Phase 0 audit, Phase 8 has given Dashboard, Today and Planner one job
 each, Phase 9 has replaced the bundled-only food table with a provider
-architecture, and Phase 10 has given workouts a real session. Everything from
-Phase 11 on is still outstanding and the app remains on its pre-upgrade
-implementations for those areas — see "What is NOT done" below, which is deliberately explicit so nothing reads as finished when it
-is not.
+architecture, Phase 10 has given workouts a real session, and Phase 11 has
+built the private health-metric system: one aggregation module, a `/health`
+page, and a staged Apple Health / CSV import with fingerprint dedup and
+removable batches. Everything from Phase 12 on is still outstanding and the
+app remains on its pre-upgrade implementations for those areas — see "What is
+NOT done" below, which is deliberately explicit so nothing reads as finished
+when it is not.
 
 ---
 
@@ -367,8 +372,40 @@ npm run start             # all 11 routes 200, no server errors
 
 ## Tests passing
 
-483 tests across 16 files. 403 of them are new and cover business behaviour, not
-rendering:
+554 tests across 18 files. 474 of them are new to this upgrade and cover
+business behaviour, not rendering:
+
+* `tests/health.test.ts` (33) — **Phase 11.** The metric registry covering
+  every declared type; unit conversion in and out (kg/lb/g, l/ml/fl oz,
+  kJ→kcal, min→h, mi→km) with null — never a guess — for an inexpressible
+  unit; cumulative metrics summing within a device and taking the fullest
+  device across sources (phone + watch never added together); manual daily
+  totals not double-counting with imports; latest-wins weight with legacy
+  pound rows converted before comparing; heart-rate min/avg/max; sleep stages
+  summing asleep+core+deep+REM and never in-bed or awake, the in-bed
+  fallback, and a manual total competing as its own source; interval union
+  (overlap, touching, inverted, empty); series charting null not zero for an
+  unlogged day; source labels with only Apple Health marked measured;
+  manual-entry schema validation; and the privacy pair — no health module
+  contains a network call, and the provider search options carry no field a
+  health record could travel through.
+* `tests/health-import.test.ts` (38) — **Phase 11.** Apple identifier
+  mapping; the timestamp format keeping the day as written; XML parsing
+  (sources, devices, escaped entities, metadata children, percent-as-fraction
+  body fat, unsupported types counted not fatal, invalid records counted with
+  warnings, sleep-across-midnight assigned to the waking day, workouts from
+  tag attributes and from WorkoutStatistics children); strict CSV parsing
+  (quoting, required columns named when missing, `3/4/2026` and `2026-02-30`
+  refused, negative and non-numeric values, unsupported units, unknown types
+  as unsupported, end-before-start, a CSV forbidden from claiming
+  `apple_health`); rollup determinism (per-day-per-device rows, unit
+  conversion, HR range, weight rows kept individual, sleep stage unions);
+  fingerprints (same file → identical set, overlapping export → same
+  identities with fuller values plus only new days, same value at two times →
+  two records, externalId preferred, in-file duplicates collapsing, the
+  manual namespace); workout duplicate judgement; the ZIP reader (deflate and
+  stored entries, missing export.xml, non-zip input) against archives built
+  in the test; and file-type detection by magic bytes and content.
 
 * `tests/schedule.test.ts` (68) — every schedule mode; both week starts; DST;
   leap year; month and year boundaries; all five override kinds; effective-dated
@@ -653,13 +690,17 @@ These are stated plainly so nothing reads as finished when it is not:
    there is no ESLint config committed. Linting has therefore **not** been run.
    Setting it up is a judgement call left for Phase 16/17 because a fresh strict
    config will flag pre-existing code across the whole repo.
-2. ~~Backups do not yet include the new tables.~~ **Fixed** — backup format v2
-   covers `ScheduleRule`, `ScheduleRuleDay`, `ScheduleOverride`, `GoalEntry`,
-   `SeedBatch` and `SeedRecord`, with metadata and a checksum. Still outstanding
-   from Phase 15: the *import UI* does not yet show the preview that
-   `previewBackup()` now returns, there is no automatic pre-import backup, and
-   the restore is not wrapped in a single transaction. A full
-   export→modify→restore round trip has not been executed end to end.
+2. ~~Backups do not yet include the new tables / the import has no preview,
+   no pre-import backup and no transaction.~~ **Fixed — Phase 15 complete.**
+   Format v3 covers every table including `HealthImportBatch` and
+   `ReminderDelivery`; the import UI shows the `previewBackup()` inspection
+   (version, warnings, per-table counts) before anything is written; a backup
+   of the current data auto-downloads on confirm and a copy is written to the
+   OS temp dir; the restore runs in one transaction that rolls back entirely
+   on a fatal failure (row-level constraint failures are still skipped —
+   partial recovery of a damaged file beats none); and the full
+   export→damage→restore round trip has now been executed end to end in a
+   real browser — see the Phase 15 section.
 3. ~~Routine/template application still duplicates.~~ **Fixed in Phase 7.**
    Still outstanding in this area: the four-way choice exists only on the
    **routine bar**; the command palette has no routine-apply entry to route
@@ -668,11 +709,19 @@ These are stated plainly so nothing reads as finished when it is not:
    `moveScheduleItem` still has no conflict check of its own, so dragging an
    item onto an occupied slot succeeds silently and only shows the warning
    afterwards.
-4. **`SeedBatch`/`SeedRecord` exist but nothing writes to them**, so "remove demo
-   data" is not yet possible.
-5. **Reminders are not schedule-aware yet** — `reminder-watcher.tsx` still fires
-   from the old `Reminder` table. The `reminderEnabled`/`reminderMinute` fields
-   on `ScheduleRule` are written by the editor but **not yet consumed**.
+4. ~~`SeedBatch`/`SeedRecord` exist but nothing writes to them.~~ **Fixed in
+   Phase 12** — the seed registers every record it creates; removal deletes
+   exactly the registered set. One documented nuance: logging a manual value
+   for a day+metric the demo also covers **upserts onto the demo row** (that
+   is what the manual fingerprint is for), so the edited value is still part
+   of the batch and leaves with it. A record is "yours" when you *created* it,
+   not when you edited a demo one.
+5. ~~Reminders are not schedule-aware yet.~~ **Fixed in Phase 13** — see the
+   Phase 13 section. `reminderEnabled`/`reminderMinute` are now consumed for
+   both habits and goals. Remaining honest limits: reminders still only fire
+   while a tab is open (stated in Settings; a local-first app with no server
+   cannot do better), and the rest-timer-reaches-zero notification from the
+   Phase 10 wishlist is still not built.
 6. ~~Nutrition still searches only the bundled local food table.~~ **Fixed in
    Phase 9** — provider architecture, USDA and Open Food Facts, local caching,
    offline behaviour. **But no live provider request has ever been made** (the
@@ -690,8 +739,26 @@ These are stated plainly so nothing reads as finished when it is not:
    per-exercise rest override in the UI (the action exists —
    `setSessionRest` — but nothing calls it), and no notification when the rest
    timer reaches zero.
-8. No Apple Health / CSV import UI. `importHealthMetrics` exists as a server
-   action with no interface.
+8. ~~No Apple Health / CSV import UI.~~ **Fixed in Phase 11** — a `/health`
+   page with a staged import (preview → category selection → confirm),
+   fingerprint dedup, removable batches and one central aggregation module.
+   Still outstanding in this area, stated plainly:
+   * The **database-level** import behaviours (transaction rollback on a fatal
+     write, batch removal recomputation, preview-writes-nothing) are verified
+     in a real browser with the database inspected after each step — see the
+     Phase 11 verification — but, like the rest of the project, the committed
+     suite is pure and does not open a database. The same Phase 7 caveat
+     applies until Phase 17's integration suite exists.
+   * `rebuildSummaries` after an import walks every day in the imported range
+     sequentially. A multi-year first import takes noticeably long (minutes,
+     not seconds) — one-time, but worth batching in Phase 16.
+   * Sleep-stage intervals are union-merged **within one import file**; two
+     different exports each contributing partial stage records for the same
+     night resolve per-file and the fuller file's day wins, rather than a
+     cross-batch union of raw intervals (raw samples are deliberately not
+     retained).
+   * The importer does not stream: the export is held in memory while parsed
+     (capped at 400 MB, and `serverActions.bodySizeLimit` raised to match).
 9. `getDayScores` over a range calls `getDayScore` per day, which is several
    queries per day. Fine for a month; it should be batched before anything asks
    for a year. Not yet a user-visible problem.
@@ -702,14 +769,14 @@ These are stated plainly so nothing reads as finished when it is not:
     duplication this upgrade exists to delete) or request-level caching, which
     does not help across two separate page loads anyway. The separation is now
     about responsibility, not query count. Left as a deliberate non-goal.
-11. **The host-clock fix is partial.** `isToday` / `isPast` / `isFuture` /
-    `relativeDayLabel` now accept a reference day, and the Dashboard, Today,
-    Planner, Calendar and the topbar pass the user's. Still on the host clock:
-    `consistency-heatmap.tsx`, `quick-add-dialog.tsx`, `template-bar.tsx`,
-    `workout-manager.tsx`, `habit-dialog.tsx` (new-habit start date) and the
-    `ui-store` default context date. None of them decide a score; they mislabel
-    a day for the hours the two zones disagree. Finishing this belongs with the
-    accessibility/polish work in Phase 16/17.
+11. ~~The host-clock fix is partial.~~ **Finished in Phase 16.** The app shell
+    now syncs the server-resolved today into the UI store on every render
+    (`UISync` → `ui-store.todayKey`), and the last host-clock readers —
+    quick add (context date and labels), the command palette's quick-add
+    entry, the workout manager (repeat-session date and history labels), the
+    new-habit start date and the consistency heatmap's today ring — all read
+    it. The host clock remains only as the pre-sync fallback inside the store
+    and the `lib/date` helpers' default parameter.
 12. **There is still no rendering test.** The Phase 8 separation is enforced by
     `tests/surfaces.test.ts` at the level of the ownership *declaration* — if a
     future edit adds `conflicts` to Today's `owns`, or flips a planning
@@ -1132,22 +1199,482 @@ pre-verification snapshot.
 
 ---
 
-## Exact next step
+## Phase 11 — health metrics & private health imports
 
-**Phase 11 — health imports & health metrics.** Nothing from it has been
-started. `importHealthMetrics` exists as a server action with no interface;
-there is no Apple Health or CSV import UI, and no way to bring a watch export in.
+### What was built
 
-Two things worth doing before or alongside it:
+There is no pretend live watch sync — a desktop browser cannot subscribe to
+HealthKit. What actually works, and what was built, is a **local-file import**:
+Apple Health `export.zip` / `export.xml`, or a documented CSV, parsed on this
+machine, previewed before anything is written, deduplicated by fingerprint,
+and removable again batch by batch.
 
-* If network access is available, run one live search against each food provider
-  and confirm the normalisers against real payloads — see "Provider verification
-  status" in the Phase 9 section. That is the one part of Phase 9 that has never
-  touched the real services.
-* Wire `setSessionRest` to the UI. The action exists and is tested; nothing calls
-  it, so a session's rest length can currently only come from its template.
+**One aggregation module** — `src/lib/logic/health.ts` — now decides what a
+day's number is for every metric, everywhere: goal facts (`server/facts.ts`),
+the day-summary cache (`recomputeDay`), the dashboard, `/health`, Insights and
+Settings all call it. The per-metric rules are documented in the module header
+(cumulative = sum within one app/device then best device wins; weight/fat/BP =
+latest; resting HR/HRV = average; heart rate = average with min–max; sleep =
+stage-aware). Two pre-existing first-row-wins bugs died in the process:
+`recomputeDay` and the dashboard both used `metrics.find(type)`, which was
+only correct while a day could never carry more than one row per type.
 
-Resume with:
+**Schema** (additive, `prisma db push`, row counts verified identical across
+all tables before and after): `HealthMetric` gained `subtype` (sleep stages),
+`startAt`/`endAt`, `minValue`/`maxValue`, `sourceApp`/`sourceDevice`,
+`sampleCount`, `fingerprint`, `batchId`; the old
+`(userId, date, type, source)` unique — one row per day per type per source,
+which sample-level imports make wrong — was **replaced** by
+`(userId, fingerprint)`, nullable so uncontrolled rows never collide. New
+model `HealthImportBatch` (counts and safe metadata only — no raw export is
+ever stored). `Workout` gained `importBatchId` so batch removal can take its
+workouts with it. Data migration `003-health-fingerprints` stamps every
+pre-upgrade row `source|type|date` (collision-free by the old constraint, and
+byte-identical to the manual-entry fingerprint for manual rows); verified
+idempotent, second run "nothing to do".
+
+**Dedup is the fingerprint**: Apple rows roll up deterministically to one row
+per (day, device[, stage]), so re-importing the same file reproduces the same
+fingerprints and upserts onto itself — verified in the browser: second import
+of the same file wrote **0** new rows. An overlapping later export updates the
+fuller days in place (same fingerprint, larger value — asserted in tests) and
+adds only genuinely new days. Two same-value weight readings at different
+times keep distinct fingerprints; a CSV `externalId` is preferred as identity
+when present. Manual entry upserts on `manual|type|date` — logging again
+replaces the day's value and can never touch an imported row.
+
+**Workouts import as real workouts** (`source: apple_health`, status
+completed) and feed the existing goal/score paths. An import row that looks
+like a workout the user logged by hand (same day, duration within 25%, time
+within 45 min or absent) is **skipped and reported, never merged** —
+`isLikelyDuplicateWorkout` in `lib/logic/health-import/workout-dup.ts`, kept
+pure and tested.
+
+**Sleep**: stage records (in_bed/asleep/awake/core/deep/rem from all the
+HealthKit values) are union-merged per (day, device, stage) at import — the
+merge is `mergeIntervals`, tested against overlap — and an interval crossing
+midnight belongs to the day it **ends**. Time asleep = asleep+core+deep+REM;
+in-bed and awake never count toward it; a source with only in-bed records
+falls back to in-bed time; manual entries are plain totals.
+
+**Units**: one conversion table in the aggregation module (kg/lb/g, ml/l/fl
+oz, kcal/kJ, h/min, km/mi/m…). New rows are stored canonical (kg, ml, kcal,
+h, km); legacy rows keep their stored unit and are converted at aggregation,
+which is what makes the seeded pounds data and imported kilograms agree.
+Display conversion (`toDisplay`) puts weight and distance back into the
+user's unit system.
+
+**Privacy**: health files are parsed locally, staged as a temp JSON between
+preview and confirm (deleted on confirm/cancel, swept after two hours), and
+never leave the machine. A test walks every health module and asserts there
+is no `fetch(`/socket use at all, and `SEARCH_OPTION_KEYS` — a type-asserted
+runtime mirror of the food-provider options — proves structurally that no
+health field can ride along on a food search.
+
+### Files added
+
+```
+src/lib/logic/health.ts                        THE aggregation module (pure)
+src/lib/logic/health-import/types.ts           pipeline shapes (pure)
+src/lib/logic/health-import/apple-xml.ts       Apple Health scanning parser (pure)
+src/lib/logic/health-import/csv.ts             strict CSV parser (pure)
+src/lib/logic/health-import/rollup.ts          rollup + fingerprints (pure)
+src/lib/logic/health-import/workout-dup.ts     workout duplicate rule (pure)
+src/server/health.ts                           health read model
+src/server/health-import.ts                    staging, preview, confirm, removal
+src/server/health-import/zip.ts                minimal ZIP reader (node:zlib)
+src/server/actions/health-import.ts            the import server actions
+src/app/health/page.tsx                        the Health page
+src/components/health/import-wizard.tsx        staged import dialog
+src/components/health/import-history.tsx       batches + removal
+prisma/migrations-data/003-health-fingerprints.ts
+public/health-template.csv                     synthetic CSV template
+tests/health.test.ts                           33 tests
+tests/health-import.test.ts                    38 tests
+tests/fixtures/apple-health.ts                 synthetic export fixtures
+```
+
+`metric-entry.tsx` grew a `withDetails` posture (date/time/notes) instead of a
+second manual-entry implementation. `HEALTH_METRIC_TYPES` gained `heart_rate`
+and `distance_km`. The legacy `importHealthMetrics` bulk action (no callers,
+no UI) was deleted. Backup format bumped to v3: `healthImportBatches` is in
+`BACKUP_TABLES`, restored before the metric rows that reference it; v1/v2
+files still restore (the fingerprint migration covers their metric rows).
+
+### Phase 11 verification
+
+`npm test` 554/554 (71 new), `npm run typecheck` clean, `npm run build` clean
+(12 routes, `/health` at 8.9 kB). Browser verification (Playwright against the
+production build) — **44/44 checks passed**:
+
+* all 10 routes 200, **zero console errors/warnings, zero page errors**
+* manual entry writes the day's value and logging again **replaces** it
+  (row count unchanged, value moved 12,345 → 13,000)
+* CSV preview shows categories, counts and the date range and **writes
+  nothing** (row count checked during the open preview)
+* confirm wrote exactly the 4 selected rows; the deselected category
+  (body weight) was not written
+* the day summary recomputed through the aggregation module (12,036 =
+  max(seeded manual, imported CSV) for that day, read from the database)
+* re-importing the same file: preview says "already present", outcome says
+  0 new, row count delta 0
+* Apple XML import: workouts category shown, unsupported types reported and
+  skipped, workout row created with `source=apple_health` + batch id,
+  heart-rate day row created
+* batch removal: preview showed counts; removal deleted exactly the batch's
+  rows **and** its workout, preserved manual entries and the other batch,
+  and recomputed summaries
+* invalid file rejected with a readable message; nothing imported
+* 0 px horizontal overflow at 900 px and 1280 px
+
+Two real bugs browser verification caught and fixed: a hydration mismatch
+(React #418) from `Badge` (a `div`) nested inside `<p>` elements, plus
+`toLocaleString()` rendering differently on server and client (timestamps are
+now formatted server-side); and the seed not clearing `HealthImportBatch`,
+which left ghost batches after a reseed.
+
+---
+
+## Phase 12 — demo-data separation & onboarding
+
+### The design
+
+**One generator, two callers.** The 900-line seed body moved verbatim from
+`prisma/seed.ts` into `prisma/demo-data.ts` as `seedDemoData(prisma, {userId?})`;
+the CLI (`npm run db:seed`) is now a thin wrapper, and the in-app "Start with
+sample data" action calls the *same* function — a second generator would be
+the exact duplication this upgrade exists to remove.
+
+**Registration by enumeration, not id-plumbing.** The generator is the only
+writer for its user during a run (the wipe just emptied the tables — a no-op
+on the in-app path, which requires an empty account), so "everything the user
+owns at the end" is exactly "everything this run created". `recordSeedBatch`
+enumerates 20 models and registers 2,858 records in one `SeedBatch` — sparing
+900 lines of per-create id collection. The bundled food table is deliberately
+**not** registered: foods are shared reference data (`userId: null`), and
+removing the demo must not empty the food search.
+
+**Removal deletes only what was registered**, children before parents
+(`DEMO_MODEL_ORDER`, exported and tested against the FK graph), chunked, with
+the batch row deleted last so a crash mid-way leaves removal re-runnable.
+Afterwards the demo span — anchored on the batch's creation date, not on
+today, so removing months-old sample data recomputes the right days — is
+rebuilt through the same `rebuildSummaries` every other write uses.
+
+**Load is only offered while the account is empty.** Sample data is a
+starting point, not something to mix into a life already being tracked; the
+guard (plus the refuse-if-batch-exists check) is also what makes the action
+idempotent. `npm run setup:empty` is the CLI equivalent of choosing "start
+empty". The user row is never overwritten by any path — the CLI upsert only
+ever creates, and the in-app path passes the existing user through untouched
+(asserted in the browser: name, timezone and unit system identical after an
+in-app load).
+
+**The onboarding checklist is state on the user, ticked by hand.**
+`User.onboardingState` (existing, previously unused) holds `{dismissed,
+done[]}` behind a defensive parser; steps are ticked by the user rather than
+inferred, because "has a meal row" cannot distinguish demo data from a real
+first log. The card is dismissible from the dashboard and restorable from
+Settings → Sample data.
+
+### Files
+
+```
+prisma/demo-data.ts                          the generator + batch registration
+prisma/seed.ts                               now a thin CLI wrapper
+src/lib/logic/onboarding.ts                  checklist state (pure)
+src/server/demo.ts                           status / load / removal
+src/server/actions/demo.ts                   the demo + onboarding actions
+src/components/dashboard/onboarding-card.tsx
+src/components/settings/demo-panel.tsx
+tests/onboarding.test.ts                     8 tests
+```
+
+### Phase 12 verification
+
+`npm test` 562/562 (8 new), typecheck and build clean. Seed idempotency
+re-verified: two consecutive `db:seed` runs leave 1 batch, 2,858 seed records,
+662 schedule items. Browser verification (Playwright, production build) —
+**27/27 checks**: checklist shows, a tick persists across reloads, dismissal
+hides it, Settings restores it with ticks intact; the demo panel reports the
+loaded batch; a genuinely new record (a distance metric the seed never
+writes) is created **unregistered**; removal preview lists per-model counts;
+removal deletes all 662 planner items, all habits and every registered row
+while the real record survives; batch and registry end empty; summaries
+recompute to zero planner data; load is refused while the real record exists,
+offered once the account is truly empty; the in-app load re-seeds the full
+dataset with user settings untouched; 0 px overflow at 900 px; zero console
+errors and zero page errors. (A first run of that suite caught the same
+Badge-inside-`<p>` hydration mistake in the new demo panel that Phase 11 had
+made — fixed the same way.)
+
+---
+
+## Phase 13 — schedule-aware reminders
+
+### The design
+
+**All the knowledge is server-side, in one place.** The watcher used to be
+handed raw `Reminder` rows and knew nothing about schedules. It is now a dumb
+poller fed by `getReminderFeed()` (`src/server/reminders.ts`), which resolves
+today through the same schedule engine, habit views and goal evaluations
+everything else uses; the yes/no decision itself is pure —
+`src/lib/logic/reminders.ts` — and returns a *reason* when silent
+(`rest_day | not_scheduled | excused | canceled | completed | inactive |
+disabled | delivered | no_time | future | already_fired`), so the tests
+assert why a reminder stayed quiet, not merely that it did.
+
+**What never fires:** anything on a rest day or an unscheduled/excused/
+cancelled date (engine statuses map 1:1 to suppressions); archived habits
+and disabled rules; a habit already done or a goal already met today; a
+times-per-week item once the weekly target is reached (before that it
+reminds on any available day); a classic reminder attached to a planner item
+that is done (completed) or skipped (cancelled); and any occurrence already
+delivered.
+
+**Exactly-once is a database key, not a component ref.** New
+`ReminderDelivery` table, unique on `(userId, key)` with keys like
+`habit:<id>:<date>` / `goal:<id>:<date>` / `reminder:<id>:<instant>`. The
+watcher records a delivery when it fires; a second tab racing the first hits
+the unique constraint and does nothing. Rows older than 7 days are swept
+opportunistically. The table rides in backup format v3.
+
+**`reminderEnabled`/`reminderMinute` on `ScheduleRule` are finally consumed**
+— for habits *and* goals — with the rule's scheduled time as fallback and
+silence (`no_time`) when nothing says when. Fire times are local wall-clock
+strings (`YYYY-MM-DDTHH:mm:00`): in a local-first app the browser's clock IS
+the user's clock.
+
+**The tab-open-all-day case:** the watcher refreshes the feed every 5 minutes
+and on window focus, so a habit ticked in another tab stops nagging without a
+reload. The in-app toast is the fallback wherever browser notifications are
+unavailable, denied or unsupported — stated in Settings rather than papered
+over. `markReminderFired` and `getReminders` were deleted (superseded).
+Stale occurrences (>60 min past) are dropped for the day rather than
+surfacing hours late.
+
+### Files
+
+```
+src/lib/logic/reminders.ts        the decision (pure)
+src/server/reminders.ts           the feed + the delivery ledger
+src/server/actions/reminders.ts   watcher's two actions
+tests/reminders.test.ts           24 tests
+```
+
+### Phase 13 verification
+
+`npm test` 586/586 (24 new), typecheck and build clean. Browser verification
+(Playwright, production build, user timezone aligned with the browser clock
+as it is on a real machine) — **14/14 checks**: a due classic reminder and a
+due habit reminder both fire as toasts; a reminder attached to a done planner
+item, a habit not scheduled today, a habit already done and an archived habit
+all stay silent (asserted on the delivery ledger, not just the screen —
+exactly two rows exist and they are the two allowed occurrences); the
+one-shot reminder is disabled with `lastFiredAt` set after firing; a reload
+re-delivers nothing; zero console errors and zero page errors. Verification
+caught a real defect: the watcher's first check raced the Toaster's mount
+during hydration and could swallow the visible toast — the first check now
+waits a beat.
+
+---
+
+## Phase 14 — global search & command palette
+
+The palette (⌘K / Ctrl-K / `/`) already existed with navigation, quick
+actions and a five-entity search. Phase 14 finished the job rather than
+rebuilding it:
+
+* **Hit building is pure and tested** — `src/lib/logic/search.ts` turns
+  matching rows into grouped, render-ready hits; the server action feeds it
+  rows plus the user's resolved today. That removed a host-clock bug: the
+  palette's "Today/Yesterday" labels were computed against the server's
+  clock and could disagree with every page around them (known-problems #11
+  applied to search too).
+* **Four more entities are searchable** — goals, routines (schedule
+  templates), workout templates and meal templates, alongside planner items,
+  habits, workouts, foods and journal entries. Each hit deep-links to the
+  surface that owns the entity, honouring the Phase 8 ownership table
+  (a routine hit goes to the planner, where applying it runs through the
+  four-way duplicate guard; a goal hit goes to Settings).
+* **Quick actions grew** log-health-data and import-health-data entries;
+  keyboard accessibility was verified end to end rather than assumed (the
+  palette is cmdk: typeahead, arrows, Enter, Escape).
+
+Files: `src/lib/logic/search.ts` (pure), rewritten
+`src/server/actions/search.ts`, widened `searchEverything`, palette edits,
+`tests/search.test.ts` (6 tests).
+
+**Verification:** 592/592 tests, typecheck and build clean. Browser
+(Playwright, production build) — **14/14**: Ctrl-K opens with focus in the
+input; actions and navigation visible before typing; "Sunday" finds the
+seeded routine under *Routines*; "protein" finds the goal with its target in
+the subtitle; "Lower body" matches workouts and templates; ArrowDown+Enter
+navigates to the owning surface; `/` opens; Escape closes; zero console
+errors and zero page errors.
+
+---
+
+## Phase 15 — backup & import updates
+
+Format v3 already carried every new table (asserted both ways by the backup
+suite). This phase closed the four items the original Phase 15 list left
+open:
+
+* **The import shows what it will do before doing it.** Choosing a file now
+  runs `previewBackup()` and opens a dialog with the file's version warnings
+  and per-table record counts; nothing is written until the user confirms,
+  and cancel imports nothing (verified against the database while the dialog
+  was open).
+* **A pre-import backup happens automatically.** Confirming first downloads
+  a `pre-import-backup-<date>.json` of the *current* data, and the server
+  writes a second copy to the OS temp directory (`personal-os-backups/`) —
+  so even a replace import always leaves a way back.
+* **The restore is one transaction.** A fatal failure mid-restore rolls the
+  whole import back with a clear message instead of leaving half a backup
+  applied. Row-level constraint failures inside are still skipped — partial
+  recovery of a damaged file beats none — and the deliberate distinction is
+  documented in the code. `backfillMissingSchedules` runs inside the
+  transaction; summary rebuilding stays outside (derived data, idempotent).
+* **The round trip has now actually been run.** Export through the real UI →
+  delete 50 planner items, mangle a habit's name, delete every hydration
+  metric → import the file back through the real UI. Every table count
+  matched the pre-damage state exactly and the mangled record was restored
+  by id.
+
+**Verification:** 593/593 tests (the backup suite gained the
+transaction/snapshot assertions), typecheck and build clean. Browser
+(Playwright, production build) — **17/17**: v3 export with the new tables
+and exact row counts; preview-writes-nothing; auto-downloaded pre-import
+backup; full round trip byte-equal on counts; a foreign file and a
+newer-version file both refused before anything happens; zero console
+errors and zero page errors.
+
+---
+
+## Phase 16 — accessibility, responsiveness, performance
+
+### Accessibility: audited with axe, not assumed
+
+`axe-core` (dev dependency) now drives a WCAG 2.0 A+AA audit across all ten
+routes against the production build. Start of phase: **20 violation groups**,
+including critical ones. End of phase: **zero serious/critical/moderate/minor
+violations on every route.** What the audit caught, and the fixes:
+
+* **Unlabelled form controls** (critical): eight Radix selects in Settings
+  and two in the backup panel had visual `<Label>`s with no association —
+  every select now has an `id` + `htmlFor`.
+* **182 nameless links** on the calendar: heatmap day squares were bare
+  colour swatches; each now carries an aria-label with the date and score
+  ("Tuesday, July 28, 2026 — score 94 of 100").
+* **Invalid `aria-controls`** (critical): the planner and calendar use Tabs
+  as segmented controls with panels rendered elsewhere; mounted hidden
+  `TabsContent` stubs keep every trigger pointing at a real element.
+* **Nameless progress bars**: every bar in the app sits next to the number
+  it visualises, so `Progress` is now `aria-hidden` by default (opt back in
+  with `aria-hidden={false}` + a label where no text equivalent exists).
+* **Contrast**: light-mode `--muted-foreground` darkened 47%→40% lightness
+  (one variable fixing dozens of nodes); category/habit/workout chips and
+  status text moved from `*-600` to `*-700`/`*-800` in light mode (dark mode
+  untouched); the completed-row de-emphasis changed from opacity-60/50 —
+  which dragged its text below 4.5:1 — to opacity-90 (+`grayscale` for
+  skipped), keeping the visual distinction without the illegibility; the
+  timeline's done/skipped blocks likewise.
+* **Reduced motion**: a `prefers-reduced-motion` block collapses fades,
+  slides and transitions to near-instant, keeping a slow spinner rotation so
+  "busy" stays distinguishable from "stuck". Render verified under the
+  preference.
+
+Pre-existing and re-verified rather than new: dialog focus trapping, the
+palette's full keyboard path, `g`-chord navigation, and per-control focus
+rings. The audit ran in light mode; dark mode shares the structural fixes
+and its `*-400-on-dark` chip text was left as is.
+
+### The host clock is finally out of the client
+
+`UISync` pushes the server-resolved today into the UI store on every shell
+render; quick add, the palette, the workout manager, the habit dialog and
+the heatmap's today ring read it (known-problems #11 closed).
+
+### Performance
+
+* `getDayScores` — the known per-day N+1 — turned out to have **no callers**
+  (everything reads the `CalendarDaySummary` cache); deleted rather than
+  optimised.
+* The audit confirmed no route ships more than ~320 kB first-load JS and the
+  per-domain reads are already batched (Phase 5/8 work); no new indexes were
+  justified beyond those added with the Phase 11 schema.
+* Still deliberately not done: batching `rebuildSummaries` for multi-year
+  imports (noted in known-problems #8) — one-time cost, would need a
+  restructuring of `recomputeDay` that Phase 17 regression coverage should
+  precede.
+
+### Verification
+
+593/593 tests, typecheck and build clean. Playwright: axe 0 violations on
+10/10 routes; 0 px horizontal overflow at 768 px and 1024 px on all ten
+routes; zero console errors/warnings and zero page errors throughout;
+reduced-motion render check passes.
+
+---
+
+## Phase 17 — full regression & polish
+
+Run in this order, all against the production build, all passing:
+
+* **Automated tests:** 593/593 across 21 files. **Type check:** clean.
+  **Build:** clean, 12 routes.
+* **Every route** returns 200 with **zero console errors/warnings and zero
+  uncaught page errors**; the production server log is clean.
+* **Cross-feature chain, end to end in a browser:** a CSV of 15,000 steps
+  imported for today flows through the aggregation module into the day
+  summary (verified in the database), onto the dashboard, and the batch's
+  removal restores the summary to its pre-import value exactly. One
+  assertion in the first draft of this check looked for the steps goal on
+  Today; it renders on Settings — its owning surface under the Phase 8
+  split — which is correct behaviour, and the check was corrected.
+* **Migrations:** `npm run db:migrate` re-run — all three data migrations
+  report "nothing to do".
+* **Backup round trip:** executed end to end in Phase 15 (export → damage →
+  restore, byte-equal counts) and the format re-asserted by the suite.
+* **Privacy review:** no `.env`, database file, ZIP or health export is
+  tracked; the client bundle contains no provider key, no provider host and
+  no health-import server code; the health modules contain no network call
+  (asserted by a committed test); provider search options are structurally
+  sealed (`SEARCH_OPTION_KEYS`).
+* **Diff review:** 6 commits, 79 files, ~8.7k insertions over `main`, all
+  accounted for by Phases 11–17; no temporary or verification scripts live
+  in the repo (they stayed in the session scratchpad).
+* **Dead code:** `getDayScores` (uncalled N+1), `useDateParam` (uncalled),
+  and the legacy `importHealthMetrics`/`markReminderFired` actions were
+  removed in their phases; a final sweep found no further orphans.
+
+## What remains deliberately open
+
+Stated plainly, so nothing reads as finished when it is not:
+
+1. **Linting is still not configured** (`next lint` was already broken and
+   deprecated by Next 15 before this upgrade; setting up a fresh strict
+   ESLint config flags pre-existing code repo-wide). A judgement call,
+   documented since Phase 0 — not an accident.
+2. **No live food-provider request has ever been made** — this environment's
+   network policy blocks both hosts. The normalisers are fixture-verified;
+   one live search per provider should be confirmed by a person with
+   network access (Phase 9 section has the details).
+3. **`setSessionRest` still has no UI** — a session's rest length comes from
+   its template (Phase 10 wishlist).
+4. **The committed suite is pure** — database-backed behaviours (unique
+   constraints, transaction rollback, batch removal) are browser-verified
+   and recorded here per phase, not enforced by `npm test`. An integration
+   suite stays the natural next investment.
+5. **`rebuildSummaries` over a multi-year health import is O(days)** —
+   minutes, once, on a first big import (Phase 11 section).
+6. Smaller wishlist items are listed in "Known problems / what is NOT done"
+   above (per-provider result quotas, barcode scanning, rest-timer
+   notification, superset grouping, timeline conflict badges on week/month
+   grids, drag-onto-occupied-slot pre-check).
+
+## Resuming later
 
 ```
 cd /home/user/Daily-Schedule

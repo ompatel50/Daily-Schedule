@@ -44,7 +44,7 @@ export function NotificationsPanel() {
       <div className="flex flex-wrap items-center justify-between gap-3">
         <p className="max-w-lg text-sm text-muted-foreground">
           {permission === "unsupported"
-            ? "This browser doesn't support notifications."
+            ? "This browser doesn't support notifications — reminders still appear as in-app toasts."
             : permission === "granted"
               ? "Reminders will show as a desktop notification and an in-app toast while a Personal OS tab is open."
               : permission === "denied"
