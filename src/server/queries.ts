@@ -11,6 +11,7 @@ import {
 } from "@/lib/date";
 import { MEAL_TYPE_META, type MealType } from "@/lib/enums";
 import { describeGoalTarget } from "@/lib/logic/goals";
+import { aggregateDayAll } from "@/lib/logic/health";
 import {
   describeSchedule,
   resolveEffectiveSchedule,
@@ -390,18 +391,9 @@ export async function getHealthMetrics(from: DayKey, to: DayKey, types?: string[
   });
 }
 
-export async function getLatestMetrics() {
-  const user = await getCurrentUser();
-  const rows = await prisma.healthMetric.findMany({
-    where: { userId: user.id },
-    orderBy: { date: "desc" },
-    take: 400,
-  });
-
-  const latest = new Map<string, (typeof rows)[number]>();
-  for (const row of rows) if (!latest.has(row.type)) latest.set(row.type, row);
-  return latest;
-}
+// Latest-per-metric moved to `getLatestMetricValues` in src/server/health.ts,
+// which aggregates a day's rows through the central module and converts to the
+// user's display units instead of returning whichever raw row sorted first.
 
 export async function getGoals() {
   const user = await getCurrentUser();
@@ -574,6 +566,9 @@ export async function getDayOverview(date: DayKey = today()) {
     nutrition,
     workouts,
     metrics,
+    // A day can carry several rows per metric (manual + import, or per-device);
+    // the one aggregation module decides the day's number.
+    metricSummary: aggregateDayAll(metrics),
     goals,
     journal,
     weekSummaries,

@@ -196,7 +196,58 @@ happened, so "beat target" and "target 5 × 110 kg" stay legible afterwards.
 * Categories (health, productivity, learning, hygiene, mindfulness, personal) and time-of-day
   attachment (morning / afternoon / evening / before bed / anytime).
 
-### 5. Calendar — `/calendar`
+### 5. Health — `/health`
+
+Today's metrics with their sources, 7- and 30-day trends, manual entry, and a **private,
+local-file import** for Apple Health exports and CSVs. There is no pretend "live watch sync" — a
+desktop browser cannot subscribe to HealthKit; what actually works is importing the export file,
+and that is what this is.
+
+**Metrics**: steps, active/resting calories, sleep (with stages), heart rate (day range), resting
+heart rate, HRV, body weight, body fat, hydration, walking/running distance, blood pressure, and
+mood/energy from the journal.
+
+**Every value knows where it came from** — Manual, Apple Health, CSV import, From workouts,
+Calculated or Estimated — and the UI shows that label. Estimated or hand-typed data is never
+presented as a device measurement.
+
+**One aggregation module** (`src/lib/logic/health.ts`) decides what a day's number is, everywhere:
+
+| Metric | Rule |
+|---|---|
+| Steps, calories, hydration, distance | Sum within one app/device, then the fullest device wins — a phone and a watch counting the same walk are never added together |
+| Sleep | Stage intervals are union-merged; time asleep = asleep+core+deep+REM, never in-bed or awake; a night crossing midnight belongs to the morning you woke up |
+| Body weight, body fat, blood pressure | The day's latest reading |
+| Resting HR, HRV | The day's average |
+| Heart rate | Average with the day's min–max range preserved |
+
+**Importing Apple Health**: in the Health app, profile picture → *Export All Health Data* → move
+`export.zip` to this machine → Health page → *Import health data*. The importer parses the file
+locally, shows what it found (categories, counts, date range, duplicates), lets you choose what
+to bring in, and only writes on confirmation. Raw sensor samples are rolled up to one row per
+day per device, workouts import as real workouts, and anything that looks like a workout you
+already logged by hand is **skipped and reported, never merged**. Unsupported record types
+(audiograms, ECGs, …) are counted and skipped, not fatal.
+
+**Re-importing is safe.** Every record carries a stable fingerprint; importing the same file
+again is a no-op, and a later, larger export only adds what is genuinely new (a fuller day
+updates in place). Each import is a **batch** you can remove again as a unit — with a preview of
+exactly what would be deleted — leaving manual entries and other batches untouched, and every
+derived number (goals, day scores, calendar, insights) is recalculated.
+
+**CSV format** (template at `/health-template.csv`): header row with `metricType,value,date`
+required; `unit,startTime,endTime,subtype,source,externalId,notes` optional. Dates must be
+`YYYY-MM-DD` and timestamps ISO 8601 — ambiguous formats like `3/4/2026` are refused rather than
+guessed. `source` may be `csv`, `manual`, `estimated` or `calculated`; claiming `apple_health`
+from a CSV is refused. Units convert automatically where they can (`l`→ml, `lb`→kg, `mi`→km,
+`kJ`→kcal, `min`→h); an unconvertible unit fails that row with a per-row message.
+
+**Privacy**: health files are parsed on your machine, previewed from a temporary staging file
+that is deleted on confirm/cancel (and swept after two hours), and are never uploaded, never
+sent to a provider, and never touched by the food-search layer — a test asserts the health
+modules contain no network call at all.
+
+### 6. Calendar — `/calendar`
 
 * Six-month consistency heatmap, filterable by planner, habits, nutrition or workouts. Days with
   nothing scheduled are skipped rather than drawn as zeros.
@@ -208,7 +259,7 @@ happened, so "beat target" and "target 5 × 110 kg" stay legible afterwards.
   (labelled with their source) and notes.
 * Current streak, longest streak, scored days and "perfect days" — rest days excluded from all four.
 
-### 6. Insights — `/insights`
+### 7. Insights — `/insights`
 
 * **Weekly review**: plain-language observations comparing the last 7 days to the week before —
   what improved, what slipped, which habit is your most reliable and which is falling off.
@@ -217,14 +268,14 @@ happened, so "beat target" and "target 5 × 110 kg" stay legible afterwards.
   rate.
 * Manual health metric entry.
 
-### 7. Today — `/today`
+### 8. Today — `/today`
 
 The screen you work from. Your day as a checklist you tick off, the habits due today, what you
 ate, what you trained, the day score with its explanation, and a note. One-line quick add is here
 because capture should never be a trip; building the structure of a day — times, categories,
 recurrence, routines — is the planner's job, and Today links straight to it.
 
-### 8. Dashboard — `/`
+### 9. Dashboard — `/`
 
 The home screen, and deliberately **read-only**: how the last seven days are going with today as
 the hint, a day score ring, what's next, 30-day consistency, weekly training load, habit status,
@@ -254,7 +305,7 @@ a `surface` prop chooses which affordances it offers, so there is no second impl
 drift. The ownership table is in `src/lib/logic/surfaces.ts`, and `tests/surfaces.test.ts` fails
 if two surfaces ever claim the same job.
 
-### 9. Productivity layer
+### 10. Productivity layer
 
 * **Command palette** (`⌘K` / `Ctrl K`) — searches across schedule items, workouts, foods, habits
   and journal entries, plus actions and navigation.

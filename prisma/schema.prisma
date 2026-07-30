@@ -66,6 +66,7 @@ model User {
   scheduleRules     ScheduleRule[]
   scheduleOverrides ScheduleOverride[]
   seedBatches       SeedBatch[]
+  healthImportBatches HealthImportBatch[]
 
   // --- day score configuration ----------------------------------------------
   /// JSON map of category → weight, e.g. {"planner":30,"habits":30,"goals":40}.
@@ -659,6 +660,10 @@ model Workout {
   source     String  @default("manual") // manual | apple_health | import
   externalId String?
 
+  /// Set when this workout arrived via a health import, so removing that batch
+  /// can take its workouts with it while leaving manual workouts untouched.
+  importBatchId String?
+
   sets         WorkoutSet[]
   scheduleItem ScheduleItem?
 
@@ -671,6 +676,7 @@ model Workout {
   @@unique([source, externalId])
   @@index([userId, date])
   @@index([userId, type])
+  @@index([importBatchId])
 }
 
 model WorkoutSet {
@@ -745,28 +751,118 @@ model HealthMetric {
   userId String
   user   User   @relation(fields: [userId], references: [id], onDelete: Cascade)
 
+  /// Reporting day. For a sleep interval that crosses midnight this is the day
+  /// the interval *ends* — the night belongs to the morning you woke up on.
   date String // YYYY-MM-DD
   /// steps | active_calories | resting_calories | sleep_hours | resting_hr |
-  /// hrv | body_weight | body_fat | hydration_ml | blood_pressure | mood | energy | stress
+  /// heart_rate | hrv | body_weight | body_fat | hydration_ml | distance_km |
+  /// blood_pressure | mood | energy
   type  String
+  /// Stored in the metric's canonical unit (see HEALTH_METRIC_RULES in
+  /// src/lib/logic/health.ts). Legacy rows may carry other units; `unit` says
+  /// which, and aggregation converts before combining anything.
   value Float
   unit  String @default("")
 
+  /// Sub-classification within a type — sleep stages use
+  /// in_bed | asleep | awake | core | deep | rem. Null for plain readings.
+  subtype String?
+
   /// Optional secondary value, e.g. diastolic for blood pressure.
   secondaryValue Float?
-  notes          String?
+  /// Range of the day's samples where the row summarises many (heart rate).
+  minValue Float?
+  maxValue Float?
+  notes    String?
 
   /// Instant of the reading when known; otherwise the day is enough.
   recordedAt DateTime?
+  /// Interval bounds for records that cover a span (sleep, summed samples).
+  startAt DateTime?
+  endAt   DateTime?
 
-  source     String  @default("manual") // manual | apple_health | import
-  externalId String?
+  /// Where the number came from: manual | apple_health | csv | workout |
+  /// calculated | estimated. Estimated or manual data is never presented as a
+  /// device measurement — the UI labels every value with this field.
+  source     String  @default("manual")
+  /// The app that recorded it (Apple Health sourceName, or the CSV's `source`
+  /// column) — distinct devices are separate groups so phone + watch never
+  /// double-count.
+  sourceApp    String?
+  sourceDevice String?
+  externalId   String?
+
+  /// How many raw samples were folded into this row at import time.
+  sampleCount Int?
+
+  /// Stable deduplication key. Re-importing the same file upserts onto the same
+  /// fingerprints instead of duplicating; manual daily entries use
+  /// `manual|type|date` so logging again replaces the day's value. Nullable —
+  /// SQLite treats NULLs as distinct, so rows without one never collide.
+  fingerprint String?
+
+  batchId String?
+  batch   HealthImportBatch? @relation(fields: [batchId], references: [id], onDelete: SetNull)
 
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
-  @@unique([userId, date, type, source])
+  @@unique([userId, fingerprint])
   @@index([userId, type, date])
+  @@index([userId, date])
+  @@index([batchId])
+}
+
+/// One import run — the unit of review and of removal. Only counts and safe
+/// metadata are kept; the raw export is parsed, staged temporarily and deleted,
+/// never stored in the database.
+model HealthImportBatch {
+  id     String @id @default(cuid())
+  userId String
+  user   User   @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  source   String // apple_health | csv
+  fileType String // xml | zip | csv
+  /// Base filename only — never a path from the user's machine.
+  fileName String
+  fileSize Int?
+
+  /// completed | failed | removed
+  status String @default("completed")
+  error  String?
+
+  dateFrom String?
+  dateTo   String?
+  /// JSON array of the metric types the user selected (plus "workouts").
+  categories String @default("[]")
+
+  /// Raw records examined in the file, before rollup.
+  examined Int @default(0)
+  /// Normalised rows newly written.
+  imported Int @default(0)
+  /// Existing rows a re-import refreshed with a fuller value.
+  updated Int @default(0)
+  /// Rows already present and unchanged — the same file imported twice.
+  duplicates Int @default(0)
+  /// Records of types Personal OS does not track.
+  skipped Int @default(0)
+  /// Rows that failed validation.
+  invalid Int @default(0)
+
+  workoutsImported Int @default(0)
+  workoutsSkipped  Int @default(0)
+
+  /// JSON array of human-readable warnings shown at import time.
+  warnings String @default("[]")
+
+  removedAt DateTime?
+
+  metrics HealthMetric[]
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([userId, createdAt])
 }
 
 // ---------------------------------------------------------------------------

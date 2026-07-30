@@ -4,7 +4,7 @@
 > work in a new session, **read this file first**, then run
 > `git log --oneline -12 && npm test`.
 
-**Branch:** `claude/personal-os-phase-8-or6v6y` (restarted from `main` after PR #5 merged; the session's branch name is fixed and now carries Phase 9)
+**Branch:** `claude/personal-os-preview-3-upgrade-msj3sz` (this session's assigned branch, started from `main` after PR #6 merged; carries Phase 11 onward)
 
 > Note on branch naming: the task text asked for `feature/personal-os-preview-3`.
 > The session environment mandates development and pushes on a
@@ -39,7 +39,7 @@
 | 8  | Dashboard / Today / Planner separation             | ✅ done |
 | 9  | Nutrition provider architecture & food search      | ✅ done (providers built + tested against fixtures; **no live API call was possible** — see below) |
 | 10 | Workout session system                             | ✅ done |
-| 11 | Health imports & health metrics                    | ⬜ not started |
+| 11 | Health imports & health metrics                    | ✅ done |
 | 12 | Demo-data separation & onboarding                  | ⬜ not started |
 | 13 | Reminders                                          | ⬜ not started |
 | 14 | Search & command palette                           | ⬜ not started |
@@ -47,17 +47,20 @@
 | 16 | Accessibility, responsiveness, performance         | ⬜ not started |
 | 17 | Full testing & polish                              | ⬜ not started |
 
-**Current phase:** 11 — Health imports & health metrics (**not started**)
+**Current phase:** 12 — Demo-data separation & onboarding (**not started**)
 
 **The task's stated highest-priority milestone is complete** (central schedule
 engine, scheduled goals, scheduled habits, rest-day behaviour, streaks, day
 score, calendar/insights consistency). Phase 7 closed the last outstanding bug
 from the Phase 0 audit, Phase 8 has given Dashboard, Today and Planner one job
 each, Phase 9 has replaced the bundled-only food table with a provider
-architecture, and Phase 10 has given workouts a real session. Everything from
-Phase 11 on is still outstanding and the app remains on its pre-upgrade
-implementations for those areas — see "What is NOT done" below, which is deliberately explicit so nothing reads as finished when it
-is not.
+architecture, Phase 10 has given workouts a real session, and Phase 11 has
+built the private health-metric system: one aggregation module, a `/health`
+page, and a staged Apple Health / CSV import with fingerprint dedup and
+removable batches. Everything from Phase 12 on is still outstanding and the
+app remains on its pre-upgrade implementations for those areas — see "What is
+NOT done" below, which is deliberately explicit so nothing reads as finished
+when it is not.
 
 ---
 
@@ -367,8 +370,40 @@ npm run start             # all 11 routes 200, no server errors
 
 ## Tests passing
 
-483 tests across 16 files. 403 of them are new and cover business behaviour, not
-rendering:
+554 tests across 18 files. 474 of them are new to this upgrade and cover
+business behaviour, not rendering:
+
+* `tests/health.test.ts` (33) — **Phase 11.** The metric registry covering
+  every declared type; unit conversion in and out (kg/lb/g, l/ml/fl oz,
+  kJ→kcal, min→h, mi→km) with null — never a guess — for an inexpressible
+  unit; cumulative metrics summing within a device and taking the fullest
+  device across sources (phone + watch never added together); manual daily
+  totals not double-counting with imports; latest-wins weight with legacy
+  pound rows converted before comparing; heart-rate min/avg/max; sleep stages
+  summing asleep+core+deep+REM and never in-bed or awake, the in-bed
+  fallback, and a manual total competing as its own source; interval union
+  (overlap, touching, inverted, empty); series charting null not zero for an
+  unlogged day; source labels with only Apple Health marked measured;
+  manual-entry schema validation; and the privacy pair — no health module
+  contains a network call, and the provider search options carry no field a
+  health record could travel through.
+* `tests/health-import.test.ts` (38) — **Phase 11.** Apple identifier
+  mapping; the timestamp format keeping the day as written; XML parsing
+  (sources, devices, escaped entities, metadata children, percent-as-fraction
+  body fat, unsupported types counted not fatal, invalid records counted with
+  warnings, sleep-across-midnight assigned to the waking day, workouts from
+  tag attributes and from WorkoutStatistics children); strict CSV parsing
+  (quoting, required columns named when missing, `3/4/2026` and `2026-02-30`
+  refused, negative and non-numeric values, unsupported units, unknown types
+  as unsupported, end-before-start, a CSV forbidden from claiming
+  `apple_health`); rollup determinism (per-day-per-device rows, unit
+  conversion, HR range, weight rows kept individual, sleep stage unions);
+  fingerprints (same file → identical set, overlapping export → same
+  identities with fuller values plus only new days, same value at two times →
+  two records, externalId preferred, in-file duplicates collapsing, the
+  manual namespace); workout duplicate judgement; the ZIP reader (deflate and
+  stored entries, missing export.xml, non-zip input) against archives built
+  in the test; and file-type detection by magic bytes and content.
 
 * `tests/schedule.test.ts` (68) — every schedule mode; both week starts; DST;
   leap year; month and year boundaries; all five override kinds; effective-dated
@@ -690,8 +725,26 @@ These are stated plainly so nothing reads as finished when it is not:
    per-exercise rest override in the UI (the action exists —
    `setSessionRest` — but nothing calls it), and no notification when the rest
    timer reaches zero.
-8. No Apple Health / CSV import UI. `importHealthMetrics` exists as a server
-   action with no interface.
+8. ~~No Apple Health / CSV import UI.~~ **Fixed in Phase 11** — a `/health`
+   page with a staged import (preview → category selection → confirm),
+   fingerprint dedup, removable batches and one central aggregation module.
+   Still outstanding in this area, stated plainly:
+   * The **database-level** import behaviours (transaction rollback on a fatal
+     write, batch removal recomputation, preview-writes-nothing) are verified
+     in a real browser with the database inspected after each step — see the
+     Phase 11 verification — but, like the rest of the project, the committed
+     suite is pure and does not open a database. The same Phase 7 caveat
+     applies until Phase 17's integration suite exists.
+   * `rebuildSummaries` after an import walks every day in the imported range
+     sequentially. A multi-year first import takes noticeably long (minutes,
+     not seconds) — one-time, but worth batching in Phase 16.
+   * Sleep-stage intervals are union-merged **within one import file**; two
+     different exports each contributing partial stage records for the same
+     night resolve per-file and the fuller file's day wins, rather than a
+     cross-batch union of raw intervals (raw samples are deliberately not
+     retained).
+   * The importer does not stream: the export is held in memory while parsed
+     (capped at 400 MB, and `serverActions.bodySizeLimit` raised to match).
 9. `getDayScores` over a range calls `getDayScore` per day, which is several
    queries per day. Fine for a month; it should be batched before anything asks
    for a year. Not yet a user-visible problem.
@@ -1132,18 +1185,154 @@ pre-verification snapshot.
 
 ---
 
+## Phase 11 — health metrics & private health imports
+
+### What was built
+
+There is no pretend live watch sync — a desktop browser cannot subscribe to
+HealthKit. What actually works, and what was built, is a **local-file import**:
+Apple Health `export.zip` / `export.xml`, or a documented CSV, parsed on this
+machine, previewed before anything is written, deduplicated by fingerprint,
+and removable again batch by batch.
+
+**One aggregation module** — `src/lib/logic/health.ts` — now decides what a
+day's number is for every metric, everywhere: goal facts (`server/facts.ts`),
+the day-summary cache (`recomputeDay`), the dashboard, `/health`, Insights and
+Settings all call it. The per-metric rules are documented in the module header
+(cumulative = sum within one app/device then best device wins; weight/fat/BP =
+latest; resting HR/HRV = average; heart rate = average with min–max; sleep =
+stage-aware). Two pre-existing first-row-wins bugs died in the process:
+`recomputeDay` and the dashboard both used `metrics.find(type)`, which was
+only correct while a day could never carry more than one row per type.
+
+**Schema** (additive, `prisma db push`, row counts verified identical across
+all tables before and after): `HealthMetric` gained `subtype` (sleep stages),
+`startAt`/`endAt`, `minValue`/`maxValue`, `sourceApp`/`sourceDevice`,
+`sampleCount`, `fingerprint`, `batchId`; the old
+`(userId, date, type, source)` unique — one row per day per type per source,
+which sample-level imports make wrong — was **replaced** by
+`(userId, fingerprint)`, nullable so uncontrolled rows never collide. New
+model `HealthImportBatch` (counts and safe metadata only — no raw export is
+ever stored). `Workout` gained `importBatchId` so batch removal can take its
+workouts with it. Data migration `003-health-fingerprints` stamps every
+pre-upgrade row `source|type|date` (collision-free by the old constraint, and
+byte-identical to the manual-entry fingerprint for manual rows); verified
+idempotent, second run "nothing to do".
+
+**Dedup is the fingerprint**: Apple rows roll up deterministically to one row
+per (day, device[, stage]), so re-importing the same file reproduces the same
+fingerprints and upserts onto itself — verified in the browser: second import
+of the same file wrote **0** new rows. An overlapping later export updates the
+fuller days in place (same fingerprint, larger value — asserted in tests) and
+adds only genuinely new days. Two same-value weight readings at different
+times keep distinct fingerprints; a CSV `externalId` is preferred as identity
+when present. Manual entry upserts on `manual|type|date` — logging again
+replaces the day's value and can never touch an imported row.
+
+**Workouts import as real workouts** (`source: apple_health`, status
+completed) and feed the existing goal/score paths. An import row that looks
+like a workout the user logged by hand (same day, duration within 25%, time
+within 45 min or absent) is **skipped and reported, never merged** —
+`isLikelyDuplicateWorkout` in `lib/logic/health-import/workout-dup.ts`, kept
+pure and tested.
+
+**Sleep**: stage records (in_bed/asleep/awake/core/deep/rem from all the
+HealthKit values) are union-merged per (day, device, stage) at import — the
+merge is `mergeIntervals`, tested against overlap — and an interval crossing
+midnight belongs to the day it **ends**. Time asleep = asleep+core+deep+REM;
+in-bed and awake never count toward it; a source with only in-bed records
+falls back to in-bed time; manual entries are plain totals.
+
+**Units**: one conversion table in the aggregation module (kg/lb/g, ml/l/fl
+oz, kcal/kJ, h/min, km/mi/m…). New rows are stored canonical (kg, ml, kcal,
+h, km); legacy rows keep their stored unit and are converted at aggregation,
+which is what makes the seeded pounds data and imported kilograms agree.
+Display conversion (`toDisplay`) puts weight and distance back into the
+user's unit system.
+
+**Privacy**: health files are parsed locally, staged as a temp JSON between
+preview and confirm (deleted on confirm/cancel, swept after two hours), and
+never leave the machine. A test walks every health module and asserts there
+is no `fetch(`/socket use at all, and `SEARCH_OPTION_KEYS` — a type-asserted
+runtime mirror of the food-provider options — proves structurally that no
+health field can ride along on a food search.
+
+### Files added
+
+```
+src/lib/logic/health.ts                        THE aggregation module (pure)
+src/lib/logic/health-import/types.ts           pipeline shapes (pure)
+src/lib/logic/health-import/apple-xml.ts       Apple Health scanning parser (pure)
+src/lib/logic/health-import/csv.ts             strict CSV parser (pure)
+src/lib/logic/health-import/rollup.ts          rollup + fingerprints (pure)
+src/lib/logic/health-import/workout-dup.ts     workout duplicate rule (pure)
+src/server/health.ts                           health read model
+src/server/health-import.ts                    staging, preview, confirm, removal
+src/server/health-import/zip.ts                minimal ZIP reader (node:zlib)
+src/server/actions/health-import.ts            the import server actions
+src/app/health/page.tsx                        the Health page
+src/components/health/import-wizard.tsx        staged import dialog
+src/components/health/import-history.tsx       batches + removal
+prisma/migrations-data/003-health-fingerprints.ts
+public/health-template.csv                     synthetic CSV template
+tests/health.test.ts                           33 tests
+tests/health-import.test.ts                    38 tests
+tests/fixtures/apple-health.ts                 synthetic export fixtures
+```
+
+`metric-entry.tsx` grew a `withDetails` posture (date/time/notes) instead of a
+second manual-entry implementation. `HEALTH_METRIC_TYPES` gained `heart_rate`
+and `distance_km`. The legacy `importHealthMetrics` bulk action (no callers,
+no UI) was deleted. Backup format bumped to v3: `healthImportBatches` is in
+`BACKUP_TABLES`, restored before the metric rows that reference it; v1/v2
+files still restore (the fingerprint migration covers their metric rows).
+
+### Phase 11 verification
+
+`npm test` 554/554 (71 new), `npm run typecheck` clean, `npm run build` clean
+(12 routes, `/health` at 8.9 kB). Browser verification (Playwright against the
+production build) — **44/44 checks passed**:
+
+* all 10 routes 200, **zero console errors/warnings, zero page errors**
+* manual entry writes the day's value and logging again **replaces** it
+  (row count unchanged, value moved 12,345 → 13,000)
+* CSV preview shows categories, counts and the date range and **writes
+  nothing** (row count checked during the open preview)
+* confirm wrote exactly the 4 selected rows; the deselected category
+  (body weight) was not written
+* the day summary recomputed through the aggregation module (12,036 =
+  max(seeded manual, imported CSV) for that day, read from the database)
+* re-importing the same file: preview says "already present", outcome says
+  0 new, row count delta 0
+* Apple XML import: workouts category shown, unsupported types reported and
+  skipped, workout row created with `source=apple_health` + batch id,
+  heart-rate day row created
+* batch removal: preview showed counts; removal deleted exactly the batch's
+  rows **and** its workout, preserved manual entries and the other batch,
+  and recomputed summaries
+* invalid file rejected with a readable message; nothing imported
+* 0 px horizontal overflow at 900 px and 1280 px
+
+Two real bugs browser verification caught and fixed: a hydration mismatch
+(React #418) from `Badge` (a `div`) nested inside `<p>` elements, plus
+`toLocaleString()` rendering differently on server and client (timestamps are
+now formatted server-side); and the seed not clearing `HealthImportBatch`,
+which left ghost batches after a reseed.
+
+---
+
 ## Exact next step
 
-**Phase 11 — health imports & health metrics.** Nothing from it has been
-started. `importHealthMetrics` exists as a server action with no interface;
-there is no Apple Health or CSV import UI, and no way to bring a watch export in.
+**Phase 12 — demo-data separation & onboarding.** `SeedBatch`/`SeedRecord`
+exist but nothing writes them; the seed cannot be removed separately from real
+records, and there is no start-empty / sample-data choice or onboarding
+checklist (`User.onboardingState` exists, unused).
 
-Two things worth doing before or alongside it:
+Also still open from earlier phases:
 
 * If network access is available, run one live search against each food provider
   and confirm the normalisers against real payloads — see "Provider verification
-  status" in the Phase 9 section. That is the one part of Phase 9 that has never
-  touched the real services.
+  status" in the Phase 9 section.
 * Wire `setSessionRest` to the UI. The action exists and is tested; nothing calls
   it, so a session's rest length can currently only come from its template.
 

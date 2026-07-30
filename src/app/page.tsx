@@ -50,8 +50,17 @@ export default async function DashboardPage() {
     getWindowStats(shiftDay(date, -13), shiftDay(date, -7)),
   ]);
 
-  const { user, schedule, nutrition, workouts, dueHabits, restingHabits, habitsDone, goals, metrics } =
-    overview;
+  const {
+    user,
+    schedule,
+    nutrition,
+    workouts,
+    dueHabits,
+    restingHabits,
+    habitsDone,
+    goals,
+    metricSummary,
+  } = overview;
 
   const calorieGoal = goals.get("calories")?.target ?? 0;
   const stepGoal = goals.get("steps")?.target ?? 0;
@@ -62,8 +71,8 @@ export default async function DashboardPage() {
   // read the same object for this date, so they cannot disagree.
   const { score } = overview;
 
-  const steps = metrics.find((metric) => metric.type === "steps")?.value ?? 0;
-  const sleep = metrics.find((metric) => metric.type === "sleep_hours")?.value ?? null;
+  const steps = metricSummary.get("steps")?.value ?? 0;
+  const sleep = metricSummary.get("sleep_hours")?.value ?? null;
 
   const remaining = schedule.filter((item) => item.status === "planned");
   const missed = schedule.filter((item) => item.status === "skipped");
@@ -368,7 +377,7 @@ export default async function DashboardPage() {
             accent="text-domain-health"
             action={
               <Button asChild variant="ghost" size="sm">
-                <Link href="/insights">
+                <Link href="/health">
                   Trends <ArrowRight />
                 </Link>
               </Button>

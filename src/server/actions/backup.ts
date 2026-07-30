@@ -34,6 +34,7 @@ export async function exportBackup(): Promise<ActionResult<BackupFile>> {
     workouts,
     workoutSets,
     workoutTemplates,
+    healthImportBatches,
     healthMetrics,
     goals,
     goalEntries,
@@ -60,6 +61,7 @@ export async function exportBackup(): Promise<ActionResult<BackupFile>> {
     prisma.workout.findMany({ where: { userId: user.id } }),
     prisma.workoutSet.findMany({ where: { workout: { userId: user.id } } }),
     prisma.workoutTemplate.findMany({ where: { userId: user.id } }),
+    prisma.healthImportBatch.findMany({ where: { userId: user.id } }),
     prisma.healthMetric.findMany({ where: { userId: user.id } }),
     prisma.goal.findMany({ where: { userId: user.id } }),
     prisma.goalEntry.findMany({ where: { userId: user.id } }),
@@ -92,6 +94,7 @@ export async function exportBackup(): Promise<ActionResult<BackupFile>> {
     workouts,
     workoutSets,
     workoutTemplates,
+    healthImportBatches,
     healthMetrics,
     goals,
     goalEntries,
@@ -273,6 +276,7 @@ export async function importBackup(
     await prisma.habitLog.deleteMany({ where: { userId: user.id } });
     await prisma.habit.deleteMany({ where: { userId: user.id } });
     await prisma.healthMetric.deleteMany({ where: { userId: user.id } });
+    await prisma.healthImportBatch.deleteMany({ where: { userId: user.id } });
     await prisma.journalEntry.deleteMany({ where: { userId: user.id } });
     await prisma.reminder.deleteMany({ where: { userId: user.id } });
     await prisma.favoriteItem.deleteMany({ where: { userId: user.id } });
@@ -312,7 +316,7 @@ export async function importBackup(
   const own = <T extends object>(row: T) => ({ ...row, userId: user.id });
   const dates = <T extends Record<string, unknown>>(row: T) => {
     const copy: Record<string, unknown> = { ...row };
-    for (const key of ["createdAt", "updatedAt", "completedAt", "lastUsed", "lastUsedAt", "remindAt", "lastFiredAt", "recordedAt"]) {
+    for (const key of ["createdAt", "updatedAt", "completedAt", "lastUsed", "lastUsedAt", "remindAt", "lastFiredAt", "recordedAt", "startAt", "endAt", "startedAt", "removedAt", "retrievedAt", "refreshedAt"]) {
       if (typeof copy[key] === "string") copy[key] = new Date(copy[key] as string);
     }
     return copy as T;
@@ -396,6 +400,12 @@ export async function importBackup(
       update: row as never,
     }),
   );
+
+  // Batches restore before the metric rows that point at them.
+  await restore<{ id: string }>("healthImportBatches", (row) => {
+    const value = own(dates(row)) as never;
+    return prisma.healthImportBatch.upsert({ where: { id: row.id }, create: value, update: value });
+  });
 
   await restore<{ id: string }>("healthMetrics", (row) => {
     const value = own(dates(row)) as never;

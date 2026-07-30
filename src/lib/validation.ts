@@ -277,6 +277,12 @@ export const healthMetricSchema = z.object({
   value: z.number().min(0).max(1000000),
   secondaryValue: z.number().min(0).max(1000).nullable().optional(),
   notes: z.string().max(500).nullable().optional(),
+  /** Optional time of the reading, HH:mm. */
+  time: z
+    .string()
+    .regex(/^([01]\d|2[0-3]):[0-5]\d$/)
+    .nullable()
+    .optional(),
 });
 
 /** The schedule half of a goal or habit form. Shared so both stay in step. */

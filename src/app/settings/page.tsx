@@ -8,7 +8,8 @@ import { NotificationsPanel } from "@/components/settings/notifications-panel";
 import { PageHeader } from "@/components/shared/page-header";
 import { SectionCard } from "@/components/shared/section-card";
 import { KEYBOARD_SHORTCUTS } from "@/lib/navigation";
-import { getGoalRows, getHabitOptions, getLatestMetrics, getUser } from "@/server/queries";
+import { getGoalRows, getHabitOptions, getUser } from "@/server/queries";
+import { getLatestMetricValues } from "@/server/health";
 import { scheduleSettingsFor } from "@/server/schedule";
 
 export const metadata: Metadata = { title: "Settings" };
@@ -20,7 +21,7 @@ export default async function SettingsPage() {
   const [goals, habits, latest] = await Promise.all([
     getGoalRows(),
     getHabitOptions(),
-    getLatestMetrics(),
+    getLatestMetricValues(),
   ]);
   const weight = latest.get("body_weight");
 

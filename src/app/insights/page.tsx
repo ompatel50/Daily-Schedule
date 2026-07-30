@@ -26,10 +26,10 @@ import { cn, formatNumber, pct } from "@/lib/utils";
 import {
   getGoalMap,
   getHabitsWithStats,
-  getHealthMetrics,
   getUser,
   getWindowStats,
 } from "@/server/queries";
+import { getMetricSeries } from "@/server/health";
 import { getWeeklyReview } from "@/server/insights";
 import { scheduleSettingsFor } from "@/server/schedule";
 import { getWeekBounds } from "@/lib/logic/schedule";
@@ -45,12 +45,19 @@ export default async function InsightsPage() {
   const date = settings.today;
   const week = getWeekBounds(date, settings);
 
-  const [thisWeek, lastWeek, habits, goals, metrics, review] = await Promise.all([
+  const [thisWeek, lastWeek, habits, goals, metricSeries, review] = await Promise.all([
     getWindowStats(shiftDay(date, -6), date),
     getWindowStats(shiftDay(date, -13), shiftDay(date, -7)),
     getHabitsWithStats(date, { historyDays: 90 }),
     getGoalMap(),
-    getHealthMetrics(shiftDay(date, -(TREND_DAYS - 1)), date),
+    // Aggregated per-day values from the one health module — a day with rows
+    // from several sources charts one number, in the user's display units.
+    getMetricSeries(shiftDay(date, -(TREND_DAYS - 1)), date, [
+      "body_weight",
+      "steps",
+      "sleep_hours",
+      "resting_hr",
+    ]),
     // Uses the configured week start, so "this week" means the same thing here
     // as it does for a times-per-week goal.
     getWeeklyReview(user.id, week.start, week.end, settings),
@@ -86,17 +93,14 @@ export default async function InsightsPage() {
 
   // Health series.
   const days = lastNDays(TREND_DAYS, date);
-  const metricByTypeDate = new Map<string, number>();
-  for (const metric of metrics) metricByTypeDate.set(`${metric.type}:${metric.date}`, metric.value);
-
   const series = (type: HealthMetricType) =>
-    days.map((day) => metricByTypeDate.get(`${type}:${day}`) ?? null);
+    (metricSeries.get(type) ?? []).map((point) => point.value);
 
   const weightRaw = series("body_weight");
   const weightSmoothed = movingAverage(weightRaw, 7);
   const weightData = days.map((day, index) => ({
     label: formatDay(day, "M/d"),
-    weight: weightRaw[index],
+    weight: weightRaw[index] ?? null,
     average: weightSmoothed[index] === null ? null : Math.round(weightSmoothed[index]! * 10) / 10,
   }));
 
@@ -107,14 +111,14 @@ export default async function InsightsPage() {
 
   const sleepData = days.map((day, index) => ({
     label: formatDay(day, "M/d"),
-    sleep: series("sleep_hours")[index],
-    hr: series("resting_hr")[index],
+    sleep: series("sleep_hours")[index] ?? null,
+    hr: series("resting_hr")[index] ?? null,
   }));
 
   const latest = (type: HealthMetricType) => {
-    for (let index = days.length - 1; index >= 0; index -= 1) {
-      const value = metricByTypeDate.get(`${type}:${days[index]}`);
-      if (value !== undefined) return value;
+    const values = series(type);
+    for (let index = values.length - 1; index >= 0; index -= 1) {
+      if (values[index] !== null) return values[index];
     }
     return null;
   };

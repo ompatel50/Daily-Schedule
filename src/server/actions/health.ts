@@ -3,8 +3,8 @@
 import { revalidatePath } from "next/cache";
 
 import { getCurrentUser, prisma } from "@/lib/db";
-import { HEALTH_METRIC_META, type HealthMetricType } from "@/lib/enums";
-import { isDayKey } from "@/lib/date";
+import { HEALTH_METRIC_RULES, toCanonical } from "@/lib/logic/health";
+import { manualDailyFingerprint } from "@/lib/logic/health-import/rollup";
 import {
   fail,
   fromZod,
@@ -22,32 +22,47 @@ function revalidateAll() {
   revalidatePath("/", "layout");
 }
 
+/**
+ * Manual entry: one value per metric per day. Logging again replaces the day's
+ * manual value — the `manual|type|date` fingerprint is the identity, so this
+ * can never collide with (or overwrite) an imported record. Values are stored
+ * in the metric's canonical unit; the entry arrives in the user's display unit
+ * and is converted here, never guessed later.
+ */
 export async function logHealthMetric(input: unknown): Promise<ActionResult<{ id: string }>> {
   const parsed = healthMetricSchema.safeParse(input);
   if (!parsed.success) return fromZod(parsed.error);
 
   const user = await getCurrentUser();
-  const { date, type, value, secondaryValue, notes } = parsed.data;
-  const meta = HEALTH_METRIC_META[type];
+  const { date, type, value, secondaryValue, notes, time } = parsed.data;
+  const rule = HEALTH_METRIC_RULES[type];
+  if (!rule) return fail("Unknown metric type");
 
-  // Weight is stored in whichever unit the user reads it in; `unit` records
-  // that choice so conversions later are unambiguous.
-  const unit =
-    type === "body_weight" ? (user.unitSystem === "metric" ? "kg" : "lb") : meta.unit;
+  // The entry arrives in the user's display unit for that metric.
+  const enteredUnit =
+    type === "body_weight" && user.unitSystem !== "metric"
+      ? "lb"
+      : type === "distance_km" && user.unitSystem !== "metric"
+        ? "mi"
+        : rule.canonicalUnit;
+  const canonical = toCanonical(type, value, enteredUnit);
+  if (canonical === null) return fail("That value cannot be stored for this metric");
+
+  const fingerprint = manualDailyFingerprint(type, date);
+  const recordedAt = time ? new Date(`${date}T${time}:00`) : null;
+
+  const data = {
+    value: canonical,
+    unit: rule.canonicalUnit,
+    secondaryValue: secondaryValue ?? null,
+    notes: notes ?? null,
+    recordedAt,
+  };
 
   const metric = await prisma.healthMetric.upsert({
-    where: { userId_date_type_source: { userId: user.id, date, type, source: "manual" } },
-    create: {
-      userId: user.id,
-      date,
-      type,
-      value,
-      unit,
-      secondaryValue: secondaryValue ?? null,
-      notes: notes ?? null,
-      source: "manual",
-    },
-    update: { value, unit, secondaryValue: secondaryValue ?? null, notes: notes ?? null },
+    where: { userId_fingerprint: { userId: user.id, fingerprint } },
+    create: { userId: user.id, date, type, source: "manual", fingerprint, ...data },
+    update: data,
   });
 
   await recomputeDay(user.id, date);
@@ -66,57 +81,10 @@ export async function deleteHealthMetric(id: string): Promise<ActionResult<null>
   return succeed(null);
 }
 
-/**
- * Bulk entry point shaped like an Apple Health export row. Nothing calls this
- * from the UI yet, but the importer and any future sync land here, and the
- * (source, externalId) unique key makes repeated imports idempotent.
- */
-export async function importHealthMetrics(
-  rows: Array<{
-    date: string;
-    type: string;
-    value: number;
-    unit?: string;
-    source?: string;
-    externalId?: string;
-    recordedAt?: string;
-  }>,
-): Promise<ActionResult<{ imported: number; skipped: number }>> {
-  const user = await getCurrentUser();
-  let imported = 0;
-  let skipped = 0;
-  const touched = new Set<string>();
-
-  for (const row of rows) {
-    const type = row.type as HealthMetricType;
-    if (!isDayKey(row.date) || !HEALTH_METRIC_META[type] || !Number.isFinite(row.value)) {
-      skipped += 1;
-      continue;
-    }
-
-    const source = row.source ?? "import";
-    await prisma.healthMetric.upsert({
-      where: { userId_date_type_source: { userId: user.id, date: row.date, type, source } },
-      create: {
-        userId: user.id,
-        date: row.date,
-        type,
-        value: row.value,
-        unit: row.unit ?? HEALTH_METRIC_META[type].unit,
-        source,
-        externalId: row.externalId ?? null,
-        recordedAt: row.recordedAt ? new Date(row.recordedAt) : null,
-      },
-      update: { value: row.value, externalId: row.externalId ?? null },
-    });
-    imported += 1;
-    touched.add(row.date);
-  }
-
-  for (const date of touched) await recomputeDay(user.id, date);
-  revalidateAll();
-  return succeed({ imported, skipped });
-}
+// The pre-Phase-11 bulk `importHealthMetrics` action was removed: the real
+// import pipeline lives in `src/server/health-import.ts` (staged preview →
+// transactional confirm → removable batches) and is exposed through
+// `src/server/actions/health-import.ts`.
 
 // --- goals ------------------------------------------------------------------
 
@@ -196,9 +164,10 @@ export async function saveJournalEntry(input: unknown): Promise<ActionResult<{ i
     ["energy", energy],
   ] as const) {
     if (value == null) continue;
+    const fingerprint = manualDailyFingerprint(type, date);
     await prisma.healthMetric.upsert({
-      where: { userId_date_type_source: { userId: user.id, date, type, source: "manual" } },
-      create: { userId: user.id, date, type, value, unit: "/5", source: "manual" },
+      where: { userId_fingerprint: { userId: user.id, fingerprint } },
+      create: { userId: user.id, date, type, value, unit: "/5", source: "manual", fingerprint },
       update: { value },
     });
   }

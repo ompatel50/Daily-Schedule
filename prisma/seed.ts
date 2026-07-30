@@ -11,6 +11,7 @@ import { PrismaClient } from "@prisma/client";
 import { addDays, format, subDays } from "date-fns";
 
 import { SEED_FOODS } from "../src/lib/data/foods";
+import { manualDailyFingerprint } from "../src/lib/logic/health-import/rollup";
 // The seed calls the app's real aggregation rather than keeping its own copy of
 // the scoring formula. It used to duplicate scoreDay() by hand, which meant
 // seeded history and live recomputation could drift apart silently.
@@ -79,6 +80,7 @@ async function main() {
   await prisma.habitLog.deleteMany({ where: { userId: user.id } });
   await prisma.habit.deleteMany({ where: { userId: user.id } });
   await prisma.healthMetric.deleteMany({ where: { userId: user.id } });
+  await prisma.healthImportBatch.deleteMany({ where: { userId: user.id } });
   await prisma.journalEntry.deleteMany({ where: { userId: user.id } });
   await prisma.reminder.deleteMany({ where: { userId: user.id } });
   await prisma.favoriteItem.deleteMany({ where: { userId: user.id } });
@@ -632,6 +634,9 @@ async function main() {
         value: row.value,
         unit: row.unit,
         source: "manual",
+        // The same identity the manual-entry UI upserts on, so logging a value
+        // for a seeded day replaces it instead of stacking a second row.
+        fingerprint: manualDailyFingerprint(row.type, date),
       })),
     });
   }
@@ -850,9 +855,10 @@ async function main() {
     });
 
     for (const [type, value] of [["mood", mood], ["energy", energy]] as const) {
+      const fingerprint = manualDailyFingerprint(type, date);
       await prisma.healthMetric.upsert({
-        where: { userId_date_type_source: { userId: user.id, date, type, source: "manual" } },
-        create: { userId: user.id, date, type, value, unit: "/5", source: "manual" },
+        where: { userId_fingerprint: { userId: user.id, fingerprint } },
+        create: { userId: user.id, date, type, value, unit: "/5", source: "manual", fingerprint },
         update: { value },
       });
     }
