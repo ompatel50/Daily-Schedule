@@ -46,6 +46,27 @@ function isUniqueViolation(error: unknown): boolean {
   );
 }
 
+/**
+ * Reference ids arrive from the client and must belong to the current user
+ * before they are attached to anything. Returns an error message, or null
+ * when everything checks out.
+ */
+async function checkOwnedRefs(
+  userId: string,
+  habitId: string | null | undefined,
+  tagIds: string[],
+): Promise<string | null> {
+  if (habitId) {
+    const habit = await prisma.habit.findFirst({ where: { id: habitId, userId }, select: { id: true } });
+    if (!habit) return "That habit doesn't exist";
+  }
+  if (tagIds.length) {
+    const owned = await prisma.tag.count({ where: { id: { in: tagIds }, userId } });
+    if (owned !== new Set(tagIds).size) return "One of those tags doesn't exist";
+  }
+  return null;
+}
+
 /** What `applyScheduleTemplate` reports back to the UI. */
 export type ApplyTemplateResult =
   | { status: "applied"; created: number; removed: number; ordinal: number }
@@ -60,6 +81,9 @@ export async function createScheduleItem(input: unknown): Promise<ActionResult<{
   const user = await getCurrentUser();
   const data = parsed.data;
   const rule = parseRule(data.recurrenceRule ?? null);
+
+  const refError = await checkOwnedRefs(user.id, data.habitId, data.tagIds);
+  if (refError) return fail(refError);
 
   const maxOrder = await prisma.scheduleItem.aggregate({
     where: { userId: user.id, date: data.date },
@@ -150,6 +174,9 @@ export async function updateScheduleItem(
     where: { id: parsed.data.id, userId: user.id },
   });
   if (!existing) return fail("Item not found");
+
+  const refError = await checkOwnedRefs(user.id, parsed.data.habitId, parsed.data.tagIds);
+  if (refError) return fail(refError);
 
   const data = parsed.data;
   const fields = {
@@ -384,7 +411,7 @@ export async function saveScheduleTemplate(input: unknown): Promise<ActionResult
   const data = { ...rest, items: JSON.stringify(items), userId: user.id };
 
   const template = id
-    ? await prisma.scheduleTemplate.update({ where: { id }, data })
+    ? await prisma.scheduleTemplate.update({ where: { id, userId: user.id }, data })
     : await prisma.scheduleTemplate.create({ data });
 
   revalidateAll();

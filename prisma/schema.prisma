@@ -41,6 +41,13 @@ model User {
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
+  // --- authentication (Auth.js) ---------------------------------------------
+  /// Set by the OAuth provider on first sign-in. The app itself never emails.
+  emailVerified DateTime?
+  /// Profile picture URL from the OAuth provider, shown in the topbar.
+  image         String?
+  accounts      Account[]
+
   // Personal context used by nutrition / health calculations.
   birthDate     String? // YYYY-MM-DD
   heightCm      Float?
@@ -85,6 +92,31 @@ model User {
   scoreOptionalTasks Boolean @default(false)
   /// JSON blob backing the dismissible onboarding checklist.
   onboardingState String @default("{}")
+}
+
+/// One linked OAuth account (Google). Shape follows the Auth.js Prisma
+/// adapter contract, but the token columns are deliberately left null: the
+/// app never calls the provider's APIs after sign-in, so access/refresh/id
+/// tokens are stripped before the row is written (see src/server/auth).
+/// Sessions are stateless JWTs — there is no Session table on purpose.
+model Account {
+  id                String  @id @default(cuid())
+  userId            String
+  type              String
+  provider          String
+  providerAccountId String
+  refresh_token     String?
+  access_token      String?
+  expires_at        Int?
+  token_type        String?
+  scope             String?
+  id_token          String?
+  session_state     String?
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([provider, providerAccountId])
+  @@index([userId])
 }
 
 // ---------------------------------------------------------------------------

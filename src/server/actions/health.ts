@@ -115,7 +115,7 @@ export async function saveGoal(input: unknown): Promise<ActionResult<{ id: strin
   const targetId = id ?? existing?.id;
 
   const goal = targetId
-    ? await prisma.goal.update({ where: { id: targetId }, data: rest })
+    ? await prisma.goal.update({ where: { id: targetId, userId: user.id }, data: rest })
     : await prisma.goal.create({ data: { ...rest, userId: user.id } });
 
   revalidateAll();
@@ -191,7 +191,7 @@ export async function saveReminder(input: unknown): Promise<ActionResult<{ id: s
 
   const data = { ...rest, message: rest.message ?? null, remindAt: when, userId: user.id };
   const reminder = id
-    ? await prisma.reminder.update({ where: { id }, data })
+    ? await prisma.reminder.update({ where: { id, userId: user.id }, data })
     : await prisma.reminder.create({ data });
 
   revalidateAll();

@@ -66,8 +66,8 @@ export async function confirmHealthImportAction(input: {
 }
 
 export async function cancelHealthImportAction(token: string): Promise<ActionResult<null>> {
-  await getCurrentUser();
-  if (typeof token === "string") await discardStaged(token);
+  const user = await getCurrentUser();
+  if (typeof token === "string") await discardStaged(user.id, token);
   return succeed(null);
 }
 

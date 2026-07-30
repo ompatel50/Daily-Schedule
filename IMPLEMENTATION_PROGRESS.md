@@ -1701,8 +1701,8 @@ npm test && npm run typecheck && npm run build
 |----|---------------------------------------------------|--------|
 | 18 | Permanent pre-web safety checkpoint               | ✅ done |
 | 19 | Production PostgreSQL foundation                  | ✅ done |
-| 20 | Authentication and user isolation                 | ⏳ in progress |
-| 21 | Local backup → hosted-account migration           | — |
+| 20 | Authentication and user isolation                 | ✅ done |
+| 21 | Local backup → hosted-account migration           | ⏳ in progress |
 | 22 | Hosted health-import architecture                 | — |
 | 23 | Navigation and route performance                  | — |
 | 24 | Deferred feature improvements                     | — |
@@ -1893,3 +1893,105 @@ git checkout f5b4fe1d950abf56cc11ae97d2750ac714d365fb
 * Region colocation (database next to the app) is a deployment-time
   decision documented in the Phase 26 deployment guide.
 * Auth.js tables arrive as a second migration in Phase 20.
+
+---
+
+## Phase 20 — authentication and user isolation
+
+### Architecture
+
+* **Auth.js (next-auth v5 beta 32) + Google OAuth + Prisma adapter**, JWT
+  sessions (30-day max), **no session table** and **no stored OAuth tokens**:
+  a wrapped adapter strips access/refresh/id tokens before the Account row is
+  written — the app never calls Google after sign-in, so the tokens would be
+  pure liability at rest. Migration `20260730044542_auth` adds `Account` and
+  `User.emailVerified`/`image`.
+* **Server-side email allowlist** (`ALLOWED_EMAILS`): enforced in the
+  `signIn` callback (a Google-authenticated unknown email is refused), it
+  **fails closed** when unset, and it is re-checked on *every authenticated
+  request* in `getCurrentUser` — removing an email locks that account out on
+  its next request, not when the JWT expires. No public registration exists.
+* **Three defense layers, only the deepest trusted**: edge middleware
+  (`src/middleware.ts`, JWT check, redirects to /signin), the `(app)` route
+  group layout (`requireCurrentUser`), and — the real enforcement — every
+  server query/action resolving the user from the session.
+* **The seam did the heavy lifting**: `getCurrentUser` in `src/lib/db.ts`
+  (the one function all ~141 call sites use) now re-exports
+  `requireCurrentUser` from `src/server/auth/current-user.ts` — session →
+  allowlist re-check → User row, wrapped in React `cache()` (one DB lookup
+  per request instead of ~10), redirecting to /signin when absent. Server
+  actions therefore verify authentication independently of middleware by
+  construction. Central helpers: `getSession` / `getCurrentUser` /
+  `requireSession` / `requireCurrentUser` / `requireOwnedRecord`.
+* **Sign-in page** (`/signin`, outside the app shell): Google button, safe
+  error messages (denied ≠ technical detail), and — local development only —
+  a `DANGEROUSLY_ENABLE_DEV_LOGIN=1`-gated passwordless door that still
+  enforces the allowlist and is ignored on Vercel; it exists so development
+  and automated browser tests work without Google credentials. Sign-out
+  lives in the topbar account menu (`signOutAction`).
+* **First sign-in** creates the app user via the adapter (name falls back to
+  the email local part; timezone stays the schema default until Settings).
+  No demo data is written; the existing empty-account onboarding (sample
+  data offer) applies untouched, and later sign-ins never overwrite
+  settings.
+* The circular import db.ts ↔ auth (a webpack TDZ crash) was broken by
+  extracting `src/lib/prisma.ts`; `src/lib/db.ts` stays the compat surface.
+
+### Ownership audit — found and fixed
+
+A full audit (91 action + ~70 query functions, report in the session
+scratchpad) found the query layer and compute layer already correctly
+user-scoped, and these defects, all fixed:
+
+* **8 update-by-id mutations** took a client id with no `userId` filter — 5
+  of them would also have *stolen* the row (stamping `userId` in data):
+  `saveHabit`, `saveWorkout` (which also wiped the victim's sets),
+  `saveWorkoutTemplate`, `saveScheduleTemplate`, `saveReminder`,
+  `saveFoodItem`, `saveGoalWithSchedule`, `saveGoal`. All now filter
+  `{ id, userId }` (P2025 = not found).
+* `saveFoodItem` could rewrite **global bundled foods** (`userId: null`)
+  shared by every account — now scoped to `{ userId, isCustom: true }`.
+* `clearDateOverride` deleted by `(ownerType, ownerId, date)` with no user —
+  now takes and filters `userId`.
+* `deleteFoodItem` counted other users' meal entries (leak + veto) — now
+  counts only the caller's.
+* Health-import staging **cancel** didn't verify token ownership —
+  `discardStaged(userId, token)` now loads and checks the staged owner.
+* Client-supplied reference ids are verified: planner `habitId`/`tagIds`
+  and goal `sourceRef` must belong to the caller.
+* The health-import workout dupe-check and `Workout` unique index were
+  already made per-user in Phase 19.
+
+### Verification
+
+* **Browser (Playwright, production build): 13/13** — signed-out `/` and
+  deep routes redirect to /signin; the sign-in page carries no app shell and
+  no data; a non-allowlisted email is refused with a safe message
+  (`?error=CredentialsSignin` — surfaced via the canonical AuthError-catch
+  pattern); an allowlisted sign-in lands on the dashboard with an **empty**
+  account (no demo data); zero console errors; sign-out returns to /signin
+  and re-gates every route; a second account sees nothing of the first's
+  data. (`AUTH_TRUST_HOST` documented for self-hosted deployments — its
+  absence was caught live as an UntrustedHost 500.)
+* **Cross-user integration tests: 20/20 on real PostgreSQL** — a new
+  database-backed suite (`npm run test:integration`, disposable
+  `personal_os_test` DB, migrations applied from zero each run, stubbed
+  session chooses the signed-in user). Every major domain: habits,
+  workouts, templates, planner items, routines, tags, bundled + custom
+  foods, goals, schedule overrides, reminders, search scoping — each
+  verifying both the refusal *and* that the victim's row is unchanged.
+  Also: unauthenticated actions/queries redirect instead of running, and
+  search case-insensitivity under Postgres is pinned by a test.
+* Unit tests 593/593 (auth stubs added to the vitest config; integration
+  suite excluded from the unit run) · typecheck clean · build clean
+  (`/signin` route + 87.5 kB middleware).
+
+### Notes
+
+* `.env.example` documents `AUTH_SECRET`, `AUTH_GOOGLE_ID`,
+  `AUTH_GOOGLE_SECRET`, `ALLOWED_EMAILS`, `AUTH_TRUST_HOST`,
+  `DANGEROUSLY_ENABLE_DEV_LOGIN`. No real values are committed.
+* `Account` is deliberately **not** in `BACKUP_TABLES`: sign-in linkage is
+  not user data, and a backup restored into a different account must never
+  carry the original's Google binding.
+* The backup import's cross-user id hazard is Phase 21's core work, next.

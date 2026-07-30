@@ -78,8 +78,13 @@ async function sweepStaleStaging(): Promise<void> {
   }
 }
 
-export async function discardStaged(token: string): Promise<void> {
+export async function discardStaged(userId: string, token: string): Promise<void> {
   try {
+    // Only the user who staged an import can cancel it: the staged plan
+    // embeds its owner, and a token addressing someone else's staging file
+    // discards nothing.
+    const staged = await loadStaged(userId, token);
+    if (!staged) return;
     await unlink(await stagePath(token));
   } catch {
     // Already gone — cancelling twice is fine.
@@ -380,7 +385,7 @@ export async function confirmHealthImport(
     : [];
 
   if (rows.length === 0 && workouts.length === 0) {
-    await discardStaged(token);
+    await discardStaged(userId, token);
     return { ok: false, error: "Nothing was selected, so nothing was imported." };
   }
 
@@ -561,7 +566,7 @@ export async function confirmHealthImport(
     };
   }
 
-  await discardStaged(token);
+  await discardStaged(userId, token);
 
   if (dateFrom && dateTo) {
     outcome.recomputedDays = await rebuildSummaries(userId, dateFrom, dateTo);

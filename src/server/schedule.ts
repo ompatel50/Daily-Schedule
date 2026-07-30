@@ -358,11 +358,12 @@ export async function setDateOverride(params: {
 
 /** "Restore the normal occurrence" — remove the exception, keep the schedule. */
 export async function clearDateOverride(
+  userId: string,
   ownerType: OwnerType,
   ownerId: string,
   date: DayKey,
 ): Promise<void> {
-  await prisma.scheduleOverride.deleteMany({ where: { ownerType, ownerId, date } });
+  await prisma.scheduleOverride.deleteMany({ where: { userId, ownerType, ownerId, date } });
 }
 
 /** Remove an owner's schedule entirely — called when the owner is deleted. */
