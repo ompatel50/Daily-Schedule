@@ -48,7 +48,7 @@ nothing and a mistake is recoverable.
 ## Everything lands in your account only
 
 This is worth stating precisely, because the hosted database is shared
-between the allowlisted accounts:
+between the accounts:
 
 * Every imported record is given a **brand-new id derived from your
   account**. The ids inside the file are never used as-is. That means a

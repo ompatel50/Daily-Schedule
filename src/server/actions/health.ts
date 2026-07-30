@@ -95,6 +95,21 @@ export async function saveGoal(input: unknown): Promise<ActionResult<{ id: strin
   const user = await getCurrentUser();
   const { id, ...rest } = parsed.data;
 
+  // Mirror saveGoalWithSchedule: a habit-sourced goal must point at the
+  // user's own habit — a foreign id is a live cross-account reference even
+  // while nothing dereferences it yet — and no other source carries a ref.
+  if (rest.source === "habit") {
+    const habit = rest.sourceRef
+      ? await prisma.habit.findFirst({
+          where: { id: rest.sourceRef, userId: user.id },
+          select: { id: true },
+        })
+      : null;
+    if (!habit) return fail("Choose which habit completes this goal");
+  } else {
+    rest.sourceRef = null;
+  }
+
   // (userId, domain, metric, period) is no longer unique — two goals can
   // legitimately share a metric ("workout Mon/Tue/Thu/Fri" and "4 workouts per
   // week"). Reuse an existing row only when the caller did not supply an id and

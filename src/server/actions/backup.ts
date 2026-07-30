@@ -22,6 +22,14 @@ const APP_VERSION = "1.1.0";
 export async function exportBackup(): Promise<ActionResult<BackupFile>> {
   const user = await getCurrentUser();
 
+  // Global foods pinned as favorites are referenced only by refId (no FK),
+  // so they are collected up front to be included in the food export below.
+  const foodFavorites = await prisma.favoriteItem.findMany({
+    where: { userId: user.id, kind: "food" },
+    select: { refId: true },
+  });
+  const favoriteFoodIds = foodFavorites.map((favorite) => favorite.refId);
+
   const [
     scheduleItems,
     scheduleItemTags,
@@ -56,7 +64,26 @@ export async function exportBackup(): Promise<ActionResult<BackupFile>> {
     prisma.scheduleTemplate.findMany({ where: { userId: user.id } }),
     prisma.habit.findMany({ where: { userId: user.id } }),
     prisma.habitLog.findMany({ where: { userId: user.id } }),
-    prisma.foodItem.findMany({ where: { OR: [{ userId: user.id }, { userId: null }] } }),
+    // The user's own foods, plus only the GLOBAL rows their data actually
+    // references. Exporting the entire shared cache would ship every other
+    // account's food-lookup history (and grow without bound as users join);
+    // a pruned export restores identically — the restore side resolves
+    // shared foods by id and by (provider, externalId).
+    prisma.foodItem.findMany({
+      where: {
+        OR: [
+          { userId: user.id },
+          {
+            userId: null,
+            OR: [
+              { entries: { some: { meal: { userId: user.id } } } },
+              { templateRows: { some: { template: { userId: user.id } } } },
+              ...(favoriteFoodIds.length ? [{ id: { in: favoriteFoodIds } }] : []),
+            ],
+          },
+        ],
+      },
+    }),
     prisma.meal.findMany({ where: { userId: user.id } }),
     prisma.mealEntry.findMany({ where: { meal: { userId: user.id } } }),
     prisma.mealTemplate.findMany({ where: { userId: user.id } }),

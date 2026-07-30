@@ -10,7 +10,7 @@ Two honest notes before anything else:
   produced this guide had no Vercel credentials, so no project was created and
   no deploy was run from it. Everything on the *app's* side — the build
   script, the migrations, the environment variables, the endpoints, the
-  `/setup` and sign-in pages — is implemented and verified; the dashboard
+  sign-up and sign-in pages — is implemented and verified; the dashboard
   steps below describe the standard Vercel and Neon flows, whose exact button
   labels may drift over time. This guide is the exact remaining path a person
   has to walk.
@@ -29,10 +29,11 @@ Two honest notes before anything else:
    card needed** there either.
 4. About 30–45 minutes.
 
-That is the whole list. Sign-in is a private email + password held by the app
-itself, so there is **no Google Cloud project, no OAuth client, no external
-identity provider, and no credit card, billing account, or paid trial
-anywhere in this stack**. How sign-in works is explained in
+That is the whole list. Sign-in is email + password held by the app itself
+and registration is public self-serve at `/signup`, so there is **no Google
+Cloud project, no OAuth client, no external identity provider, and no
+credit card, billing account, or paid trial anywhere in this stack**. How
+accounts, sign-in and password recovery work is explained in
 [`auth-setup.md`](auth-setup.md); this guide walks you through it at the
 right moment (step 5).
 
@@ -112,9 +113,8 @@ These are the same variables documented in `.env.example` in the repository.
 |---|---|---|
 | `DATABASE_URL` | Yes | The database connection string (the pooled one, if your provider has both). |
 | `DIRECT_DATABASE_URL` | Yes | The direct, non-pooled connection string. Migrations use this. Locally the two are identical. |
-| `AUTH_SECRET` | Yes | The secret that signs sign-in sessions. Generate one on your computer with `npx auth secret` (or `openssl rand -base64 33`) and paste the value. Rotating it later signs everyone out immediately. |
-| `ALLOWED_EMAILS` | Yes | Comma-separated email addresses allowed to hold an account and sign in — e.g. `you@gmail.com,partner@gmail.com`. Anyone else is refused **even with a correct password**. **Empty means nobody can sign in** — the allowlist fails closed. |
-| `AUTH_SETUP_TOKEN` | For first-run setup only | A long random secret — generate with `openssl rand -base64 33`. It makes the one-time `/setup` page exist (step 5). **Anything under 32 characters is ignored and setup stays off.** **Delete this variable after creating the owner account**; nothing else ever uses it. |
+| `AUTH_SECRET` | Yes | The secret that signs sign-in sessions (and keys the pseudonymized rate-limit counters). Generate one on your computer with `npx auth secret` (or `openssl rand -base64 33`) and paste the value. Rotating it later signs everyone out immediately. |
+| `SIGNUPS_DISABLED` | Optional | Set to `1` to pause **new** registrations (existing accounts sign in as normal) — an incident switch, or a way to run a private instance. Leave unset for normal public operation. |
 | `CRON_SECRET` | For background reminders | A random secret protecting the scheduled reminder endpoint. Generate with `openssl rand -base64 32`. Vercel sends it automatically as an `Authorization: Bearer` header when the variable is set; the external scheduler in step 8 sends the same header. |
 | `USDA_FDC_API_KEY` | Optional | Free key for USDA food search (<https://fdc.nal.usda.gov/api-key-signup.html>). Without it, food search still works locally and says USDA is not set up. |
 | `VAPID_PUBLIC_KEY`, `VAPID_PRIVATE_KEY`, `VAPID_SUBJECT` | Optional | Web Push keys for background reminders — see [`web-push-setup.md`](web-push-setup.md). Without them, reminders work only while a tab is open. |
@@ -124,10 +124,12 @@ Two things to know about Vercel environment variables:
 
 * Changing a variable does **not** affect the running site until you
   **redeploy** (Deployments → the latest deployment → Redeploy).
-* Preview deployments read the Preview environment. Because the allowlist and
-  the password check are enforced server-side on every deployment, **a
-  preview URL is never publicly usable** — someone who stumbles on the link
-  still cannot sign in.
+* Preview deployments read the Preview environment. Note that a preview URL
+  serves the same public sign-up as production — anyone who finds the link
+  can create an account there (isolated to its own data, like any account).
+  If previews share the production database, those accounts land in the
+  production database; give Preview its own database, or set
+  `SIGNUPS_DISABLED=1` on the Preview environment if that bothers you.
 
 ## Step 4 — How database migrations run (nothing to do, but worth understanding)
 
@@ -140,42 +142,27 @@ direct (non-pooled) connection string, because that is what migrations connect
 through. If a deploy fails during the migration step, that is the first thing
 to check — see [`troubleshooting.md`](troubleshooting.md).
 
-## Step 5 — Deploy, then create the owner account at `/setup`
+## Step 5 — Deploy, then create your account at `/signup`
 
-Sign-in needs an account to exist, and the app never creates accounts at
-sign-in. The one-time `/setup` page is how the owner account comes to exist.
-It works exactly once, then disappears.
+Registration is public self-serve — no setup token, no allowlist, no
+one-time page. Anyone (including you) creates an account straight from the
+site.
 
 1. Deploy the project (press **Deploy**, or redeploy the earlier failed
    attempt now that the variables exist).
-2. Open `https://your-project.vercel.app/setup`. You should see the **Owner
-   setup** form with four fields: **Setup token**, **Email address**,
-   **Password**, and **Password, again**. If you get redirected to the
-   sign-in page instead, setup isn't available — check that `AUTH_SETUP_TOKEN`
-   is set (at least 32 characters), that `ALLOWED_EMAILS` is set, and that
-   you redeployed after adding them.
-3. Fill it in:
-   * **Setup token** — the exact `AUTH_SETUP_TOKEN` value from step 3.
-   * **Email address** — must be one of the addresses in `ALLOWED_EMAILS`.
-   * **Password** — at least 12 characters; a long passphrase beats a short
-     complicated password. The form refuses a password built around the part
-     of your email before the `@`.
-4. Press **Create owner account**. You land back on the sign-in page with an
-   "Owner account created" confirmation — sign in with the email and password
-   you just chose.
-5. **Now delete `AUTH_SETUP_TOKEN`** from the Vercel environment variables
-   and redeploy. The page has already disabled itself (it refuses to run
-   twice), but removing the token retires it completely, and nothing else
-   uses it.
+2. Open `https://your-project.vercel.app/signup`.
+3. Fill it in: your email address, an optional display name, and a password
+   twice — at least 12 characters; a long passphrase beats a short
+   complicated password, and the form refuses a password built around the
+   part of your email before the `@`.
+4. Press **Create account**. The page shows your **recovery codes** — save
+   them now (copy or download). They are the "forgot password" mechanism
+   (the app sends no email) and they are never shown again. Then continue:
+   you land signed in on the dashboard of an empty account.
 
-Two things worth knowing about this page:
-
-* Its error messages are deliberately vague — a wrong token and a
-  non-allowlisted email produce the same "wasn't accepted" message, so the
-  page confirms nothing to a stranger who finds it.
-* If a deployment migrated from the earlier Google-era build, setup
-  **attaches** the password to your existing account (matched by email)
-  rather than creating a new one — your data stays yours.
+Every account created this way is fully isolated: it can only ever read and
+write its own rows, enforced on every query and action server-side. Details
+and the password-recovery flow are in [`auth-setup.md`](auth-setup.md).
 
 Unlike OAuth, password sign-in has no redirect URIs to register: it works on
 every URL of the deployment — production, previews, and any custom domain —
@@ -188,11 +175,10 @@ with its own URL, using the Preview environment variables — you can run this
 checklist there as a dress rehearsal, or on the production URL directly. One
 caveat, stated plainly: if the Preview environment points at the same
 database as Production (the simple setup), a preview writes into that same
-database — which also means completing `/setup` from a preview URL completes
-it for production too (same database, same single owner account; that is
-fine). For a first-ever deployment the database is empty, so smoke-testing on
-a preview is fine. Later, either give Preview its own database or do your
-checking on the production URL.
+database — an account created from a preview URL exists in production too
+(same database, same accounts; that is fine). For a first-ever deployment
+the database is empty, so smoke-testing on a preview is fine. Later, either
+give Preview its own database or do your checking on the production URL.
 
 ### The smoke checklist
 
@@ -200,19 +186,20 @@ Run through this in order. Every line should hold. (If the site has sat idle,
 expect the very first load to take a couple of extra seconds — that is the
 free database waking up, per the free-tier note above.)
 
-1. Open the URL. You land on the sign-in page, and the browser shows the
-   padlock (HTTPS).
-2. Before signing in properly, try your owner email with a **wrong
-   password**. Sign-in is refused with one generic message ("Those details
-   didn't sign you in…"). An email that isn't allowlisted gets the exact same
-   message — the page deliberately confirms nothing about which accounts
-   exist. Don't repeat this test over and over: five consecutive failures
-   pause sign-in for that account for 15 minutes. One wrong try proves the
-   point.
-3. Sign in with the owner email and the correct password. You land on the
+1. Open the URL. You land on the sign-in page — with links to create an
+   account and to reset a password — and the browser shows the padlock
+   (HTTPS).
+2. Before signing in properly, try your email with a **wrong password**.
+   Sign-in is refused with one generic message ("Those details didn't sign
+   you in…"). An unknown email gets the exact same message — the page
+   deliberately confirms nothing about which accounts exist. Don't repeat
+   this test over and over: five consecutive failures pause sign-in for
+   that account for 15 minutes. One wrong try proves the point.
+3. Sign in with your email and the correct password. You land on the
    dashboard of an **empty** account — no demo data, just the optional
    getting-started checklist (which offers sample data but never loads it
-   uninvited).
+   uninvited). (Also worth one check: `/signup` refuses your
+   already-registered email with a message pointing at sign-in instead.)
 4. Click through every tab: Dashboard, Today, Planner, Habits, Nutrition,
    Workouts, Health, Calendar, Insights, Settings. Each loads without an
    error.
@@ -238,7 +225,10 @@ free database waking up, per the free-tier note above.)
    * HTTPS padlock;
    * a wrong password is refused;
    * your account starts empty — no demo data.
-3. If you haven't already: confirm `AUTH_SETUP_TOKEN` is deleted (step 5).
+3. If this deployment previously used the owner-only build: delete the
+   retired `ALLOWED_EMAILS` and `AUTH_SETUP_TOKEN` variables — nothing
+   reads them anymore — and generate recovery codes from Settings →
+   *Sign-in & security* so password recovery works without database access.
 
 Then bring your real data over: [`migrating-from-local.md`](migrating-from-local.md).
 
@@ -299,7 +289,7 @@ set), which performs the same checks and prints PASS/FAIL per provider.
 
 | Guide | When |
 |---|---|
-| [`auth-setup.md`](auth-setup.md) | How sign-in, the allowlist, `/setup`, and password recovery work — background for steps 3 and 5 |
+| [`auth-setup.md`](auth-setup.md) | How accounts, sign-in, recovery codes and password recovery work — background for steps 3 and 5 |
 | [`migrating-from-local.md`](migrating-from-local.md) | Moving your real data from the local app |
 | [`web-push-setup.md`](web-push-setup.md) | Background reminder notifications and the external scheduler |
 | [`backup-and-recovery.md`](backup-and-recovery.md) | The backup habit, once you're live |

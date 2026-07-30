@@ -8,7 +8,8 @@ import { SettingsForm } from "@/components/settings/settings-form";
 import { NotificationsPanel } from "@/components/settings/notifications-panel";
 import { PushPanel } from "@/components/settings/push-panel";
 import { SecurityPanel } from "@/components/settings/security-panel";
-import { MIN_PASSWORD_LENGTH } from "@/server/auth/setup";
+import { MIN_PASSWORD_LENGTH } from "@/server/auth/policy";
+import { countRemainingRecoveryCodes } from "@/server/auth/recovery";
 import { PageHeader } from "@/components/shared/page-header";
 import { SectionCard } from "@/components/shared/section-card";
 import { KEYBOARD_SHORTCUTS } from "@/lib/navigation";
@@ -24,11 +25,12 @@ export const dynamic = "force-dynamic";
 export default async function SettingsPage() {
   const user = await getUser();
   const settings = scheduleSettingsFor(user);
-  const [goals, habits, latest, demoStatus] = await Promise.all([
+  const [goals, habits, latest, demoStatus, recoveryCodesRemaining] = await Promise.all([
     getGoalRows(),
     getHabitOptions(),
     getLatestMetricValues(),
     getDemoStatus(user.id),
+    countRemainingRecoveryCodes(user.id),
   ]);
   const weight = latest.get("body_weight");
   const onboarding = parseOnboardingState(user.onboardingState);
@@ -70,6 +72,8 @@ export default async function SettingsPage() {
           minPasswordLength={MIN_PASSWORD_LENGTH}
           lastLoginAt={user.lastLoginAt?.toISOString() ?? null}
           lastFailedLoginAt={user.lastFailedLoginAt?.toISOString() ?? null}
+          recoveryCodesRemaining={recoveryCodesRemaining}
+          email={user.email}
         />
 
         <DemoPanel

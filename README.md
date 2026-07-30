@@ -25,13 +25,13 @@ Step-by-step documentation lives in `docs/`, written to be followed exactly:
 | Guide | What it covers |
 | --- | --- |
 | [`docs/deployment-guide.md`](docs/deployment-guide.md) | Deploying to Vercel with a managed PostgreSQL database — the master guide |
-| [`docs/auth-setup.md`](docs/auth-setup.md) | Private sign-in: creating the owner account, passwords, recovery |
+| [`docs/auth-setup.md`](docs/auth-setup.md) | Accounts: public sign-up, sign-in, recovery codes, password reset |
 | [`docs/local-development.md`](docs/local-development.md) | Running and testing the app on your own machine |
 | [`docs/migrating-from-local.md`](docs/migrating-from-local.md) | Moving your data from the local app to the hosted site — and back |
 | [`docs/backup-and-recovery.md`](docs/backup-and-recovery.md) | The backup habit, what the file contains, and recovery |
 | [`docs/health-import-privacy.md`](docs/health-import-privacy.md) | What a health import sends, and what never leaves your device |
 | [`docs/web-push-setup.md`](docs/web-push-setup.md) | Background reminder notifications (Web Push) |
-| [`docs/security-and-privacy.md`](docs/security-and-privacy.md) | The allowlist, isolation guarantees, headers, logs, and the off switches |
+| [`docs/security-and-privacy.md`](docs/security-and-privacy.md) | Per-account isolation guarantees, rate limits, headers, logs, and the off switches |
 | [`docs/troubleshooting.md`](docs/troubleshooting.md) | Symptoms → causes → fixes |
 | [`docs/performance-measurement.md`](docs/performance-measurement.md) | How the performance numbers were measured, and how to repeat them |
 
@@ -50,12 +50,12 @@ On first run a `.env` is created for you from `.env.example` (it points at the
 docker-compose database). If you already run PostgreSQL yourself, edit
 `DATABASE_URL` / `DIRECT_DATABASE_URL` in `.env` instead of using Docker.
 
-The app asks you to sign in — there is no Google button and no registration.
-After `npm run setup`, sign in as **`you@local`** with the password
+The app asks you to sign in — email + password, no Google button. After
+`npm run setup`, sign in as **`you@local`** with the password
 **`local-dev-password`** (the seed prints this). If you started with
-`npm run setup:empty` there is no account yet: set `ALLOWED_EMAILS` and
-`AUTH_SETUP_TOKEN` in `.env` and create your own account at `/setup` — the
-same flow the hosted site uses ([`docs/auth-setup.md`](docs/auth-setup.md)).
+`npm run setup:empty` there is no account yet: create your own at
+`/signup` — the same public self-serve flow the hosted site uses, recovery
+codes included ([`docs/auth-setup.md`](docs/auth-setup.md)).
 
 `npm run setup` is idempotent — re-running it re-seeds the demo dataset. **Sample data is
 explicitly tracked**: every seeded record is registered in a seed batch, so
@@ -559,13 +559,14 @@ parser is missing.
 
 These were decisions the brief left open. They're all reversible.
 
-1. **Private, not public.** Originally "single user, no auth"; the hosted version signs in with
-   a private email + password held by the app itself (no Google, no external identity provider,
-   no credit card) behind the same server-side email allowlist (`ALLOWED_EMAILS`) — no public
-   registration, and an email not on the list is refused even with a correct password. Every
-   account is fully isolated: `getCurrentUser()` in `src/lib/db.ts` — the one seam every query
-   and action goes through — resolves the authenticated session, and a database-backed
-   cross-user test suite asserts the isolation.
+1. **Public accounts, private data.** Originally "single user, no auth"; the hosted version is
+   now multi-user with public self-serve registration at `/signup` — email + password held by
+   the app itself (no Google, no external identity provider, no credit card), password reset by
+   one-time recovery codes (the app sends no email), and database-backed rate limits on
+   sign-up, sign-in and recovery. Privacy comes from per-account isolation, not a perimeter:
+   `getCurrentUser()` in `src/lib/db.ts` — the one seam every query and action goes through —
+   resolves the authenticated session, every read and write is scoped to it, and a
+   database-backed cross-user test suite asserts the isolation.
 2. **No nutrition API.** See above. `FoodItem` rows with `userId = null` are the bundled database;
    your custom foods carry your `userId`.
 3. **Reminders fire while a tab is open — and in the background once Web Push is configured.**
@@ -623,18 +624,20 @@ logic that would be expensive to get wrong:
 The unit tests are pure — no database, no fixtures, no mocking — because all the logic they cover
 lives in `src/lib/logic`.
 
-The **integration suite** (118 tests) runs against a real PostgreSQL — always the disposable
+The **integration suite** (121 tests) runs against a real PostgreSQL — always the disposable
 `personal_os_test` database, reset and re-migrated from zero each run — and covers what pure tests
 cannot: unique constraints, transaction rollback, backup import isolation, health-import session
 ownership, the reminder exactly-once ledger, password verification with its lockout and
-session-revocation rules, the one-time owner setup, and a cross-user suite asserting that every
-major operation against another account is refused *and* leaves the victim's row unchanged. The **e2e
-suite** drives the built app in a real browser: signed-out redirects, password sign-in, the
-identical generic refusal for an unknown email and for a wrong password (so failed attempts
-reveal nothing about which emails exist), surface postures, dialogs, responsive overflow and
-reduced motion; its browser-test accounts come from `npm run seed:e2e`. CI (`.github/workflows/ci.yml`)
-runs lint, typecheck, all three suites, migration validation and the production build on every push
-and pull request.
+session-revocation rules, public sign-up (validation, duplicate refusal, racing duplicates, the
+rate limit), recovery-code redemption (burn-once, session revocation, enumeration resistance),
+and a cross-user suite asserting that every major operation against another account is refused
+*and* leaves the victim's row unchanged. The **e2e suite** drives the built app in a real
+browser: signed-out redirects, password sign-in, the identical generic refusal for an unknown
+email and for a wrong password (so failed attempts reveal nothing about which emails exist), the
+full sign-up → recovery-codes → dashboard → sign-out → password-reset journey, surface postures,
+dialogs, responsive overflow and reduced motion; its browser-test accounts come from
+`npm run seed:e2e`. CI (`.github/workflows/ci.yml`) runs lint, typecheck, all three suites,
+migration validation and the production build on every push and pull request.
 
 ---
 
@@ -655,14 +658,14 @@ What the file contains, merge vs replace, the verification report and every reco
 
 ## Deploying
 
-The app is deployable as a private hosted website: a private email + password sign-in held by the
-app itself (no Google, no OAuth, no external identity provider, no credit card or billing account
-anywhere in the stack) behind a server-side email allowlist, a committed PostgreSQL migration
+The app is deployable as a public multi-user website: email + password sign-in held by the app
+itself (no Google, no OAuth, no external identity provider, no credit card or billing account
+anywhere in the stack), public self-serve registration at `/signup` with rate limiting and
+recovery-code password reset, fully separated per-account data, a committed PostgreSQL migration
 history applied automatically on every deploy, Vercel configuration included (`vercel.json`
 schedules the daily background-reminder safety net; a free external scheduler provides the
 timely cadence), and a public `/api/health` endpoint for uptime checks. The whole hosted stack
-runs on free tiers with no billing account — Vercel Hobby plus Neon's free PostgreSQL — and the
-owner account is created once, on the live site, at `/setup` using the one-time
-`AUTH_SETUP_TOKEN` secret. The exact step-by-step path — Vercel project, database, environment
-variables, a preview deployment with a smoke checklist, then production — is
-[`docs/deployment-guide.md`](docs/deployment-guide.md).
+runs on free tiers with no billing account — Vercel Hobby plus Neon's free PostgreSQL — and
+anyone can type the URL and create their own account on the live site. The exact step-by-step
+path — Vercel project, database, environment variables, a preview deployment with a smoke
+checklist, then production — is [`docs/deployment-guide.md`](docs/deployment-guide.md).

@@ -5,6 +5,7 @@ import webpush from "web-push";
 import { prisma } from "@/lib/prisma";
 import { nowMinuteIn, todayIn } from "@/lib/logic/schedule";
 import { getReminderFeedFor, recordReminderDeliveryFor } from "@/server/reminders";
+import { logRedactedError } from "@/server/safe-error";
 
 /**
  * Web Push delivery for reminders.
@@ -96,6 +97,8 @@ export interface PushRunResult {
   usersEvaluated: number;
   delivered: number;
   suppressed: number;
+  /** Users whose evaluation threw — skipped, never the whole run. */
+  usersFailed: number;
 }
 
 /**
@@ -106,7 +109,7 @@ export interface PushRunResult {
  * tab that already delivered suppresses the push.
  */
 export async function runScheduledReminderPush(): Promise<PushRunResult> {
-  const result: PushRunResult = { usersEvaluated: 0, delivered: 0, suppressed: 0 };
+  const result: PushRunResult = { usersEvaluated: 0, delivered: 0, suppressed: 0, usersFailed: 0 };
   if (!pushConfigured()) return result;
 
   const subscribedUserIds = await prisma.pushSubscription.findMany({
@@ -121,66 +124,81 @@ export async function runScheduledReminderPush(): Promise<PushRunResult> {
   });
 
   for (const user of users) {
-    result.usersEvaluated += 1;
-    const feed = await getReminderFeedFor(user);
-    if (feed.length === 0) continue;
-
-    const nowMinute = nowMinuteIn(user.timezone);
-    const today = todayIn(user.timezone);
-
-    for (const occurrence of feed) {
-      // Two fireAt encodings exist: classic reminders carry a real instant
-      // (UTC ISO with zone), habit/goal occurrences carry a local wall-clock
-      // string. An instant is compared by epoch; wall-clock due-ness is
-      // decided in the user's timezone, never the server's.
-      if (/[zZ]$|[+-]\d{2}:\d{2}$/.test(occurrence.fireAt)) {
-        const fireMs = Date.parse(occurrence.fireAt);
-        if (Number.isNaN(fireMs)) continue;
-        const lateMs = Date.now() - fireMs;
-        if (lateMs < 0 || lateMs > LATE_WINDOW_MINUTES * 60 * 1000) continue;
-      } else {
-        if (!occurrence.fireAt.startsWith(today)) continue;
-        const fireMinute = fireMinuteOf(occurrence.fireAt);
-        if (fireMinute === null) continue;
-        if (nowMinute < fireMinute || nowMinute - fireMinute > LATE_WINDOW_MINUTES) continue;
-      }
-
-      // Claim the exactly-once key first. If an open tab (or a previous run)
-      // already delivered this occurrence, the claim collides and we stay
-      // silent.
-      try {
-        await prisma.reminderDelivery.create({
-          data: { userId: user.id, key: occurrence.key },
-        });
-      } catch {
-        result.suppressed += 1;
-        continue;
-      }
-
-      const sent = await sendPushToUser(user.id, {
-        title: occurrence.title,
-        body: occurrence.message ?? undefined,
-        url: "/today",
-        tag: occurrence.key,
-      });
-
-      if (sent > 0) {
-        result.delivered += 1;
-        // Classic reminders advance/disable through the shared path. The
-        // ledger row already exists; recordReminderDeliveryFor tolerates that.
-        if (occurrence.kind === "reminder" && occurrence.reminderId) {
-          await recordReminderDeliveryFor(user.id, occurrence.key, occurrence.reminderId);
-        }
-      } else {
-        // Nothing accepted the push (all subscriptions dead?): release the
-        // claim so an open tab can still deliver it.
-        await prisma.reminderDelivery
-          .deleteMany({ where: { userId: user.id, key: occurrence.key } })
-          .catch(() => undefined);
-        result.suppressed += 1;
-      }
+    // One account whose evaluation throws (corrupt timezone, bad imported
+    // data, a transient query error) must not starve every user after it in
+    // the loop — isolate, count, continue.
+    try {
+      await pushRemindersForUser(user, result);
+    } catch (error) {
+      result.usersFailed += 1;
+      logRedactedError("reminder-push-user", error);
     }
   }
 
   return result;
+}
+
+async function pushRemindersForUser(
+  user: { id: string; timezone: string; weekStartsOn: number },
+  result: PushRunResult,
+): Promise<void> {
+  result.usersEvaluated += 1;
+  const feed = await getReminderFeedFor(user);
+  if (feed.length === 0) return;
+
+  const nowMinute = nowMinuteIn(user.timezone);
+  const today = todayIn(user.timezone);
+
+  for (const occurrence of feed) {
+    // Two fireAt encodings exist: classic reminders carry a real instant
+    // (UTC ISO with zone), habit/goal occurrences carry a local wall-clock
+    // string. An instant is compared by epoch; wall-clock due-ness is
+    // decided in the user's timezone, never the server's.
+    if (/[zZ]$|[+-]\d{2}:\d{2}$/.test(occurrence.fireAt)) {
+      const fireMs = Date.parse(occurrence.fireAt);
+      if (Number.isNaN(fireMs)) continue;
+      const lateMs = Date.now() - fireMs;
+      if (lateMs < 0 || lateMs > LATE_WINDOW_MINUTES * 60 * 1000) continue;
+    } else {
+      if (!occurrence.fireAt.startsWith(today)) continue;
+      const fireMinute = fireMinuteOf(occurrence.fireAt);
+      if (fireMinute === null) continue;
+      if (nowMinute < fireMinute || nowMinute - fireMinute > LATE_WINDOW_MINUTES) continue;
+    }
+
+    // Claim the exactly-once key first. If an open tab (or a previous run)
+    // already delivered this occurrence, the claim collides and we stay
+    // silent.
+    try {
+      await prisma.reminderDelivery.create({
+        data: { userId: user.id, key: occurrence.key },
+      });
+    } catch {
+      result.suppressed += 1;
+      continue;
+    }
+
+    const sent = await sendPushToUser(user.id, {
+      title: occurrence.title,
+      body: occurrence.message ?? undefined,
+      url: "/today",
+      tag: occurrence.key,
+    });
+
+    if (sent > 0) {
+      result.delivered += 1;
+      // Classic reminders advance/disable through the shared path. The
+      // ledger row already exists; recordReminderDeliveryFor tolerates that.
+      if (occurrence.kind === "reminder" && occurrence.reminderId) {
+        await recordReminderDeliveryFor(user.id, occurrence.key, occurrence.reminderId);
+      }
+    } else {
+      // Nothing accepted the push (all subscriptions dead?): release the
+      // claim so an open tab can still deliver it.
+      await prisma.reminderDelivery
+        .deleteMany({ where: { userId: user.id, key: occurrence.key } })
+        .catch(() => undefined);
+      result.suppressed += 1;
+    }
+  }
 }

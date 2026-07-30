@@ -2633,3 +2633,109 @@ Google provider, `@auth/prisma-adapter`, the `Account` table,
 passwordless backdoor (local dev now signs in with the seeded
 `you@local` / `local-dev-password`, e2e via `npm run seed:e2e`), and the
 `AUTH_GOOGLE_ID`/`AUTH_GOOGLE_SECRET` variables.
+
+## Phase 30 — public self-serve accounts: sign-up, recovery codes, multi-user hardening
+
+The owner-only model is retired. Anybody can now open the site, create an
+account at `/signup`, and use the app immediately — no allowlist, no setup
+token, no operator involvement — while every account stays fully isolated
+to its own rows. Statements above about `ALLOWED_EMAILS`, `/setup`,
+`AUTH_SETUP_TOKEN` and "no public registration" describe the superseded
+Phase 29 model and are historical.
+
+### Added
+
+* **Public sign-up** (`/signup`, `src/server/auth/signup.ts`) — email +
+  optional display name + password twice; same policy as everywhere
+  (≥ 12 chars, ≤ 200, not built around the email's local part); duplicate
+  emails refused via the unique constraint (racing submissions included)
+  and NEVER by attaching a password to an existing row — that would be an
+  account takeover of legacy passwordless rows. On success the browser is
+  signed in and the one-time recovery codes are displayed.
+* **Recovery codes** (`RecoveryCode` table,
+  `src/server/auth/recovery.ts` + `recovery-codes.ts`) — the free,
+  email-less "forgot password": 8 one-time codes per account (16 chars
+  from a 31-symbol unambiguous alphabet ≈ 79 bits), stored as SHA-256
+  hashes only, shown exactly once. `/forgot-password` redeems one: burns
+  the code (guarded update — two concurrent redemptions cannot both win),
+  replaces the password, clears lockout, bumps `tokenVersion` (every
+  session everywhere dies). Wrong email / wrong code / used code are one
+  indistinguishable refusal. Settings → Sign-in & security shows the
+  remaining count and regenerates a batch (current password required).
+* **Database-backed rate limiting** (`RateLimitBucket` table,
+  `src/server/auth/rate-limit.ts`) — fixed-window counters shared across
+  serverless instances, keyed by an HMAC of the client address
+  (AUTH_SECRET-keyed; raw IPs never stored). Applied to sign-up (8/hour
+  per client + a honeypot field), sign-in (60/hour per client, in front
+  of the scrypt work), and recovery (10/hour per client and 5/hour per
+  named account). `SIGNUPS_DISABLED=1` is the optional admin switch that
+  pauses new registrations without touching existing accounts.
+* **Migration `20260730210000_public_signup`** — additive only
+  (RecoveryCode + RateLimitBucket); safe on a live deployment,
+  reversible by dropping the two tables.
+
+### Removed
+
+* `src/server/auth/allowlist.ts`, `src/server/auth/setup.ts`,
+  `src/app/setup/page.tsx`, the `ALLOWED_EMAILS` and `AUTH_SETUP_TOKEN`
+  environment variables, and every enforcement point (sign-in,
+  per-request `getCurrentUser`, CI env, tests, docs). Password policy
+  helpers moved to `src/server/auth/policy.ts`.
+  `scripts/reset-password.mjs` survives as the operator's break-glass
+  path (documented as such; it can also rescue legacy passwordless rows).
+
+### Multi-user hardening found by audit (agentic sweep of every query path)
+
+* **Backup restore can no longer write into the shared food cache.** A
+  crafted file could previously plant `userId: null` "provider" rows
+  (fake macros, hijacked barcodes, `verified: true`) that every account
+  would see and that pre-empted real provider fetches forever. Restored
+  food rows now always belong to the importer, and rows claiming provider
+  identity that don't match a genuine global row lose their `externalId`
+  (meal history is untouched — entries carry frozen snapshots).
+* **Restore's `(provider, externalId)` reuse now matches global rows
+  only** — previously it could attach the importer's meals to ANOTHER
+  user's personal food row, rendering foreign content in their meals and
+  bricking that user's replace-mode restore on the `MealEntry` Restrict
+  FK (or cascading their template items away).
+* **`cacheFood` never flips a user-owned row to global or overwrites
+  it** — a legacy personal row squatting on the identity slot is moved
+  aside (identity stripped, content and owner intact) before the genuine
+  provider data claims the slot; `getCachedFood`/`materializeFood`
+  lookups are ownership-scoped.
+* **Backup export ships only referenced global foods** (via the user's
+  meal entries, template rows and favorites) instead of the entire shared
+  cache — no more leaking the serverwide lookup history into every
+  backup, no unbounded export growth.
+* **Reminder cron isolates per-user failures** — one account whose feed
+  evaluation throws no longer starves every user after it in the loop
+  (counted in the run result as `usersFailed`).
+* `saveGoal` verifies habit-`sourceRef` ownership (mirroring
+  `saveGoalWithSchedule`); `getFoodShortcuts` re-scopes favorite food
+  lookups; `setDateOverride` writes are user-scoped by construction
+  instead of by caller discipline; the food search memo documents its
+  remote-results-only invariant.
+
+### Tests
+
+Unit: `tests/recovery-codes.test.ts` (policy + code format/normalization/
+hashing). Integration: `signup-flow.test.ts` (success + hashed codes,
+duplicate/legacy-row refusal, racing duplicates, validation, rate-limit
+window), `recovery.test.ts` (redeem/burn-once/revocation/enumeration/rate
+limits/regeneration), shared-cache safety in `backup-restore.test.ts`,
+export pruning, and the allowlist tests inverted to pin the public model
+(any account signs in; revocation is `tokenVersion` only). E2E:
+`signup.spec.ts` walks sign-up → recovery codes → dashboard → sign-out →
+code-based reset → burned-code refusal → duplicate refusal;
+`signed-out.spec.ts` pins the public links. The one-time-owner suites
+(`setup-flow.test.ts`) are deleted with their subject.
+
+### Docs
+
+`auth-setup.md` rewritten around public accounts and recovery codes;
+deployment guide step 5 is now "create your account at `/signup`";
+security-and-privacy rewritten (public accounts, private data; the
+`ALLOWED_EMAILS` kill switch is replaced by `SIGNUPS_DISABLED` +
+`AUTH_SECRET` rotation + project pause, stated honestly);
+troubleshooting, local-development, migrating-from-local, README and
+`.env.example` updated to match.

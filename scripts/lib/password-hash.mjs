@@ -3,7 +3,7 @@
  *
  * Plain ESM JavaScript so every consumer can share it verbatim:
  *   - the app (src/server/auth/password.ts wraps it behind `server-only`),
- *   - the owner recovery CLI (scripts/reset-password.mjs),
+ *   - the break-glass reset CLI (scripts/reset-password.mjs),
  *   - the local/e2e seeds (prisma/demo-data.ts, scripts/seed-e2e-users.mjs),
  *   - the unit tests that pin the format.
  *
@@ -16,8 +16,10 @@
 import { randomBytes, scrypt, timingSafeEqual } from "node:crypto";
 
 // Current cost: N=2^16, r=8 is 64 MiB and ~200 ms — comfortably above the
-// OWASP scrypt floor. Affordable because sign-in is rare in a single-owner
-// app and hosted functions have ≥1 GB of memory.
+// OWASP scrypt floor. Affordable because sign-in is rare per account, hosted
+// functions have ≥1 GB of memory, and the per-client sign-in rate limit
+// (src/server/auth/index.ts) caps how much of this work one address can ask
+// for anonymously.
 const LOG_N = 16;
 const R = 8;
 const P = 1;

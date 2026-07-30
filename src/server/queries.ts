@@ -301,8 +301,13 @@ export async function getFoodShortcuts() {
   });
 
   const ids = favorites.map((favorite) => favorite.refId);
+  // Same ownership scope as loadRecentFoodsAction: the user's foods and
+  // global rows only, so a stray refId can never render another account's
+  // custom food here.
   const foods = ids.length
-    ? await prisma.foodItem.findMany({ where: { id: { in: ids } } })
+    ? await prisma.foodItem.findMany({
+        where: { id: { in: ids }, OR: [{ userId: null }, { userId: user.id }] },
+      })
     : [];
   const byId = new Map(foods.map((food) => [food.id, food]));
 

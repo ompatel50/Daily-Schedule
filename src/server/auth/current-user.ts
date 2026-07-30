@@ -4,9 +4,9 @@
  * Every server query and every server action resolves the user through these
  * helpers — never from a client-supplied id, never from `findFirst`. The
  * session cookie names the account; the database row is fetched once per
- * request (React `cache`) and the allowlist is re-checked live, so removing
- * an email from `ALLOWED_EMAILS` locks that account out on its next request
- * rather than when its session happens to expire.
+ * request (React `cache`) and the token version is compared live, so a
+ * password change or "sign out everywhere" locks stale sessions out on
+ * their next request rather than when they happen to expire.
  */
 import "server-only";
 
@@ -16,7 +16,6 @@ import type { Session } from "next-auth";
 import type { User } from "@prisma/client";
 
 import { auth } from "@/server/auth";
-import { isAllowedEmail } from "@/server/auth/allowlist";
 import { prisma } from "@/lib/prisma";
 
 /**
@@ -31,7 +30,7 @@ export const getSession = cache(async (): Promise<Session | null> => {
 });
 
 /**
- * The signed-in, allowlisted user's database row, or null.
+ * The signed-in user's database row, or null.
  * Cached per request — repeated calls across a render cost one query total.
  */
 export const getCurrentUser = cache(async (): Promise<CurrentUser | null> => {
@@ -40,7 +39,6 @@ export const getCurrentUser = cache(async (): Promise<CurrentUser | null> => {
   if (!id) return null;
   const user = await prisma.user.findUnique({ where: { id } });
   if (!user) return null;
-  if (!isAllowedEmail(user.email)) return null;
   // A token issued before the last password change (or "sign out everywhere")
   // carries a stale version — and a token with NO version predates password
   // auth entirely. Both are treated as signed out. Same row, no extra query.
@@ -58,7 +56,7 @@ export async function requireSession(): Promise<Session> {
 /**
  * The current user, or a redirect to the sign-in page. This is what the app
  * imports as `getCurrentUser` (via src/lib/db.ts): pages, queries and server
- * actions all refuse to run without an authenticated, allowlisted account.
+ * actions all refuse to run without an authenticated account.
  */
 export async function requireCurrentUser(): Promise<CurrentUser> {
   const user = await getCurrentUser();

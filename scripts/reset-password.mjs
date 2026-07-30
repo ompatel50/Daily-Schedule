@@ -1,7 +1,12 @@
 /**
- * Owner password recovery — run where you have direct database access:
+ * Break-glass password reset — run where you have direct database access:
  *
  *   node scripts/reset-password.mjs you@example.com
+ *
+ * The NORMAL forgot-password path is in the app: /forgot-password with one
+ * of the recovery codes shown at sign-up (regenerable in Settings). This
+ * script is the last resort for a self-hoster whose recovery codes are also
+ * lost — the proof of ownership is direct access to the database itself.
  *
  * Locally it uses .env; against a hosted database, set DATABASE_URL (and
  * DIRECT_DATABASE_URL if you use a pooler) in the environment first — the
@@ -15,9 +20,9 @@
  *   - bumps tokenVersion, signing the account out of every device,
  *   - clears any failed-attempt lockout.
  *
- * It refuses to create accounts: recovery is for an owner who already exists.
- * There is deliberately no in-app "forgot password" flow — this app sends no
- * email, so the recovery proof is direct access to the database itself.
+ * It refuses to create accounts: recovery is for an account that already
+ * exists. Recovery codes are untouched — generate a fresh batch from
+ * Settings afterwards if the old ones may be exposed.
  */
 import readline from "node:readline";
 import { PrismaClient } from "@prisma/client";
@@ -81,7 +86,7 @@ try {
   const user = await prisma.user.findUnique({ where: { email }, select: { id: true } });
   if (!user) {
     console.error(`No account exists for ${email} — this script never creates one.`);
-    console.error("If this is a fresh deployment, use the /setup page instead.");
+    console.error("If this is a fresh deployment, create the account at /signup instead.");
     process.exit(1);
   }
 

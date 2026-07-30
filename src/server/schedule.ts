@@ -9,6 +9,7 @@
  * upgrade set out to remove.
  */
 import { cache } from "react";
+import { Prisma } from "@prisma/client";
 
 import { prisma } from "@/lib/db";
 import { type DayKey, shiftDay } from "@/lib/date";
@@ -369,11 +370,36 @@ export async function setDateOverride(params: {
     note: params.note ?? null,
   };
 
-  await prisma.scheduleOverride.upsert({
-    where: { ownerType_ownerId_date: { ownerType, ownerId, date } },
-    create: { userId, ownerType, ownerId, date, ...data },
-    update: data,
+  // The unique key (ownerType, ownerId, date) carries no userId, so a plain
+  // upsert would trust the caller to have verified ownership. Every caller
+  // does — but the write itself must be user-scoped too: the guarded
+  // updateMany can only touch the caller's own row, and the create stamps
+  // the caller's userId. A foreign ownerId can therefore never modify
+  // another account's override, only fail on the unique constraint.
+  const updated = await prisma.scheduleOverride.updateMany({
+    where: { userId, ownerType, ownerId, date },
+    data,
   });
+  if (updated.count === 0) {
+    try {
+      await prisma.scheduleOverride.create({
+        data: { userId, ownerType, ownerId, date, ...data },
+      });
+    } catch (error) {
+      // A concurrent double-submit can create the row between the updateMany
+      // and this create (both saw count 0). The unique key belongs to this
+      // user's own owner, so retry the update instead of surfacing a P2002:
+      // last write wins, exactly as the native upsert this replaced did.
+      if (error instanceof Prisma.PrismaClientKnownRequestError && error.code === "P2002") {
+        await prisma.scheduleOverride.updateMany({
+          where: { userId, ownerType, ownerId, date },
+          data,
+        });
+      } else {
+        throw error;
+      }
+    }
+  }
 }
 
 /** "Restore the normal occurrence" — remove the exception, keep the schedule. */

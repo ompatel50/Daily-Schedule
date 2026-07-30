@@ -454,13 +454,15 @@ describe("barcode lookup", () => {
 // ---------------------------------------------------------------------------
 
 describe("the cache", () => {
-  it("finds a cached food by provider and external id", async () => {
-    foodItem.findUnique.mockResolvedValue(row({ provider: "usda", externalId: "171077", cached: true }));
+  it("finds a cached food by provider and external id — shared cache rows only", async () => {
+    foodItem.findFirst.mockResolvedValue(row({ provider: "usda", externalId: "171077", cached: true }));
 
     const food = await getCachedFood("usda", "171077");
     expect(food?.externalId).toBe("171077");
-    expect(foodItem.findUnique).toHaveBeenCalledWith({
-      where: { provider_externalId: { provider: "usda", externalId: "171077" } },
+    // userId: null is load-bearing — a user-owned row that happens to carry
+    // provider identity is someone's personal record, not the cache.
+    expect(foodItem.findFirst).toHaveBeenCalledWith({
+      where: { provider: "usda", externalId: "171077", userId: null },
     });
   });
 

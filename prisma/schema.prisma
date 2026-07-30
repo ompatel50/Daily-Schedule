@@ -38,9 +38,9 @@ model User {
   name      String
   /// The sign-in identifier. Kept nullable deliberately: a row without an
   /// email (or without a password) simply can never sign in — the credential
-  /// check and the allowlist both fail closed on null — and forcing NOT NULL
-  /// here would make the migration fail on any historical row rather than
-  /// harmlessly stranding it.
+  /// check fails closed on null — and forcing NOT NULL here would make the
+  /// migration fail on any historical row rather than harmlessly stranding
+  /// it. Every account created through public sign-up has one.
   email     String?  @unique
   timezone  String   @default("America/New_York")
   createdAt DateTime @default(now())
@@ -48,8 +48,8 @@ model User {
 
   // --- authentication (in-app password, Auth.js credentials) -----------------
   /// scrypt hash in the self-describing `scrypt$logN$r$p$salt$hash` format
-  /// (src/server/auth/password.ts). Null only before the one-time owner setup
-  /// has attached a password; an account without one cannot sign in.
+  /// (src/server/auth/password.ts). Sign-up always sets one; an account
+  /// without one (a legacy or imported row) simply cannot sign in.
   passwordHash      String?
   /// Bumped on password change/reset and "sign out everywhere". Sessions are
   /// stateless JWTs carrying this value; a mismatch on any request means the
@@ -63,7 +63,7 @@ model User {
   /// ones with the correct password — with the same generic message.
   lockedUntil       DateTime?
   passwordUpdatedAt DateTime?
-  /// "Was that me?" — the single-owner audit trail, shown in Settings.
+  /// "Was that me?" — the per-account audit trail, shown in Settings.
   lastLoginAt       DateTime?
   lastFailedLoginAt DateTime?
 
@@ -103,6 +103,7 @@ model User {
   healthImportBatches HealthImportBatch[]
   healthImportSessions HealthImportSession[]
   pushSubscriptions PushSubscription[]
+  recoveryCodes     RecoveryCode[]
 
   // --- day score configuration ----------------------------------------------
   /// JSON map of category → weight, e.g. {"planner":30,"habits":30,"goals":40}.
@@ -119,6 +120,38 @@ model User {
 // table) and sessions are stateless JWTs — there is no Session table on
 // purpose. The former Google-era Account table was dropped by the
 // password_auth migration; it only ever held token-stripped link rows.
+
+/// One password-recovery code. Codes are the app's "forgot password" proof —
+/// no email infrastructure, no paid provider: a batch is generated at
+/// sign-up (and regenerable from Settings), shown to the user exactly once,
+/// and only a SHA-256 hash of each code is stored. Each code carries ≈79
+/// bits of randomness (src/server/auth/recovery-codes.ts), so a fast hash is
+/// safe and lets redemption look the code up directly by its unique hash.
+/// Redeeming one marks it used; it never works twice.
+model RecoveryCode {
+  id     String @id @default(cuid())
+  userId String
+  user   User   @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  /// SHA-256 hex of the normalized (lowercased, separator-stripped) code.
+  codeHash String @unique
+  usedAt   DateTime?
+
+  createdAt DateTime @default(now())
+
+  @@index([userId])
+}
+
+/// Fixed-window rate-limit counter, keyed by scope (e.g. a hashed client IP
+/// for sign-up). Stored in the database because serverless instances share
+/// nothing else — an in-memory counter would reset on every cold start.
+/// Rows are upserted in place and expired rows are reused, so the table
+/// stays tiny. See src/server/auth/rate-limit.ts.
+model RateLimitBucket {
+  key     String   @id
+  count   Int      @default(0)
+  resetAt DateTime
+}
 
 // ---------------------------------------------------------------------------
 // Scheduling — one shared engine for goals and habits

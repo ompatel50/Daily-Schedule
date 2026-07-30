@@ -457,6 +457,93 @@ describe("cross-user safety", () => {
   });
 });
 
+describe("shared food cache safety — a file can never write into or attach to it", () => {
+  /** A backup whose only payload is one provider-identified food row. */
+  function providerFoodBackup(overrides: Record<string, unknown> = {}): Record<string, unknown> {
+    const file = syntheticBackup();
+    const data = (file as { data: Record<string, unknown[]> }).data;
+    data.foodItems = [
+      {
+        id: "food-provider",
+        userId: null,
+        name: "Poisoned oats",
+        calories: 9999,
+        provider: "usda",
+        externalId: "fdc-123",
+        cached: true,
+        verified: true,
+        searchKey: "poisoned oats",
+        ...overrides,
+      },
+    ];
+    return file;
+  }
+
+  it("a provider-identified row from a file becomes the IMPORTER'S row with the identity stripped — never a global cache row", async () => {
+    const result = await importBackup(providerFoodBackup(), "merge");
+    expect(result.ok).toBe(true);
+
+    // Nothing landed in the shared namespace…
+    expect(await prisma.foodItem.count({ where: { userId: null } })).toBe(0);
+    // …the importer owns the copy, and it no longer claims provider identity,
+    // so it can never shadow (or pre-empt) the real provider record.
+    const row = await prisma.foodItem.findFirstOrThrow({ where: { name: "Poisoned oats" } });
+    expect(row.userId).toBe(alice.id);
+    expect(row.externalId).toBeNull();
+    expect(row.cached).toBe(false);
+  });
+
+  it("a genuine global provider row is reused by (provider, externalId) — not duplicated, not modified", async () => {
+    const cacheRow = await prisma.foodItem.create({
+      data: {
+        userId: null,
+        name: "Real oats",
+        calories: 389,
+        provider: "usda",
+        externalId: "fdc-123",
+        cached: true,
+        searchKey: "real oats",
+      },
+    });
+
+    const result = await importBackup(providerFoodBackup(), "merge");
+    expect(result.ok).toBe(true);
+
+    const after = await prisma.foodItem.findUniqueOrThrow({ where: { id: cacheRow.id } });
+    expect(after.name).toBe("Real oats"); // the file's content never touched it
+    expect(after.calories).toBe(389);
+    expect(await prisma.foodItem.count({ where: { provider: "usda" } })).toBe(1);
+  });
+
+  it("another user's PERSONAL row holding the same provider identity is never attached to", async () => {
+    // Bob owns a personal row that (from legacy data) carries provider
+    // identity. Alice's import must not reference it, and must not brick on
+    // the global (provider, externalId) unique either.
+    const bobRow = await prisma.foodItem.create({
+      data: {
+        userId: bob.id,
+        name: "Bob's oats",
+        calories: 389,
+        provider: "usda",
+        externalId: "fdc-123",
+        searchKey: "bobs oats",
+      },
+    });
+
+    const result = await importBackup(providerFoodBackup(), "merge");
+    expect(result.ok).toBe(true);
+
+    const aliceRow = await prisma.foodItem.findFirstOrThrow({ where: { userId: alice.id } });
+    expect(aliceRow.id).not.toBe(bobRow.id);
+    expect(aliceRow.externalId).toBeNull();
+    // Bob's row is untouched.
+    const bobAfter = await prisma.foodItem.findUniqueOrThrow({ where: { id: bobRow.id } });
+    expect(bobAfter.name).toBe("Bob's oats");
+    expect(bobAfter.userId).toBe(bob.id);
+    expect(bobAfter.externalId).toBe("fdc-123");
+  });
+});
+
 describe("failure handling", () => {
   it("a fatal mid-import failure rolls the whole import back", async () => {
     const file = syntheticBackup();
@@ -531,5 +618,29 @@ describe("hosted export", () => {
 
     expect(await prisma.habit.count({ where: { userId: bob.id } })).toBe(1);
     expect(await prisma.habit.count({ where: { userId: alice.id } })).toBe(1);
+  });
+
+  it("ships only the global foods the account actually references — never the whole shared cache", async () => {
+    // Two global cache rows: one Alice logged a meal from, one that only
+    // other users ever touched. Her export must carry the first and not the
+    // second — a backup must not leak the serverwide lookup history.
+    const used = await prisma.foodItem.create({
+      data: { userId: null, name: "Used oats", calories: 100, provider: "usda", externalId: "u1", searchKey: "used oats" },
+    });
+    await prisma.foodItem.create({
+      data: { userId: null, name: "Stranger's snack", calories: 100, provider: "usda", externalId: "s1", searchKey: "strangers snack" },
+    });
+    const meal = await prisma.meal.create({ data: { userId: alice.id, date: D1, type: "lunch" } });
+    await prisma.mealEntry.create({
+      data: { mealId: meal.id, foodItemId: used.id, quantity: 1, calories: 100, protein: 0, carbs: 0, fat: 0 },
+    });
+
+    const exported = await exportBackup();
+    expect(exported.ok).toBe(true);
+    if (!exported.ok) return;
+
+    const names = (exported.data.data.foodItems as Array<{ name: string }>).map((f) => f.name);
+    expect(names).toContain("Used oats");
+    expect(names).not.toContain("Stranger's snack");
   });
 });

@@ -88,7 +88,6 @@ jobs:
       PLAYWRIGHT_BROWSERS_PATH: ${{ github.workspace }}/.pw-browsers
       AUTH_SECRET: ci-only-not-a-real-secret
       AUTH_TRUST_HOST: "true"
-      ALLOWED_EMAILS: dev@example.com,alice@example.com,bob@example.com,you@local
       # The seeded-data spec needs an account with an existing Apple Health
       # import batch, which a fresh CI database does not have.
       CI_SKIP_SEEDED: "1"

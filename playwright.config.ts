@@ -6,9 +6,9 @@ import { defineConfig, devices } from "@playwright/test";
  * the test run would double its cost and race concurrent dev servers. The
  * integrator prepares the database (`prisma migrate deploy`, then
  * `npm run seed:e2e` to create the two test accounts with the known e2e
- * password — the app never creates accounts at sign-in), starts the app
- * (`npm run build && npm start` with AUTH_SECRET and ALLOWED_EMAILS set),
- * then runs `npx playwright test` (suggested package script: `test:e2e`).
+ * password — sign-in itself never creates accounts), starts the app
+ * (`npm run build && npm start` with AUTH_SECRET set), then runs
+ * `npx playwright test` (suggested package script: `test:e2e`).
  *
  * Browsers are never downloaded here: the pre-installed cache is resolved via
  * PLAYWRIGHT_BROWSERS_PATH. The fallback below covers shells that don't
