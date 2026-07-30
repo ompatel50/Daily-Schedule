@@ -1,25 +1,32 @@
-// Personal OS — local-first schema.
+// Personal OS — hosted schema (PostgreSQL).
 //
 // Design notes:
-//  * SQLite has no enum or array support, so "enum-like" fields are stored as
-//    TEXT and validated in the app layer (see src/lib/enums.ts). This keeps the
-//    schema portable — swapping `provider` to postgres later needs no rewrite.
+//  * "Enum-like" fields are stored as TEXT and validated in the app layer
+//    (see src/lib/enums.ts). This kept the schema portable through the
+//    SQLite→PostgreSQL conversion and keeps every value readable in a backup.
 //  * Dates that represent a *calendar day* are stored as `YYYY-MM-DD` strings
 //    (`date` fields). Dates that represent an *instant* use DateTime. This
 //    avoids the classic timezone drift where "today" shifts at UTC midnight.
 //  * Every user-visible record carries createdAt/updatedAt so backups, sync and
 //    "what changed this week" views are possible without extra bookkeeping.
 //  * `externalId` + `source` columns exist on the health/workout tables so an
-//    Apple Health / watch import can upsert idempotently later without a
-//    migration.
+//    Apple Health / watch import can upsert idempotently without a migration.
+//  * Nullable columns inside unique indexes rely on the default
+//    NULLS DISTINCT semantics (two NULLs never collide) — the same behaviour
+//    SQLite had. Never switch these indexes to NULLS NOT DISTINCT.
+//  * The pre-web SQLite version of this schema is preserved at commit
+//    f5b4fe1d950abf56cc11ae97d2750ac714d365fb (tag preview3-complete-before-web).
 
 generator client {
   provider = "prisma-client-js"
 }
 
 datasource db {
-  provider = "sqlite"
+  provider = "postgresql"
   url      = env("DATABASE_URL")
+  // Migrations connect directly; DATABASE_URL may point at a pooler in
+  // production. Locally the two are simply the same URL.
+  directUrl = env("DIRECT_DATABASE_URL")
 }
 
 // ---------------------------------------------------------------------------
@@ -657,7 +664,9 @@ model Workout {
   restSecDefault Int?
 
   // Import-friendly: an Apple Health / watch export can upsert on
-  // (source, externalId) without touching manual rows.
+  // (userId, source, externalId) without touching manual rows. Scoped per
+  // user — two accounts importing the same Apple Health export must never
+  // collide with each other.
   source     String  @default("manual") // manual | apple_health | import
   externalId String?
 
@@ -674,7 +683,7 @@ model Workout {
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
-  @@unique([source, externalId])
+  @@unique([userId, source, externalId])
   @@index([userId, date])
   @@index([userId, type])
   @@index([importBatchId])

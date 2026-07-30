@@ -310,7 +310,7 @@ async function findWorkoutDuplicates(
   const ids = workouts.map((workout) => workout.externalId);
   const existingRows = await chunked(ids, CHUNK, (chunk) =>
     prisma.workout.findMany({
-      where: { source: "apple_health", externalId: { in: chunk } },
+      where: { userId, source: "apple_health", externalId: { in: chunk } },
       select: { externalId: true },
     }),
   );

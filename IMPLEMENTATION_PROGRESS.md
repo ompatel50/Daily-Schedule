@@ -1700,8 +1700,8 @@ npm test && npm run typecheck && npm run build
 | #  | Phase                                             | Status |
 |----|---------------------------------------------------|--------|
 | 18 | Permanent pre-web safety checkpoint               | ✅ done |
-| 19 | Production PostgreSQL foundation                  | ⏳ in progress |
-| 20 | Authentication and user isolation                 | — |
+| 19 | Production PostgreSQL foundation                  | ✅ done |
+| 20 | Authentication and user isolation                 | ⏳ in progress |
 | 21 | Local backup → hosted-account migration           | — |
 | 22 | Hosted health-import architecture                 | — |
 | 23 | Navigation and route performance                  | — |
@@ -1803,3 +1803,93 @@ git checkout f5b4fe1d950abf56cc11ae97d2750ac714d365fb
 * `getCurrentUser()` in `src/lib/db.ts` is the single seam every action uses
   (`findFirst` on User, creating one if missing) — exactly where the
   authenticated session lookup slots in during Phase 20.
+
+---
+
+## Phase 19 — production PostgreSQL foundation
+
+### What changed
+
+* **`prisma/schema.prisma` is now PostgreSQL** (`provider = "postgresql"`,
+  plus `directUrl = env("DIRECT_DATABASE_URL")` so production can put a
+  pooler on `DATABASE_URL` while migrations connect directly). The schema was
+  already provider-portable by design (TEXT enums, YYYY-MM-DD day strings, no
+  raw SQL anywhere — confirmed by a full audit); the deliberate conversion
+  work was in the details below. The SQLite version remains recoverable at
+  the Phase 18 checkpoint; per the task, there is one clean PostgreSQL
+  architecture rather than a dynamic provider switch.
+* **A real migration history exists**: `prisma/migrations/20260730044027_init/`
+  (855 lines), created with `prisma migrate dev` against local PostgreSQL 16.
+  Production applies it with `npm run db:migrate:deploy` (`prisma migrate
+  deploy`); `prisma db push` is gone from the scripts.
+* **One deliberate constraint change**: `Workout`'s unique index
+  `(source, externalId)` became `(userId, source, externalId)` — the old
+  global one would have let two *accounts* importing the same Apple Health
+  export collide. The health-import duplicate check
+  (`src/server/health-import.ts`) now filters by `userId` too.
+* **SQLite→Postgres behaviour fixes** (from a dedicated conversion audit, all
+  sites enumerated in the scratch report):
+  * `searchEverything` uses `mode: "insensitive"` on all nine `contains`
+    filters — SQLite's LIKE was case-insensitive, Postgres's is not, and
+    search would silently have become case-sensitive. (`FoodItem.searchKey`
+    sites stay exact-match: that column is lowercase-normalised on both
+    sides by construction.)
+  * Null ordering pinned where SQLite and Postgres disagree, preserving the
+    UI's existing order: planner `startMinute asc` → `nulls: "first"`
+    (untimed items stay on top), workouts `time desc` → `nulls: "last"`,
+    favourites `lastUsedAt desc` → `nulls: "last"`, open-session
+    `startedAt desc` → `nulls: "last"`.
+  * All six nullable-composite unique indexes rely on `NULLS DISTINCT` —
+    the Postgres default, verified directly against the database (two null
+    `externalId` workout rows insert fine). The schema documents that these
+    must never be switched to `NULLS NOT DISTINCT`.
+* **Scripts and local development**:
+  * `docker-compose.yml` — PostgreSQL 16 with a persistent volume; an init
+    script also creates `personal_os_test` so integration tests never touch
+    dev data. Documented alternative: any own PostgreSQL via `.env`.
+  * `npm run db:migrate` (migrate dev) / `db:migrate:deploy` /
+    `db:migrate:status` / `db:backfill` (the idempotent TypeScript data
+    backfills, renamed from the old `db:migrate`) / `db:reset` (now
+    `prisma migrate reset`, gated by `scripts/guard-local-db.mjs` which
+    refuses non-local hosts unless `DANGEROUSLY_ALLOW_REMOTE_DB=1`).
+  * `scripts/ensure-env.mjs` no-ops when `DATABASE_URL` is already set, so
+    hosted/CI builds are never sabotaged by a copied `.env`.
+  * `prisma/seed.ts` refuses non-local database hosts (`SEED_ALLOW_REMOTE=1`
+    to override for a disposable remote dev DB) — demo data can never be
+    seeded into production by accident; the in-app sample-data path stays
+    the only production route and only works into an empty account.
+  * `.env.example` documents `DATABASE_URL` + `DIRECT_DATABASE_URL`.
+* README quick start / commands / stack table updated (full docs rewrite is
+  Phase 28).
+
+### Verification
+
+* `prisma migrate deploy` onto a **clean disposable database** — applies
+  cleanly; `prisma migrate diff --from-migrations --to-schema-datamodel` —
+  **no difference** (migrations ≡ schema).
+* `npm run db:backfill` against the seeded Postgres DB — all three report
+  "nothing to do" (idempotency preserved on PG).
+* `npm run db:seed` on Postgres — identical counts to the SQLite baseline
+  (662 schedule items, 390 habit logs, 172 meals, 48 workouts, 593 metrics,
+  92 foods, 2,858 seed records).
+* `npm test` 593/593 · `npm run typecheck` clean · `npm run build` clean
+  (route sizes unchanged from baseline).
+* Production server on PostgreSQL: **all 10 routes return 200, server log
+  clean** (dashboard 0.63 s first hit, 0.15–0.35 s elsewhere, server render
+  time only).
+* The type checker caught one real error during conversion (a widened
+  `QueryMode` on the pre-built `where` in `searchFoods`) — resolved by
+  keeping that site exact-match, which it already was semantically.
+
+### Deliberately deferred within this area
+
+* `importBackup`'s per-row `catch {}` inside one interactive transaction is
+  **incompatible with Postgres** (the first failed statement aborts the
+  transaction; "partial recovery" would become "total failure"). The import
+  is being rewritten wholesale in Phase 21 (ownership remapping + id
+  minting); restructuring it twice would be waste. Until Phase 21 lands, a
+  damaged backup file rolls back entirely rather than partially restoring —
+  strictly safer, never lossier.
+* Region colocation (database next to the app) is a deployment-time
+  decision documented in the Phase 26 deployment guide.
+* Auth.js tables arrive as a second migration in Phase 20.

@@ -14,19 +14,22 @@
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
     "test:watch": "vitest",
-    "predb:push": "node scripts/ensure-env.mjs",
-    "db:push": "prisma db push",
     "db:generate": "prisma generate",
     "db:studio": "prisma studio",
     "predb:seed": "node scripts/ensure-env.mjs",
     "db:seed": "tsx prisma/seed.ts",
     "predb:migrate": "node scripts/ensure-env.mjs",
-    "db:migrate": "tsx prisma/migrate-data.ts",
-    "db:reset": "prisma db push --force-reset && npm run db:seed",
+    "db:migrate": "prisma migrate dev",
+    "db:migrate:deploy": "prisma migrate deploy",
+    "db:migrate:status": "prisma migrate status",
+    "predb:backfill": "node scripts/ensure-env.mjs",
+    "db:backfill": "tsx prisma/migrate-data.ts",
+    "predb:reset": "node scripts/guard-local-db.mjs",
+    "db:reset": "prisma migrate reset --force",
     "presetup": "node scripts/ensure-env.mjs",
-    "setup": "prisma generate && prisma db push && npm run db:migrate && npm run db:seed",
+    "setup": "prisma generate && prisma migrate deploy && npm run db:backfill && npm run db:seed",
     "presetup:empty": "node scripts/ensure-env.mjs",
-    "setup:empty": "prisma generate && prisma db push && npm run db:migrate"
+    "setup:empty": "prisma generate && prisma migrate deploy && npm run db:backfill"
   },
   "prisma": {
     "seed": "tsx prisma/seed.ts"

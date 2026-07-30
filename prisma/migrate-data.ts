@@ -1,18 +1,18 @@
 /**
- * Data migration runner.
+ * Data backfill runner.
  *
- * This project applies *schema* changes with `prisma db push` (there has never
- * been a `prisma/migrations/` directory, and the database is a local SQLite
- * file the user owns). Structural changes are therefore kept additive — new
- * tables, new nullable or defaulted columns — and anything that needs to move
- * or derive data runs here instead.
+ * *Schema* changes are applied with committed Prisma migrations
+ * (`prisma/migrations/`, `npm run db:migrate` locally, `db:migrate:deploy` in
+ * production). Anything that needs to move or *derive* data — rather than
+ * change the shape of a table — runs here instead, in plain TypeScript.
  *
- * Every migration in `prisma/migrations-data/` must be **idempotent**: it
+ * Every backfill in `prisma/migrations-data/` must be **idempotent**: it
  * checks for its own prior output before writing, so running this twice
  * changes nothing the second time. That is what makes it safe to run on a
- * database that already has real records in it.
+ * database that already has real records in it — including right after
+ * restoring a pre-upgrade backup, which is exactly when these earn their keep.
  *
- * Usage:  npm run db:migrate
+ * Usage:  npm run db:backfill
  */
 import { PrismaClient } from "@prisma/client";
 

@@ -106,7 +106,7 @@ export async function getActiveSession(): Promise<ActionResult<{ id: string; dat
   const user = await getCurrentUser();
   const open = await prisma.workout.findFirst({
     where: { userId: user.id, status: "in_progress" },
-    orderBy: { startedAt: "desc" },
+    orderBy: { startedAt: { sort: "desc", nulls: "last" } },
     select: { id: true, date: true },
   });
   return succeed(open);

@@ -66,7 +66,14 @@ export async function getScheduleItems(from: DayKey, to: DayKey) {
       workout: { select: { id: true, type: true, durationMin: true } },
       habit: { select: { id: true, name: true, color: true } },
     },
-    orderBy: [{ date: "asc" }, { allDay: "desc" }, { startMinute: "asc" }, { sortOrder: "asc" }],
+    // `nulls: "first"` pins the SQLite ordering the UI was built on: untimed
+    // items sort ahead of timed ones. Postgres would otherwise put them last.
+    orderBy: [
+      { date: "asc" },
+      { allDay: "desc" },
+      { startMinute: { sort: "asc", nulls: "first" } },
+      { sortOrder: "asc" },
+    ],
   });
 }
 
@@ -261,6 +268,8 @@ export async function searchFoods(query: string, limit = 30) {
 
   const where = {
     OR: [{ userId: null }, { userId: user.id }],
+    // searchKey is written lowercase and the term is lowercased above, so a
+    // plain (index-friendlier) contains is already case-insensitive here.
     ...(term ? { searchKey: { contains: term } } : {}),
   };
 
@@ -286,7 +295,8 @@ export async function getFoodShortcuts() {
   const user = await getCurrentUser();
   const favorites = await prisma.favoriteItem.findMany({
     where: { userId: user.id, kind: "food" },
-    orderBy: [{ lastUsedAt: "desc" }],
+    // Never-used favourites (null lastUsedAt) stay at the end, as on SQLite.
+    orderBy: [{ lastUsedAt: { sort: "desc", nulls: "last" } }],
     take: 60,
   });
 
@@ -335,7 +345,9 @@ export async function getWorkouts(from: DayKey, to: DayKey) {
   return prisma.workout.findMany({
     where: { userId: user.id, date: { gte: from, lte: to } },
     include: { sets: { orderBy: { sortOrder: "asc" } } },
-    orderBy: [{ date: "desc" }, { time: "desc" }],
+    // Untimed workouts (null time) stay below timed ones within a day, as on
+    // SQLite — Postgres would otherwise float them to the top.
+    orderBy: [{ date: "desc" }, { time: { sort: "desc", nulls: "last" } }],
   });
 }
 
@@ -610,12 +622,12 @@ export async function searchEverything(query: string, limit = 8): Promise<Search
   const [items, workouts, foods, habits, goals, journal, routines, workoutTemplates, mealTemplates] =
     await Promise.all([
       prisma.scheduleItem.findMany({
-        where: { userId: user.id, title: { contains: term } },
+        where: { userId: user.id, title: { contains: term, mode: "insensitive" } },
         orderBy: { date: "desc" },
         take: limit,
       }),
       prisma.workout.findMany({
-        where: { userId: user.id, name: { contains: term } },
+        where: { userId: user.id, name: { contains: term, mode: "insensitive" } },
         orderBy: { date: "desc" },
         take: limit,
       }),
@@ -624,31 +636,31 @@ export async function searchEverything(query: string, limit = 8): Promise<Search
         take: limit,
       }),
       prisma.habit.findMany({
-        where: { userId: user.id, name: { contains: term } },
+        where: { userId: user.id, name: { contains: term, mode: "insensitive" } },
         take: limit,
       }),
       prisma.goal.findMany({
-        where: { userId: user.id, archivedAt: null, label: { contains: term } },
+        where: { userId: user.id, archivedAt: null, label: { contains: term, mode: "insensitive" } },
         take: limit,
       }),
       prisma.journalEntry.findMany({
         where: {
           userId: user.id,
-          OR: [{ content: { contains: term } }, { title: { contains: term } }],
+          OR: [{ content: { contains: term, mode: "insensitive" } }, { title: { contains: term, mode: "insensitive" } }],
         },
         orderBy: { date: "desc" },
         take: limit,
       }),
       prisma.scheduleTemplate.findMany({
-        where: { userId: user.id, name: { contains: term } },
+        where: { userId: user.id, name: { contains: term, mode: "insensitive" } },
         take: limit,
       }),
       prisma.workoutTemplate.findMany({
-        where: { userId: user.id, name: { contains: term } },
+        where: { userId: user.id, name: { contains: term, mode: "insensitive" } },
         take: limit,
       }),
       prisma.mealTemplate.findMany({
-        where: { userId: user.id, name: { contains: term } },
+        where: { userId: user.id, name: { contains: term, mode: "insensitive" } },
         take: limit,
       }),
     ]);
