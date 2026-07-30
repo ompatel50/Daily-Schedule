@@ -1707,9 +1707,9 @@ npm test && npm run typecheck && npm run build
 | 23 | Navigation and route performance                  | ✅ done |
 | 24 | Deferred feature improvements                     | ✅ done |
 | 25 | Production security                               | ✅ done |
-| 26 | Deployment and production configuration           | ⏳ in progress |
-| 27 | CI and complete verification                      | — |
-| 28 | Documentation and release handoff                 | — |
+| 26 | Deployment and production configuration           | ✅ done (deployment itself is the remaining human credential step) |
+| 27 | CI and complete verification                      | ✅ done |
+| 28 | Documentation and release handoff                 | ✅ done |
 
 ---
 
@@ -2511,3 +2511,45 @@ release. (Full details: this section + `npm audit` output.)
 * Web Push end-to-end delivery: **not run — needs HTTPS + a reachable
   push service**; verified to the transport boundary with the transport
   mocked.
+
+---
+
+## Phase 26 + 28 — deployment configuration, documentation, handoff
+
+**Deployment status, stated plainly: no deployment was performed and none
+is claimed.** This environment holds no Vercel credentials (verified),
+so the deliverable is a demonstrably deployment-ready repository plus the
+exact human path:
+
+* `vercel.json` (cron for the reminder runner), a `vercel-build` script
+  that applies committed migrations on every deploy through
+  `DIRECT_DATABASE_URL`, `.env.example` documenting every variable by
+  name, `/api/health` for uptime checks, CI green on every push.
+* `docs/deployment-guide.md` is the master runbook: create the Vercel
+  project → create a colocated managed PostgreSQL database → set the
+  environment variables → deploy a **preview** → run the smoke checklist
+  (sign-in, unauthorized-email rejection, every route, backup
+  export/preview, synthetic imports, sign-out) → deploy production →
+  verify HTTPS, the allowlist, and that no demo data loaded.
+
+**Documentation** (written for a nontechnical owner, in `docs/`):
+deployment guide, Google OAuth setup (exact redirect URIs), local
+development, **migrating from the local app** (export → preview →
+pre-import backup → import → verification report → count confirmation →
+failed-import recovery → returning to the pre-web SQLite version by
+checkpoint hash), backup & recovery, health-import privacy, Web Push
+setup, security & privacy (including the three access off-switches and
+secret rotation), troubleshooting, and performance measurement. README
+gained a Guides table and had its stale claims corrected surgically.
+
+### Session epilogue — honest wrap-up
+
+* PR #8 (Phases 18–23 + Web Push) was merged to `main` by the owner
+  mid-session; the remaining phases (24 completion, 25–28) live on the
+  restarted branch under PR #9.
+* Everything in the completion checklist is done except the two items
+  that physically require the outside world, both stated wherever they
+  appear: a live food-provider request (network-blocked here; one-command
+  smoke script provided) and real push delivery over HTTPS (transport
+  verified with a mock; setup guide provided). Deployment itself is the
+  human credential step, with the runbook written.
