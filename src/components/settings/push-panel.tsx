@@ -58,8 +58,13 @@ export function PushPanel() {
   const [status, setStatus] = React.useState<PushStatus | null>(null);
   const [thisEndpoint, setThisEndpoint] = React.useState<string | null>(null);
   const [busy, setBusy] = React.useState(false);
-  const supported =
-    typeof window !== "undefined" && "serviceWorker" in navigator && "PushManager" in window;
+  // Decided after mount: reading `window` during render makes the server and
+  // the first client render disagree (hydration error #418).
+  const [supported, setSupported] = React.useState<boolean | null>(null);
+
+  React.useEffect(() => {
+    setSupported("serviceWorker" in navigator && "PushManager" in window);
+  }, []);
 
   const refresh = React.useCallback(async () => {
     const result = await getPushStatusAction();
@@ -150,7 +155,9 @@ export function PushPanel() {
       description="Push notifications, even with no tab open"
     >
       <div className="space-y-4">
-        {!supported ? (
+        {supported === null ? (
+          <p className="text-sm text-muted-foreground">Checking this browser…</p>
+        ) : !supported ? (
           <p className="text-sm text-muted-foreground">
             This browser doesn&apos;t support push notifications. Reminders still work as in-app
             toasts (and desktop notifications while a tab is open).

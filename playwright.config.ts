@@ -15,6 +15,10 @@ import { defineConfig, devices } from "@playwright/test";
 process.env.PLAYWRIGHT_BROWSERS_PATH ??= "/opt/pw-browsers";
 
 export default defineConfig({
+  // CI runs against a freshly-migrated empty database; the one spec that
+  // needs a pre-seeded Apple Health import batch is skipped there and runs
+  // in environments that have the seeded account.
+  testIgnore: process.env.CI_SKIP_SEEDED ? ["**/health-labels.spec.ts"] : [],
   testDir: "tests/e2e",
   outputDir: "tests/e2e/.output",
   // Spec files run in parallel across workers; tests inside a file run in

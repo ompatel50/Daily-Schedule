@@ -111,7 +111,8 @@ export function Timeline({
           >
             <span className="h-2 w-2 -translate-x-1 rounded-full bg-red-500" />
             <div className="h-px flex-1 bg-red-500/70" />
-            <span className="tabular ml-1 rounded bg-red-500 px-1 py-0.5 text-[10px] font-medium text-white">
+            {/* red-600, not 500: white 10px text needs ≥4.5:1 contrast. */}
+            <span className="tabular ml-1 rounded bg-red-600 px-1 py-0.5 text-[10px] font-medium text-white">
               {formatMinute(now)}
             </span>
           </div>

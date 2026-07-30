@@ -2441,3 +2441,73 @@ dialog with manual fallback and on-device copy) — zero console errors.
 Verified: headers present on live responses, `/api/health` ok, the cron
 endpoint fails closed (503 unconfigured / 401 wrong secret), e2e 25
 passed / 1 documented skip under the CSP, lint and typecheck clean.
+
+---
+
+## Phase 27 — CI, dependency audit, final acceptance
+
+### GitHub Actions (`.github/workflows/ci.yml`)
+
+Two jobs, no secrets anywhere (all values are deliberately fake; nothing
+is exposed to pull requests):
+
+* **checks** — npm ci, prisma generate, ESLint, type check, unit tests,
+  the full PostgreSQL integration suite against a disposable service
+  container, migration validation (`migrate deploy` from empty **and**
+  `migrate diff --exit-code` proving migrations ≡ schema), production
+  build.
+* **e2e** — migrations, build, server start (waiting on `/api/health`),
+  the Playwright suite with the dev sign-in enabled; failure traces
+  uploaded as artifacts. The one spec needing a pre-seeded Apple Health
+  batch is skipped in CI via `CI_SKIP_SEEDED` (visible in the config,
+  not silently).
+
+### Dependency audit — reviewed individually, no forced fix
+
+`npm audit`: 13 findings (12 high, 1 moderate), reducing to **two root
+causes, neither reachable in this app's production runtime**:
+
+1. **`brace-expansion` DoS** (unbounded expansion → OOM) via `minimatch`
+   under the ESLint tool-chain — **development-only**; it never ships and
+   only runs on developer machines/CI against our own glob patterns.
+   `npm audit fix` (non-forced) changes nothing; forcing a cross-major
+   override risks breaking the linter for zero production gain.
+2. **`postcss` (XSS in stringified output; sourceMappingURL file read)
+   and `sharp`/libvips CVEs vendored inside `next@15.5.22`** — postcss
+   runs at build time against this repo's own CSS only, and sharp is
+   `next/image`'s optimizer, which this app never uses (no `next/image`
+   anywhere — verified). **No patched 15.x exists** (15.5.22 is the
+   newest 15); the only "fix" is the next major (16.x), a breaking
+   upgrade this hardening pass deliberately does not take.
+   `npm audit fix --force` would install a broken downgrade and was not
+   run.
+
+**Residual risk statement:** no production code path reaches any of the
+flagged code. Revisit trigger: the Next 16 upgrade, or a 15.x patch
+release. (Full details: this section + `npm audit` output.)
+
+### Final acceptance suite (all actually executed, in order)
+
+* ESLint **clean** · type check **clean** · unit **673/673** ·
+  PostgreSQL integration **85/85** · Playwright e2e **25 passed /
+  1 documented fixme** · production build **clean**.
+* Production migrations applied to a **freshly created empty database**
+  + data backfills run cleanly on top.
+* **axe WCAG 2 A+AA: 0 violations on all 11 routes** — the audit caught
+  one real regression (the timeline "now" chip, white on red-500 at
+  10 px = 3.76:1), fixed to red-600.
+* **Zero browser-console errors on all 10 app routes** — this sweep
+  caught one real hydration bug (the new push panel read `window` during
+  render), fixed by deciding support after mount.
+* Secret-leak scan over tracked files: clean. Tracked-file scan: no
+  `.env`, database, backup JSON, health export, key or credential
+  tracked. Client-bundle scan (Phase 25): no secrets, no third-party
+  hosts.
+* Cross-user security: the 20-test isolation suite plus ownership tests
+  across backup, health sessions and push — all green (part of the 85).
+* Live USDA / Open Food Facts: **not run — impossible from this sandbox**
+  (both hosts blocked at CONNECT); `scripts/smoke-food-providers.mjs` is
+  the one-command check for a networked machine.
+* Web Push end-to-end delivery: **not run — needs HTTPS + a reachable
+  push service**; verified to the transport boundary with the transport
+  mocked.
