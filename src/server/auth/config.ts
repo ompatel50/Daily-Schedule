@@ -41,8 +41,11 @@ export const authConfig = {
     },
     authorized({ auth, request }) {
       const { pathname } = request.nextUrl;
-      // Public: the sign-in page itself and the Auth.js endpoints.
+      // Public: the sign-in page, the Auth.js endpoints, the PWA assets and
+      // the cron endpoint (which enforces its own CRON_SECRET check).
       if (pathname === "/signin" || pathname.startsWith("/api/auth")) return true;
+      if (pathname === "/sw.js" || pathname === "/manifest.webmanifest") return true;
+      if (pathname.startsWith("/icons/") || pathname === "/api/reminders/run") return true;
       return Boolean(auth?.user);
     },
     jwt({ token, user }) {

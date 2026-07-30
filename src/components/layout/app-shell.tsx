@@ -4,6 +4,7 @@ import { CommandPalette, QuickAddDialog } from "@/components/layout/shell-extras
 import { KeyboardShortcuts } from "@/components/layout/keyboard-shortcuts";
 import { Sidebar } from "@/components/layout/sidebar";
 import { Topbar } from "@/components/layout/topbar";
+import { PwaRegister } from "@/components/shared/pwa-register";
 import { ReminderWatcher } from "@/components/shared/reminder-watcher";
 import { UISync } from "@/components/layout/ui-sync";
 import { getToday, getUser } from "@/server/queries";
@@ -32,6 +33,7 @@ export async function AppShell({ children }: { children: ReactNode }) {
       <QuickAddDialog />
       <KeyboardShortcuts />
       <ReminderWatcher />
+      <PwaRegister />
     </div>
   );
 }

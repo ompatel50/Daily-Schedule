@@ -11,6 +11,7 @@ const mono = JetBrains_Mono({ subsets: ["latin"], variable: "--font-mono", displ
 
 export const metadata: Metadata = {
   title: { default: "Personal OS", template: "%s · Personal OS" },
+  manifest: "/manifest.webmanifest",
   description:
     "A private, local-first personal operating system: daily planner, habits, nutrition, workouts and health in one place.",
 };

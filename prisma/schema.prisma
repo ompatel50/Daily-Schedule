@@ -83,6 +83,7 @@ model User {
   seedBatches       SeedBatch[]
   healthImportBatches HealthImportBatch[]
   healthImportSessions HealthImportSession[]
+  pushSubscriptions PushSubscription[]
 
   // --- day score configuration ----------------------------------------------
   /// JSON map of category → weight, e.g. {"planner":30,"habits":30,"goals":40}.
@@ -1161,6 +1162,29 @@ model ReminderDelivery {
 
   @@unique([userId, key])
   @@index([userId, deliveredAt])
+}
+
+/// One browser's Web Push subscription. Endpoint + keys come from the
+/// browser's PushManager; the endpoint is an opaque provider URL, unique per
+/// browser+profile. A push failure with 404/410 means the browser revoked it —
+/// the row is deleted rather than retried forever.
+model PushSubscription {
+  id     String @id @default(cuid())
+  userId String
+  user   User   @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  endpoint String @unique
+  p256dh   String
+  auth     String
+
+  /// Coarse device label shown in Settings ("Chrome · Mac"), from the
+  /// user agent at subscribe time. Never a full fingerprint.
+  deviceLabel String?
+
+  createdAt  DateTime @default(now())
+  lastSeenAt DateTime @default(now())
+
+  @@index([userId])
 }
 
 /// Generic "pin this" across domains — foods, workouts, templates, habits.

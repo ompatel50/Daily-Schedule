@@ -17,6 +17,20 @@ import { scheduleSettingsFor } from "@/server/schedule";
  */
 export async function getReminderFeed(): Promise<ReminderOccurrence[]> {
   const user = await getCurrentUser();
+  return getReminderFeedFor(user);
+}
+
+/**
+ * The same feed for an explicit user row — the scheduled push runner
+ * evaluates every subscribed user outside any session, and must share this
+ * exact logic so push and in-tab reminders can never disagree about what is
+ * allowed to fire.
+ */
+export async function getReminderFeedFor(user: {
+  id: string;
+  timezone: string;
+  weekStartsOn: number;
+}): Promise<ReminderOccurrence[]> {
   const settings = scheduleSettingsFor(user);
   const date = settings.today;
 
@@ -110,6 +124,16 @@ export async function getReminderFeed(): Promise<ReminderOccurrence[]> {
  */
 export async function recordReminderDelivery(key: string, reminderId: string | null): Promise<void> {
   const user = await getCurrentUser();
+  return recordReminderDeliveryFor(user.id, key, reminderId);
+}
+
+/** The ledger write for an explicit user — shared with the push runner. */
+export async function recordReminderDeliveryFor(
+  userId: string,
+  key: string,
+  reminderId: string | null,
+): Promise<void> {
+  const user = { id: userId };
 
   try {
     await prisma.reminderDelivery.create({ data: { userId: user.id, key } });
