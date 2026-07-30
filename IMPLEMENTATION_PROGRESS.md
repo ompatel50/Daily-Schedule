@@ -1683,3 +1683,123 @@ npm install && npx prisma generate
 npm run db:push && npm run db:migrate && npm run db:seed   # dev.db is gitignored
 npm test && npm run typecheck && npm run build
 ```
+
+---
+
+# Hosted-website upgrade: Phases 18 onward
+
+> Started 2026-07-30 on branch `claude/personal-os-hosted-perf-98w4ix`, created
+> from `main` at `f5b4fe1` (the merge of PR #7 — the completed Preview 3
+> upgrade). Objective: convert the local-only SQLite app into a secure private
+> hosted website (Auth.js + Google sign-in + email allowlist, PostgreSQL with
+> real migrations, Vercel-deployable), make navigation substantially faster,
+> and complete the deliberately deferred improvements above.
+
+## Phase checklist (18+)
+
+| #  | Phase                                             | Status |
+|----|---------------------------------------------------|--------|
+| 18 | Permanent pre-web safety checkpoint               | ✅ done |
+| 19 | Production PostgreSQL foundation                  | ⏳ in progress |
+| 20 | Authentication and user isolation                 | — |
+| 21 | Local backup → hosted-account migration           | — |
+| 22 | Hosted health-import architecture                 | — |
+| 23 | Navigation and route performance                  | — |
+| 24 | Deferred feature improvements                     | — |
+| 25 | Production security                               | — |
+| 26 | Deployment and production configuration           | — |
+| 27 | CI and complete verification                      | — |
+| 28 | Documentation and release handoff                 | — |
+
+---
+
+## Phase 18 — permanent pre-web safety checkpoint
+
+### THE PRE-WEB CHECKPOINT — read this before ever touching history
+
+**The complete, working, local-first SQLite Personal OS (Phases 0–17 + 15a) is
+commit `f5b4fe1d950abf56cc11ae97d2750ac714d365fb`** — the `main` merge commit
+of PR #7. To return to the pre-web version:
+
+```
+git checkout f5b4fe1d950abf56cc11ae97d2750ac714d365fb
+```
+
+* An annotated tag `preview3-complete-before-web` was created locally at that
+  commit. **Pushing tags is blocked by this environment's git proxy (HTTP
+  403)**, so the tag exists locally but not on GitHub; the commit hash above is
+  therefore recorded here, in the pull-request description and in the
+  deployment documentation, exactly as the task prescribes for that case. The
+  user (or any session with tag-push rights) can recreate and push it with:
+  `git tag -a preview3-complete-before-web f5b4fe1 -m "Preview 3 complete" && git push origin preview3-complete-before-web`
+* That checkpoint must never be moved, deleted or replaced. No history rewrite,
+  no force-push.
+
+### Baseline recorded at that commit (verified in this session)
+
+* `npm install` — clean. Node v22.22.2, npm 10.9.7.
+* `npm run setup` — prisma generate + db push + all 3 data migrations + seed:
+  clean (662 schedule items, 8 habits, 390 habit logs, 172 meals, 48 workouts,
+  593 health metrics, 92 foods, 2,858 seed records).
+* `npm test` — **593/593 pass** (21 files).
+* `npm run typecheck` — clean.
+* `npm run build` — clean; 12 routes. First-load JS: `/` 286 kB, `/calendar`
+  168 kB, `/habits` 314 kB, `/health` 297 kB, `/insights` 289 kB, `/nutrition`
+  321 kB, `/planner` 215 kB, `/settings` 188 kB, `/today` 215 kB, `/workouts`
+  310 kB; shared chunk 102 kB.
+* `npm audit` — 3 high-severity advisories, all inside `next 15.5.22`'s own
+  dependency tree (`postcss`, `sharp`/libvips CVEs). `npm audit fix --force`
+  would downgrade to `next@9.3.3` and was **not** run; the individual review
+  happens in Phase 27 as the task prescribes.
+* Known limitations at baseline: the "What remains deliberately open" list
+  above (no ESLint config, no live provider call ever made from this sandbox,
+  no DB-backed integration suite, `rebuildSummaries` O(days), the smaller
+  wishlist items).
+
+### Database safety
+
+* **This cloud environment started with no database at all** — `prisma/dev.db`
+  is gitignored and the clone was fresh. The only SQLite database here is the
+  demo-seeded one created by this session's baseline run. It contains only
+  synthetic seed data; the user's real database exists solely on their own
+  machine (separately copied by the user, per the task). No cloud copy of real
+  user data exists, and none is claimed.
+* The full safety drill was still executed against the seeded database so the
+  procedure itself is verified:
+  * Copied `prisma/dev.db` → scratchpad `db-safety-20260730T042218Z/dev.db.checkpoint`
+    (outside the repository). Size 2,011,136 bytes, SHA-256
+    `269f4641338c99c69daca7a3e2357314fe6609496ba59d070b05e0d960f18e3b`.
+  * The copy opens under a fresh Prisma client; per-table row counts recorded
+    (`table-counts.json`): 662 scheduleItem, 431 mealEntry, 464 workoutSet,
+    593 healthMetric, 390 habitLog, 172 meal, 92 foodItem, 85
+    calendarDaySummary, … (29 tables).
+  * A backup was exported through the application's **real**
+    `exportBackup()` service, validated by the same `inspectBackup()` the
+    import UI uses, and its checksum re-verified independently
+    (`checksumOf` over the data payload matched `meta.checksum`). File SHA-256
+    `baac9096d28c07bb0da10b8166293bfd10fc320e34a113172db85af0589be787`.
+  * That export was restored via the real `importBackup()` into a **separate
+    disposable database** (fresh schema, empty user) — never over the source —
+    and every comparable table count matched the export's `recordCounts`
+    exactly. dev.db was never written during the drill.
+* **Git tracking verification:** `git ls-files` contains no `.env`, no SQLite
+  database file, no backup JSON, no health export or ZIP, no OAuth credential,
+  no API key, no journal and no personal health record. (The only pattern
+  matches are source files: `journal-card.tsx`, `health-import/zip.ts`.)
+
+### Notes for later phases, found during Phase 18
+
+* `importBackup()` upserts rows **by their original ids** and re-points them at
+  the current user. Safe single-user; in a hosted multi-user database this is a
+  cross-account overwrite vector (a crafted backup carrying another user's
+  record ids would update that user's rows). Phase 21 must remap ids /
+  verify ownership before update. Child tables without a `userId` column
+  (`mealEntries`, `workoutSets`, `mealTemplateItems`, `scheduleItemTags`)
+  additionally attach by parent id from the file and need parent-ownership
+  validation.
+* `importBackup()` writes a pre-import snapshot to the **OS temp directory** —
+  fine locally, unusable as a durable safety net on serverless. Phase 21
+  keeps the browser download as the guaranteed path.
+* `getCurrentUser()` in `src/lib/db.ts` is the single seam every action uses
+  (`findFirst` on User, creating one if missing) — exactly where the
+  authenticated session lookup slots in during Phase 20.
