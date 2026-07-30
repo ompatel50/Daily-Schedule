@@ -4,10 +4,11 @@ import { revalidatePath } from "next/cache";
 
 import { prisma } from "@/lib/db";
 import { getCurrentUser } from "@/lib/db";
-import { type DayKey, daysBetween, shiftDay, today } from "@/lib/date";
+import { type DayKey, shiftDay } from "@/lib/date";
 import { expandRule, parseRule, serializeRule, type RecurrenceRule } from "@/lib/logic/recurrence";
 import { parseQuickAdd } from "@/lib/logic/quick-add";
 import {
+  planMove,
   planTemplateApplication,
   type TemplateApplyMode,
   type TemplateRow,
@@ -283,30 +284,50 @@ export async function setScheduleItemStatus(
   return succeed({ status });
 }
 
-/** Move an item to another day (drag & drop between days, or "push to tomorrow"). */
+/** What `moveScheduleItem` reports back to the UI. */
+export type MoveItemResult =
+  | { status: "moved"; id: string }
+  /** The new slot overlaps these titles. Nothing was written; ask the user. */
+  | { status: "conflict"; conflicts: string[] };
+
+/**
+ * Move an item to another day (drag & drop between days, or "push to
+ * tomorrow"), optionally to a new start time.
+ *
+ * When the destination slot overlaps something, the first call reports
+ * `status: "conflict"` and writes nothing; the caller confirms and repeats
+ * the call with `confirm: true`. A warning that costs one extra click, never
+ * a block — double-booking yourself is sometimes deliberate. `planMove`
+ * decides what counts as a clash.
+ */
 export async function moveScheduleItem(
   id: string,
   date: DayKey,
   startMinute?: number | null,
-): Promise<ActionResult<{ id: string }>> {
+  options?: { confirm?: boolean },
+): Promise<ActionResult<MoveItemResult>> {
   const user = await getCurrentUser();
   const item = await prisma.scheduleItem.findFirst({ where: { id, userId: user.id } });
   if (!item) return fail("Item not found");
 
-  const duration =
-    item.startMinute !== null && item.endMinute !== null ? item.endMinute - item.startMinute : null;
+  const targetItems = await prisma.scheduleItem.findMany({
+    where: { userId: user.id, date },
+    select: { id: true, title: true, startMinute: true, endMinute: true, allDay: true, status: true },
+  });
 
-  const nextStart = startMinute === undefined ? item.startMinute : startMinute;
-  const nextEnd =
-    nextStart !== null && duration !== null ? Math.min(1439, nextStart + duration) : item.endMinute;
+  const plan = planMove({ item, date, startMinute, targetItems });
+
+  if (plan.conflicts.length > 0 && !options?.confirm) {
+    return succeed({ status: "conflict", conflicts: plan.conflicts });
+  }
 
   await prisma.scheduleItem.update({
     where: { id },
     data: {
       date,
-      startMinute: nextStart,
-      endMinute: nextStart === null ? null : nextEnd,
-      allDay: nextStart === null,
+      startMinute: plan.startMinute,
+      endMinute: plan.endMinute,
+      allDay: plan.allDay,
       // A moved occurrence is no longer in lock-step with its series.
       isException: item.seriesId ? true : item.isException,
     },
@@ -314,7 +335,7 @@ export async function moveScheduleItem(
 
   await touchDays(user.id, [item.date, date]);
   revalidateAll();
-  return succeed({ id });
+  return succeed({ status: "moved", id });
 }
 
 /** Persist a new drag-and-drop ordering for one day. */

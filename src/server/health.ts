@@ -127,7 +127,6 @@ export async function getHealthOverview(): Promise<HealthOverview> {
   const todayAggregated = aggregateDayAll(todayRows);
 
   const days30 = lastNDays(30, date);
-  const days7 = days30.slice(-7);
 
   const trends: MetricTrend[] = HEALTH_PAGE_METRICS.map((type) => {
     const meta = HEALTH_METRIC_META[type];

@@ -711,6 +711,87 @@ export function dedupeByIdentity<T extends NormalizedFood>(foods: T[]): T[] {
 }
 
 // ---------------------------------------------------------------------------
+// Provider quotas
+// ---------------------------------------------------------------------------
+
+/**
+ * Fill the slots left after local results by drafting from each provider in
+ * turn — one food each, round after round, until the slots or the lists run
+ * out. An even split falls out of the draft when every provider has plenty,
+ * and a short list's unused share flows to the others instead of going empty.
+ * A generous USDA response can therefore no longer crowd Open Food Facts out
+ * of the result cap, and vice versa.
+ *
+ * Per-provider ordering is preserved, so each provider's quota keeps its best
+ * results.
+ */
+export function blendProviderResults<T>(
+  perProvider: ReadonlyArray<{ provider: FoodProviderId; foods: T[] }>,
+  slots: number,
+): T[] {
+  const out: T[] = [];
+  if (slots <= 0) return out;
+
+  const cursors = perProvider.map(() => 0);
+  let drafted = true;
+  while (out.length < slots && drafted) {
+    drafted = false;
+    for (let index = 0; index < perProvider.length && out.length < slots; index += 1) {
+      const foods = perProvider[index].foods;
+      if (cursors[index] >= foods.length) continue;
+      out.push(foods[cursors[index]]);
+      cursors[index] += 1;
+      drafted = true;
+    }
+  }
+  return out;
+}
+
+// ---------------------------------------------------------------------------
+// Staleness
+// ---------------------------------------------------------------------------
+
+/** Cached provider data older than this is worth re-fetching opportunistically. */
+export const FOOD_STALE_AFTER_DAYS = 30;
+
+const DAY_MS = 24 * 60 * 60 * 1000;
+
+/**
+ * Whether a cached provider food is due a background refresh.
+ *
+ * Only rows that actually came from a provider qualify: bundled and custom
+ * foods have no upstream to be stale against. A cached row with no readable
+ * timestamp counts as stale — refreshing it is the only way it gets one.
+ */
+export function isStaleCachedFood(
+  food: Pick<NormalizedFood, "provider" | "externalId" | "cached" | "retrievedAt" | "refreshedAt">,
+  now: Date,
+): boolean {
+  if (!food.cached || !food.externalId) return false;
+  if (food.provider !== "usda" && food.provider !== "off") return false;
+
+  const last = food.refreshedAt ?? food.retrievedAt;
+  if (!last) return true;
+  const at = Date.parse(last);
+  if (!Number.isFinite(at)) return true;
+  return now.getTime() - at > FOOD_STALE_AFTER_DAYS * DAY_MS;
+}
+
+/** The stale foods worth refreshing this sweep: deduped, oldest first, capped. */
+export function selectStaleFoods<T extends NormalizedFood>(foods: T[], now: Date, max: number): T[] {
+  const ageOf = (food: T): number => {
+    const last = food.refreshedAt ?? food.retrievedAt;
+    const at = last ? Date.parse(last) : Number.NaN;
+    // An unreadable timestamp sorts as oldest — it is the row we know least about.
+    return Number.isFinite(at) ? at : 0;
+  };
+
+  return dedupeByIdentity(foods.filter((food) => isStaleCachedFood(food, now)))
+    .sort((a, b) => ageOf(a) - ageOf(b))
+    .slice(0, Math.max(0, max));
+}
+
+// ---------------------------------------------------------------------------
 // Persistence helpers
 // ---------------------------------------------------------------------------
 

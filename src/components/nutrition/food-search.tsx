@@ -36,8 +36,10 @@ import {
 import { MEAL_TYPE_META, MEAL_TYPES, type MealType } from "@/lib/enums";
 import { nutrientSnapshotFor } from "@/lib/logic/nutrition";
 import { cn, formatNumber } from "@/lib/utils";
+import { BarcodeScannerButton } from "@/components/nutrition/barcode-scanner";
 import { logFood, toggleFavoriteFood } from "@/server/actions/nutrition";
 import {
+  loadRecentFoodsAction,
   searchFoodsAction,
   type FoodResultView,
   type ProviderNotice,
@@ -48,6 +50,8 @@ export type FoodOption = FoodResultView;
 
 const MIN_QUERY = 2;
 const DEBOUNCE_MS = 220;
+/** The server's recent-foods page size; a full first page means "maybe more". */
+const RECENT_PAGE_SIZE = 12;
 
 /**
  * The food logging flow: search → pick → adjust serving → log.
@@ -80,6 +84,14 @@ export function FoodSearch({
   const [selected, setSelected] = React.useState<FoodResultView | null>(null);
   const [online, setOnline] = React.useState(true);
   const [attempt, setAttempt] = React.useState(0);
+
+  // Pages of recents past the dozen the server rendered. A full first page is
+  // the only hint another one may exist.
+  const [moreRecent, setMoreRecent] = React.useState<FoodResultView[]>([]);
+  const [recentOffset, setRecentOffset] = React.useState<number | null>(
+    recent.length >= RECENT_PAGE_SIZE ? RECENT_PAGE_SIZE : null,
+  );
+  const [loadingRecent, setLoadingRecent] = React.useState(false);
 
   const favoriteSet = React.useMemo(() => new Set(favoriteIds), [favoriteIds]);
   const term = query.trim();
@@ -135,20 +147,42 @@ export function FoodSearch({
 
   const retry = () => setAttempt((value) => value + 1);
 
+  const loadMoreRecent = () => {
+    if (recentOffset === null || loadingRecent) return;
+    setLoadingRecent(true);
+    loadRecentFoodsAction(recentOffset)
+      .then((page) => {
+        setMoreRecent((current) => {
+          // The list may have shifted since render; a food already shown stays shown once.
+          const seen = new Set(
+            [...recent, ...current].map((food) => food.id).filter((id): id is string => id !== null),
+          );
+          return [...current, ...page.foods.filter((food) => !food.id || !seen.has(food.id))];
+        });
+        setRecentOffset(page.nextOffset);
+      })
+      .catch(() => toast.error("Could not load more recent foods"))
+      .finally(() => setLoadingRecent(false));
+  };
+
   return (
     <div className="space-y-4">
-      <div className="relative">
-        <Search className="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
-        <Input
-          value={query}
-          onChange={(event) => setQuery(event.target.value)}
-          placeholder="Search foods — chicken, oats, or a barcode…"
-          className="h-10 pl-9"
-          aria-label="Search foods"
-        />
-        {searching && (
-          <Loader2 className="absolute right-3 top-1/2 h-4 w-4 -translate-y-1/2 animate-spin text-muted-foreground" />
-        )}
+      <div className="flex gap-2">
+        <div className="relative flex-1">
+          <Search className="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
+          <Input
+            value={query}
+            onChange={(event) => setQuery(event.target.value)}
+            placeholder="Search foods — chicken, oats, or a barcode…"
+            className="h-10 pl-9"
+            aria-label="Search foods"
+          />
+          {searching && (
+            <Loader2 className="absolute right-3 top-1/2 h-4 w-4 -translate-y-1/2 animate-spin text-muted-foreground" />
+          )}
+        </div>
+        {/* A scanned product opens the same log dialog a picked result does. */}
+        <BarcodeScannerButton onFound={setSelected} />
       </div>
 
       {!online && (
@@ -243,11 +277,23 @@ export function FoodSearch({
                 <Clock className="h-3 w-3" /> Recent
               </p>
               <FoodList
-                foods={recent}
+                foods={[...recent, ...moreRecent]}
                 favoriteSet={favoriteSet}
                 onPick={setSelected}
                 onRouterRefresh={() => router.refresh()}
               />
+              {recentOffset !== null && (
+                <Button
+                  variant="ghost"
+                  size="sm"
+                  className="mt-2 w-full"
+                  onClick={loadMoreRecent}
+                  disabled={loadingRecent}
+                >
+                  {loadingRecent && <Loader2 className="animate-spin" />}
+                  Show more
+                </Button>
+              )}
             </div>
           )}
           {favorites.length === 0 && recent.length === 0 && (

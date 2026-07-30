@@ -28,10 +28,8 @@ import {
   formatDay,
   formatDuration,
   formatTimeRange,
-  isPast,
   lastNDays,
   shiftDay,
-  today,
 } from "@/lib/date";
 import { parseOnboardingState } from "@/lib/logic/onboarding";
 import { trendDelta } from "@/lib/logic/scoring";

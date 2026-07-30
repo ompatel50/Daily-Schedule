@@ -12,15 +12,23 @@ import {
   type DragEndEvent,
 } from "@dnd-kit/core";
 import { useDraggable } from "@dnd-kit/core";
-import { Plus } from "lucide-react";
+import { Plus, TriangleAlert } from "lucide-react";
 import { toast } from "sonner";
 
 import { CATEGORY_META, type ScheduleCategory } from "@/lib/enums";
 import { formatDay, formatTimeRange, isToday, weekDays } from "@/lib/date";
+import { conflictsByItem, findConflicts, summarizeConflicts } from "@/lib/logic/planner";
 import { cn } from "@/lib/utils";
 import { moveScheduleItem } from "@/server/actions/planner";
 import { useUIStore } from "@/store/ui-store";
+import { confirmMoveToast } from "@/components/planner/move-conflict";
 import type { ScheduleRowItem } from "@/components/planner/schedule-row";
+
+/** What one column knows about its overlaps — a count for the header, titles per card. */
+interface DayConflicts {
+  pairs: number;
+  byItem: Map<string, string[]>;
+}
 
 /**
  * Week view with cross-day drag & drop: drag a card onto another column to move
@@ -66,6 +74,49 @@ export function WeekGrid({
     return map;
   }, [items, days, pendingMove]);
 
+  // Same `findConflicts` as the day list's badges, scoped per column so the
+  // header can flag the day and each card can name what it clashes with.
+  const conflictsByDay = React.useMemo(() => {
+    const map = new Map<string, DayConflicts>();
+    for (const [day, list] of byDay) {
+      map.set(day, { pairs: findConflicts(list).length, byItem: conflictsByItem(list) });
+    }
+    return map;
+  }, [byDay]);
+
+  function revert(itemId: string) {
+    setPendingMove((state) => {
+      const { [itemId]: _removed, ...rest } = state;
+      return rest;
+    });
+  }
+
+  function move(itemId: string, targetDay: string, confirm: boolean) {
+    setPendingMove((state) => ({ ...state, [itemId]: targetDay }));
+
+    startTransition(async () => {
+      const result = await moveScheduleItem(itemId, targetDay, undefined, { confirm });
+
+      if (!result.ok) {
+        toast.error(result.error);
+        revert(itemId);
+        router.refresh();
+        return;
+      }
+
+      // Occupied slot: nothing was written. Put the card back and let the
+      // toast's "Move anyway" repeat the move deliberately.
+      if (result.data.status === "conflict") {
+        revert(itemId);
+        confirmMoveToast(result.data.conflicts, () => move(itemId, targetDay, true));
+        return;
+      }
+
+      toast.success(`Moved to ${formatDay(targetDay, "EEE, MMM d")}`);
+      router.refresh();
+    });
+  }
+
   function onDragEnd(event: DragEndEvent) {
     const itemId = String(event.active.id);
     const targetDay = event.over ? String(event.over.id) : null;
@@ -74,21 +125,7 @@ export function WeekGrid({
     const item = items.find((candidate) => candidate.id === itemId);
     if (!item || item.date === targetDay) return;
 
-    setPendingMove((state) => ({ ...state, [itemId]: targetDay }));
-
-    startTransition(async () => {
-      const result = await moveScheduleItem(itemId, targetDay);
-      if (result.ok) {
-        toast.success(`Moved to ${formatDay(targetDay, "EEE, MMM d")}`);
-      } else {
-        toast.error(result.error);
-        setPendingMove((state) => {
-          const { [itemId]: _removed, ...rest } = state;
-          return rest;
-        });
-      }
-      router.refresh();
-    });
+    move(itemId, targetDay, false);
   }
 
   return (
@@ -105,6 +142,7 @@ export function WeekGrid({
             key={day}
             day={day}
             items={byDay.get(day) ?? []}
+            conflicts={conflictsByDay.get(day)}
             todayKey={todayKey}
             onSelect={onSelect}
             onAdd={() => openQuickAdd(day)}
@@ -118,18 +156,22 @@ export function WeekGrid({
 function DayColumn({
   day,
   items,
+  conflicts,
   todayKey,
   onSelect,
   onAdd,
 }: {
   day: string;
   items: ScheduleRowItem[];
+  conflicts?: DayConflicts;
   todayKey?: string;
   onSelect?: (item: ScheduleRowItem) => void;
   onAdd: () => void;
 }) {
   const { setNodeRef, isOver } = useDroppable({ id: day });
   const done = items.filter((item) => item.status === "done").length;
+  const pairs = conflicts?.pairs ?? 0;
+  const pairLabel = `${pairs} overlapping ${pairs === 1 ? "pair" : "pairs"} of blocks`;
 
   return (
     <div
@@ -154,16 +196,32 @@ function DayColumn({
             {formatDay(day, "d")}
           </p>
         </div>
-        {items.length > 0 && (
-          <span className="tabular shrink-0 text-[10px] text-muted-foreground">
-            {done}/{items.length}
-          </span>
-        )}
+        <div className="flex shrink-0 items-center gap-1.5">
+          {pairs > 0 && (
+            <span title={pairLabel}>
+              <TriangleAlert
+                className="h-3 w-3 text-amber-800 dark:text-amber-400"
+                aria-hidden
+              />
+              <span className="sr-only">{pairLabel}</span>
+            </span>
+          )}
+          {items.length > 0 && (
+            <span className="tabular text-[10px] text-muted-foreground">
+              {done}/{items.length}
+            </span>
+          )}
+        </div>
       </div>
 
       <div className="flex-1 space-y-1 p-1.5">
         {items.map((item) => (
-          <DraggableCard key={item.id} item={item} onSelect={onSelect} />
+          <DraggableCard
+            key={item.id}
+            item={item}
+            conflictsWith={conflicts?.byItem.get(item.id)}
+            onSelect={onSelect}
+          />
         ))}
       </div>
 
@@ -180,24 +238,30 @@ function DayColumn({
 
 function DraggableCard({
   item,
+  conflictsWith,
   onSelect,
 }: {
   item: ScheduleRowItem;
+  /** Titles of items whose time range overlaps this one. Informational only. */
+  conflictsWith?: string[];
   onSelect?: (item: ScheduleRowItem) => void;
 }) {
   const { attributes, listeners, setNodeRef, transform, isDragging } = useDraggable({ id: item.id });
   const meta = CATEGORY_META[item.category as ScheduleCategory] ?? CATEGORY_META.personal;
+  const clash = conflictsWith ? summarizeConflicts(conflictsWith) : null;
 
   return (
     <div
       ref={setNodeRef}
       style={transform ? { transform: `translate3d(${transform.x}px, ${transform.y}px, 0)` } : undefined}
+      title={clash ? `Overlaps ${clash}` : undefined}
       className={cn(
         "cursor-grab rounded-md border border-l-[3px] bg-card px-1.5 py-1 shadow-sm transition-shadow active:cursor-grabbing",
         meta.bar,
         item.status === "done" && "opacity-55",
         item.status === "skipped" && "opacity-45",
         isDragging && "z-50 shadow-lg",
+        clash && "border-amber-500/60",
       )}
       {...attributes}
       {...listeners}
@@ -209,7 +273,14 @@ function DraggableCard({
           item.status === "done" && "line-through",
         )}
       >
+        {clash && (
+          <TriangleAlert
+            className="mr-1 inline h-3 w-3 shrink-0 -translate-y-px text-amber-800 dark:text-amber-400"
+            aria-hidden
+          />
+        )}
         {item.title}
+        {clash && <span className="sr-only">, overlaps {clash}</span>}
       </p>
       {!item.allDay && item.startMinute !== null && (
         <p className="tabular truncate text-[10px] text-muted-foreground">

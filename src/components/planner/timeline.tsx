@@ -1,11 +1,12 @@
 "use client";
 
 import * as React from "react";
-import { CalendarClock } from "lucide-react";
+import { CalendarClock, TriangleAlert } from "lucide-react";
 
 import { EmptyState } from "@/components/shared/empty-state";
 import { CATEGORY_META, type ScheduleCategory } from "@/lib/enums";
 import { formatMinute, formatTimeRange, isToday, nowMinute } from "@/lib/date";
+import { conflictsByItem, summarizeConflicts } from "@/lib/logic/planner";
 import { cn } from "@/lib/utils";
 import type { ScheduleRowItem } from "@/components/planner/schedule-row";
 
@@ -67,6 +68,10 @@ export function Timeline({
 
   const columns = React.useMemo(() => layoutColumns(timed), [timed]);
 
+  // Same `findConflicts` as the day list's badges, fed the raw items — the
+  // display minimums applied to `timed` above must not invent overlaps.
+  const conflicts = React.useMemo(() => conflictsByItem(items), [items]);
+
   const height = (bounds.to - bounds.from) * PX_PER_MINUTE;
   const hours = Array.from(
     { length: Math.ceil((bounds.to - bounds.from) / 60) + 1 },
@@ -117,17 +122,20 @@ export function Timeline({
             const layout = columns.get(item.id) ?? { column: 0, total: 1 };
             const meta = CATEGORY_META[item.category as ScheduleCategory] ?? CATEGORY_META.personal;
             const width = 100 / layout.total;
+            const clash = summarizeConflicts(conflicts.get(item.id) ?? []);
 
             return (
               <button
                 key={item.id}
                 type="button"
                 onClick={() => onSelect?.(item)}
+                title={clash ? `Overlaps ${clash}` : undefined}
                 className={cn(
                   "absolute overflow-hidden rounded-md border border-l-[3px] bg-card px-2 py-1 text-left shadow-sm transition-shadow hover:shadow-md",
                   meta.bar,
                   item.status === "done" && "opacity-90",
                   item.status === "skipped" && "opacity-90 grayscale",
+                  clash && "border-amber-500/60 ring-1 ring-amber-500/40",
                 )}
                 style={{
                   top: (item.start - bounds.from) * PX_PER_MINUTE,
@@ -142,7 +150,14 @@ export function Timeline({
                     item.status === "done" && "line-through",
                   )}
                 >
+                  {clash && (
+                    <TriangleAlert
+                      className="mr-1 inline h-3 w-3 shrink-0 -translate-y-px text-amber-800 dark:text-amber-400"
+                      aria-hidden
+                    />
+                  )}
                   {item.title}
+                  {clash && <span className="sr-only">, overlaps {clash}</span>}
                 </p>
                 {(item.end - item.start) * PX_PER_MINUTE > 34 && (
                   <p className="tabular truncate text-[10px] text-muted-foreground">

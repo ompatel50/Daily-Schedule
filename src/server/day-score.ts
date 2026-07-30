@@ -11,7 +11,7 @@
 import { cache } from "react";
 
 import { prisma } from "@/lib/db";
-import { type DayKey, dayRange, daysBetween } from "@/lib/date";
+import { type DayKey, daysBetween } from "@/lib/date";
 import {
   computeDayScore,
   parseScoreWeights,

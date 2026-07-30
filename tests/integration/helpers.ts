@@ -1,3 +1,5 @@
+import { expect } from "vitest";
+
 import { prisma } from "@/lib/prisma";
 import type { User } from "@prisma/client";
 
@@ -28,4 +30,15 @@ export async function twoUsers(): Promise<{ alice: User; bob: User }> {
   const alice = await createUser("alice@test.local", "Alice");
   const bob = await createUser("bob@test.local", "Bob");
   return { alice, bob };
+}
+
+/** Assert a raw write is rejected by a unique constraint (Prisma P2002). */
+export async function expectUniqueViolation(write: Promise<unknown>): Promise<void> {
+  try {
+    await write;
+  } catch (error) {
+    expect((error as { code?: string }).code).toBe("P2002");
+    return;
+  }
+  expect.fail("expected a P2002 unique-constraint violation, but the write succeeded");
 }

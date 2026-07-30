@@ -67,7 +67,7 @@ const DOT_CLASSES: Record<DayStatus, string> = {
  */
 export function HabitBoard({
   habits,
-  date,
+  date: _date,
   weekStartsOn = 1,
 }: {
   habits: HabitBoardItem[];

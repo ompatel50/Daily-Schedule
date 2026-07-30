@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 
 import {
   MAX_SESSION_MINUTES,
+  PROGRESSION_INCREMENT_KG,
   WORKOUT_STATUSES,
   WORKOUT_STATUS_META,
   canTransition,
@@ -17,15 +18,26 @@ import {
   orderSets,
   planSetsFromTemplate,
   planSetsFromWorkout,
+  restSecAfterSet,
   restState,
+  sessionBlocks,
   sessionDurationMinutes,
   sessionProgress,
   setOutcome,
+  suggestProgression,
+  templateGroups,
   transitionsFrom,
   type SessionSet,
 } from "@/lib/logic/session";
 import { totalVolume } from "@/lib/logic/workouts";
-import { addSessionSetSchema, completeSetSchema, startSessionSchema } from "@/lib/validation";
+import {
+  addSessionSetSchema,
+  applyProgressionSchema,
+  completeSetSchema,
+  setExerciseRestSchema,
+  startSessionSchema,
+  workoutTemplateSchema,
+} from "@/lib/validation";
 
 /**
  * The session is a small state machine plus some clock arithmetic, and both are
@@ -426,6 +438,105 @@ describe("planning sets from a template", () => {
   });
 });
 
+describe("planning a template with groups", () => {
+  it("interleaves grouped exercises round-robin", () => {
+    const planned = planSetsFromTemplate([
+      { exercise: "Bench", sets: 2, group: "A" },
+      { exercise: "Row", sets: 2, group: "A" },
+    ]);
+    expect(planned.map((row) => `${row.exercise}#${row.setNumber}`)).toEqual([
+      "Bench#1",
+      "Row#1",
+      "Bench#2",
+      "Row#2",
+    ]);
+    expect(planned.map((row) => row.sortOrder)).toEqual([0, 1, 2, 3]);
+  });
+
+  it("anchors a group where its first member sits, around plain exercises", () => {
+    const planned = planSetsFromTemplate([
+      { exercise: "Squat", sets: 1 },
+      { exercise: "Bench", sets: 2, group: "A" },
+      { exercise: "Curl", sets: 1 },
+      { exercise: "Row", sets: 2, group: "A" },
+    ]);
+    expect(planned.map((row) => `${row.exercise}#${row.setNumber}`)).toEqual([
+      "Squat#1",
+      "Bench#1",
+      "Row#1",
+      "Bench#2",
+      "Row#2",
+      "Curl#1",
+    ]);
+  });
+
+  it("lets an exercise with fewer sets drop out of later rounds", () => {
+    const planned = planSetsFromTemplate([
+      { exercise: "Bench", sets: 3, group: "A" },
+      { exercise: "Row", sets: 2, group: "A" },
+    ]);
+    expect(planned.map((row) => `${row.exercise}#${row.setNumber}`)).toEqual([
+      "Bench#1",
+      "Row#1",
+      "Bench#2",
+      "Row#2",
+      "Bench#3",
+    ]);
+  });
+
+  it("treats a blank group key as ungrouped", () => {
+    const grouped = planSetsFromTemplate([
+      { exercise: "Squat", sets: 2, group: "  " },
+      { exercise: "Bench", sets: 2, group: "" },
+    ]);
+    const plain = planSetsFromTemplate([
+      { exercise: "Squat", sets: 2 },
+      { exercise: "Bench", sets: 2 },
+    ]);
+    expect(grouped).toEqual(plain);
+  });
+
+  it("changes nothing for a template without groups", () => {
+    // Pinned exactly: templates saved before grouping existed must start
+    // byte-for-byte the same sessions they always did.
+    const planned = planSetsFromTemplate([
+      { exercise: "Squat", sets: 2, reps: 8, weightKg: 60, restSec: 120 },
+      { exercise: "Bench", sets: 2, reps: 10, weightKg: 40 },
+    ]);
+    expect(planned).toEqual([
+      { exercise: "Squat", setNumber: 1, targetReps: 8, targetWeightKg: 60, restSec: 120, sortOrder: 0 },
+      { exercise: "Squat", setNumber: 2, targetReps: 8, targetWeightKg: 60, restSec: 120, sortOrder: 1 },
+      { exercise: "Bench", setNumber: 1, targetReps: 10, targetWeightKg: 40, restSec: null, sortOrder: 2 },
+      { exercise: "Bench", setNumber: 2, targetReps: 10, targetWeightKg: 40, restSec: null, sortOrder: 3 },
+    ]);
+  });
+});
+
+describe("the template's group map", () => {
+  it("maps each member to its key", () => {
+    expect(
+      templateGroups([
+        { exercise: "Bench", sets: 3, group: "A" },
+        { exercise: "Row", sets: 3, group: "A" },
+        { exercise: "Squat", sets: 3 },
+      ]),
+    ).toEqual({ Bench: "A", Row: "A" });
+  });
+
+  it("drops a group of one — a superset of one is just an exercise", () => {
+    expect(templateGroups([{ exercise: "Bench", sets: 3, group: "A" }])).toEqual({});
+  });
+
+  it("ignores blank keys and blank names", () => {
+    expect(
+      templateGroups([
+        { exercise: "  ", sets: 1, group: "A" },
+        { exercise: "Row", sets: 1, group: " " },
+      ]),
+    ).toEqual({});
+  });
+});
+
 describe("planning sets from a past workout", () => {
   it("turns last time's results into this time's targets", () => {
     const planned = planSetsFromWorkout([
@@ -455,6 +566,197 @@ describe("the session's default rest", () => {
   it("is null when no set declares one — no timer, not a guessed 90 seconds", () => {
     expect(defaultRestSec([{ restSec: null }, { restSec: 0 }])).toBeNull();
     expect(defaultRestSec([])).toBeNull();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Supersets in a live session
+// ---------------------------------------------------------------------------
+
+describe("session blocks", () => {
+  const sets = [
+    set({ id: "b1", exercise: "Bench", setNumber: 1, sortOrder: 0 }),
+    set({ id: "r1", exercise: "Row", setNumber: 1, sortOrder: 1 }),
+    set({ id: "b2", exercise: "Bench", setNumber: 2, sortOrder: 2 }),
+    set({ id: "r2", exercise: "Row", setNumber: 2, sortOrder: 3 }),
+    set({ id: "s1", exercise: "Squat", setNumber: 1, sortOrder: 4 }),
+  ];
+
+  it("keeps every exercise alone without a group map — the pre-grouping rendering", () => {
+    const blocks = sessionBlocks(sets);
+    expect(blocks.map((block) => block.exercises.map((entry) => entry.exercise))).toEqual([
+      ["Bench"],
+      ["Row"],
+      ["Squat"],
+    ]);
+    expect(blocks.every((block) => block.group === null && block.label === null)).toBe(true);
+  });
+
+  it("folds grouped exercises into one labelled block", () => {
+    const blocks = sessionBlocks(sets, { Bench: "A", Row: "A" });
+    expect(blocks).toHaveLength(2);
+    expect(blocks[0].label).toBe("Superset A");
+    expect(blocks[0].exercises.map((entry) => entry.exercise)).toEqual(["Bench", "Row"]);
+    expect(blocks[1].group).toBeNull();
+  });
+
+  it("calls three or more a circuit", () => {
+    const blocks = sessionBlocks(sets, { Bench: "A", Row: "A", Squat: "A" });
+    expect(blocks).toHaveLength(1);
+    expect(blocks[0].label).toBe("Circuit A");
+  });
+
+  it("demotes a group only one present exercise claims", () => {
+    const blocks = sessionBlocks(sets, { Bench: "A" });
+    expect(blocks.every((block) => block.group === null && block.label === null)).toBe(true);
+  });
+
+  it("only merges consecutive exercises, so display order stays working order", () => {
+    // Bench and Squat share a key but Row sits between them: folding them
+    // together would show an order the sets are not actually worked in.
+    const blocks = sessionBlocks(sets, { Bench: "A", Squat: "A" });
+    expect(blocks.map((block) => block.exercises.map((entry) => entry.exercise))).toEqual([
+      ["Bench"],
+      ["Row"],
+      ["Squat"],
+    ]);
+    expect(blocks.every((block) => block.label === null)).toBe(true);
+  });
+});
+
+describe("rest after a set", () => {
+  const groupOf = { Bench: "A", Row: "A" };
+  const roundSets = [
+    set({ id: "b1", exercise: "Bench", setNumber: 1, sortOrder: 0, restSec: 90 }),
+    set({ id: "r1", exercise: "Row", setNumber: 1, sortOrder: 1, restSec: 60 }),
+    set({ id: "b2", exercise: "Bench", setNumber: 2, sortOrder: 2, restSec: 90 }),
+    set({ id: "r2", exercise: "Row", setNumber: 2, sortOrder: 3, restSec: 60 }),
+  ];
+
+  function tick(sets: SessionSet[], id: string): SessionSet[] {
+    return sets.map((item) => (item.id === id ? { ...item, completed: true } : item));
+  }
+  function find(sets: SessionSet[], id: string): SessionSet {
+    const found = sets.find((item) => item.id === id);
+    if (!found) throw new Error(`no set ${id}`);
+    return found;
+  }
+
+  it("prefers the set's own rest — the per-exercise override — over the session default", () => {
+    const single = set({ id: "a", restSec: 120, completed: true });
+    expect(restSecAfterSet(single, [single], {}, 90)).toBe(120);
+  });
+
+  it("falls back to the session default, and to none at all", () => {
+    const single = set({ id: "a", restSec: null, completed: true });
+    expect(restSecAfterSet(single, [single], {}, 90)).toBe(90);
+    expect(restSecAfterSet(single, [single], {}, null)).toBeNull();
+  });
+
+  it("rests nothing before anything was ticked", () => {
+    expect(restSecAfterSet(null, roundSets, groupOf, 90)).toBeNull();
+  });
+
+  it("skips the rest between exercises inside a round", () => {
+    // The rule, stated once: inside a group, rest belongs to the round.
+    const afterBench = tick(roundSets, "b1");
+    expect(restSecAfterSet(find(afterBench, "b1"), afterBench, groupOf, 90)).toBeNull();
+  });
+
+  it("starts the rest once the round's last exercise is done", () => {
+    const roundDone = tick(tick(roundSets, "b1"), "r1");
+    expect(restSecAfterSet(find(roundDone, "r1"), roundDone, groupOf, 90)).toBe(60);
+  });
+
+  it("ends the round on the last member even when ticked out of order", () => {
+    const rowFirst = tick(roundSets, "r1");
+    expect(restSecAfterSet(find(rowFirst, "r1"), rowFirst, groupOf, 90)).toBeNull();
+    const thenBench = tick(rowFirst, "b1");
+    expect(restSecAfterSet(find(thenBench, "b1"), thenBench, groupOf, 90)).toBe(90);
+  });
+
+  it("does not let an exercise with fewer sets block a later round", () => {
+    // Row has no third set, so Bench's third set ends round three by itself.
+    const uneven = [
+      ...roundSets.map((item) => ({ ...item, completed: true })),
+      set({ id: "b3", exercise: "Bench", setNumber: 3, sortOrder: 4, restSec: 90, completed: true }),
+    ];
+    expect(restSecAfterSet(find(uneven, "b3"), uneven, groupOf, null)).toBe(90);
+  });
+
+  it("treats a group with one present member as ungrouped", () => {
+    const single = set({ id: "a", exercise: "Bench", restSec: 120, completed: true });
+    expect(restSecAfterSet(single, [single], groupOf, 90)).toBe(120);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Progression suggestions
+// ---------------------------------------------------------------------------
+
+describe("progression suggestions", () => {
+  const hit = (weightKg: number, reps = 8, targetReps: number | null = 8) => ({
+    reps,
+    weightKg,
+    targetReps,
+  });
+
+  it("suggests one small-plate step when every set hit its target reps", () => {
+    const suggestion = suggestProgression([hit(60), hit(60), hit(60)]);
+    expect(suggestion).toMatchObject({ kind: "increase", targetWeightKg: 60 + PROGRESSION_INCREMENT_KG });
+  });
+
+  it("counts beating the target as hitting it", () => {
+    expect(suggestProgression([hit(60, 10, 8)])?.kind).toBe("increase");
+  });
+
+  it("suggests repeating when any set missed its target, without touching the weight", () => {
+    const suggestion = suggestProgression([hit(60), hit(60, 6, 8)]);
+    expect(suggestion?.kind).toBe("repeat");
+    expect(suggestion?.targetWeightKg).toBeNull();
+  });
+
+  it("suggests repeating when last time recorded no rep targets", () => {
+    const suggestion = suggestProgression([hit(60, 8, null)]);
+    expect(suggestion?.kind).toBe("repeat");
+    expect(suggestion?.targetWeightKg).toBeNull();
+  });
+
+  it("suggests repeating when the weight varied across sets", () => {
+    // A pyramid has no single number to add the increment to, and guessing one
+    // would not be conservative.
+    const suggestion = suggestProgression([hit(60), hit(80), hit(100)]);
+    expect(suggestion?.kind).toBe("repeat");
+    expect(suggestion?.targetWeightKg).toBeNull();
+  });
+
+  it("has nothing to say without history", () => {
+    expect(suggestProgression([])).toBeNull();
+  });
+
+  it("stays silent for bodyweight work — no load means no suggestion", () => {
+    expect(suggestProgression([{ reps: 12, weightKg: null, targetReps: 12 }])).toBeNull();
+  });
+
+  it("stays silent for duration work with no reps", () => {
+    expect(suggestProgression([{ reps: null, weightKg: null, targetReps: null }])).toBeNull();
+    expect(suggestProgression([{ reps: null, weightKg: 20, targetReps: null }])).toBeNull();
+  });
+
+  it("stays silent when even one set of the history is unusable", () => {
+    expect(suggestProgression([hit(60), { reps: 8, weightKg: null, targetReps: 8 }])).toBeNull();
+  });
+
+  it("keeps the arithmetic clean on non-integer weights", () => {
+    expect(suggestProgression([hit(22.7)])?.targetWeightKg).toBe(25.2);
+  });
+
+  it("never suggests past the validator's ceiling", () => {
+    expect(suggestProgression([hit(2000)])?.kind).toBe("repeat");
+  });
+
+  it("explains itself in plain words", () => {
+    expect(suggestProgression([hit(60)])?.reason).toContain("60 kg");
   });
 });
 
@@ -527,5 +829,49 @@ describe("session validation", () => {
   it("requires an exercise name when adding a set mid-session", () => {
     expect(addSessionSetSchema.safeParse({ workoutId: "w1", exercise: "Row" }).success).toBe(true);
     expect(addSessionSetSchema.safeParse({ workoutId: "w1", exercise: "  " }).success).toBe(false);
+  });
+
+  it("bounds the per-exercise rest override and allows clearing it", () => {
+    expect(
+      setExerciseRestSchema.safeParse({ workoutId: "w1", exercise: "Squat", restSec: 120 }).success,
+    ).toBe(true);
+    expect(
+      setExerciseRestSchema.safeParse({ workoutId: "w1", exercise: "Squat", restSec: null }).success,
+    ).toBe(true);
+    expect(
+      setExerciseRestSchema.safeParse({ workoutId: "w1", exercise: "Squat", restSec: 4000 }).success,
+    ).toBe(false);
+    expect(
+      setExerciseRestSchema.safeParse({ workoutId: "w1", exercise: "  ", restSec: 60 }).success,
+    ).toBe(false);
+  });
+
+  it("only applies a progression that carries a real weight", () => {
+    expect(
+      applyProgressionSchema.safeParse({ workoutId: "w1", exercise: "Squat", targetWeightKg: 62.5 })
+        .success,
+    ).toBe(true);
+    expect(
+      applyProgressionSchema.safeParse({ workoutId: "w1", exercise: "Squat", targetWeightKg: -1 })
+        .success,
+    ).toBe(false);
+    expect(applyProgressionSchema.safeParse({ workoutId: "w1", exercise: "Squat" }).success).toBe(
+      false,
+    );
+  });
+
+  it("keeps a template's group key and tolerates its absence", () => {
+    const parsed = workoutTemplateSchema.safeParse({
+      name: "Push",
+      exercises: [
+        { exercise: "Bench", sets: 3, group: "A" },
+        { exercise: "Row", sets: 3 },
+      ],
+    });
+    expect(parsed.success).toBe(true);
+    if (parsed.success) {
+      expect(parsed.data.exercises[0].group).toBe("A");
+      expect(parsed.data.exercises[1].group).toBeUndefined();
+    }
   });
 });

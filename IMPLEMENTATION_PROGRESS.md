@@ -1705,8 +1705,8 @@ npm test && npm run typecheck && npm run build
 | 21 | Local backup → hosted-account migration           | ✅ done |
 | 22 | Hosted health-import architecture                 | ✅ done |
 | 23 | Navigation and route performance                  | ✅ done |
-| 24 | Deferred feature improvements                     | ⏳ in progress |
-| 25 | Production security                               | — |
+| 24 | Deferred feature improvements                     | ✅ done |
+| 25 | Production security                               | ⏳ in progress |
 | 26 | Deployment and production configuration           | — |
 | 27 | CI and complete verification                      | — |
 | 28 | Documentation and release handoff                 | — |
@@ -2266,3 +2266,132 @@ displayed numbers (the sample-data panel) and cost one round-trip;
 per-action `revalidatePath("/", "layout")` stays — with the render this
 cheap, scoping invalidation per-action across 91 actions is risk without
 measurable reward.
+
+---
+
+## Phase 24 — deferred feature improvements
+
+> Note on process: PR #8 (Phases 18 through the Web Push commit) was merged
+> into `main` by the owner mid-session. The branch was restarted from the
+> merged `main` per the session rules; Phase 24's remaining work continues
+> on the same branch name under a new PR.
+
+### Background reminders — Web Push + PWA (built by hand; committed in PR #8)
+
+See the `Phase 24 (reminders)` commit: `PushSubscription` model, a
+CRON_SECRET-protected `/api/reminders/run` endpoint, a runner that
+evaluates the SAME schedule-aware feed per user in that user's timezone
+and claims the exactly-once `ReminderDelivery` key before pushing (push
+and open tabs can never double-deliver; every suppression rule applies by
+construction), a push-and-click-only service worker (no caching by
+design), manifest + icons, and a Settings panel with per-device
+enable/disable/revoke and honest unsupported/unconfigured states. 10
+integration tests cover endpoint auth, ownership, exactly-once across
+runs and channels, dead-subscription cleanup and schedule-aware
+suppression. **Honest limit:** real delivery needs HTTPS + a reachable
+push service — unavailable in this sandbox; verified to the transport
+boundary with the transport mocked, exact setup steps in the docs.
+
+### Food search + barcode (parallel workstream, reviewed & verified)
+
+Per-provider quotas with fair round-robin blending (a generous USDA
+response can no longer crowd out Open Food Facts; the crowd-out
+regression is pinned by a test: 20 USDA + 2 OFF at limit 10 → 8/2);
+local/favourites/recents/cache always rank first. Background refresh of
+stale cached provider foods (30-day threshold, ≤4 per sweep, 1-hour
+retry throttle, never blocks or fails a search, never touches MealEntry
+snapshots — the test's prisma mock has no mealEntry delegate, so a
+violation throws). Recents pager (bounded pages of 12, capped offset).
+Barcode scanning via the native `BarcodeDetector` + camera preview —
+camera starts only on explicit click and always stops on close; denial
+and unsupported-browser states; manual digit entry always available and
+running the same OFF lookup path; no image ever leaves the device and
+the UI says so. `scripts/smoke-food-providers.mjs` is the live smoke
+test for a networked machine — **no live provider call succeeded from
+this sandbox (CONNECT 403), and none is claimed**; the script was run
+here and fails gracefully and honestly.
+
+### Workout sessions (parallel workstream, reviewed & verified)
+
+Session default-rest editor (wiring the previously-UI-less
+`setSessionRest`, verified ownership-scoped) and per-exercise rest
+override (stored on the exercise's sets; timer precedence: set rest over
+session default). Rest-timer completion cue: always an in-app
+toast/aria-live announcement, browser Notification only when permission
+was already granted, an enable affordance otherwise — the timer stays
+derived (no stored ticking state). Progression suggestions from the
+user's own last completed performance (+2.5 kg only when every set hit
+target at uniform weight, otherwise repeat; none for bodyweight/duration
+work or missing data), labelled as estimates with an explicit
+not-professional-advice disclaimer, applied only on explicit
+confirmation and only to outstanding sets. Superset/circuit grouping in
+templates (additive `group` key), round-robin set interleaving, blocks
+in the panel, group-aware rest (none inside a round, full rest when the
+round completes, out-of-order ticking handled), a new template editor
+dialog (none existed), byte-for-byte backward compatibility for
+ungrouped templates pinned by tests. tests/session.test.ts: 62 → 98.
+
+### Planner conflicts (parallel workstream, reviewed & verified)
+
+Conflict indicators on the timeline (amber edge + triangle + tooltip +
+sr-only label), week view (column header count + marked cards) and month
+view (dot with accessible label) — all computed by the one existing
+`findConflicts`. `moveScheduleItem` now pre-checks: a move that would
+overlap returns `status: "conflict"` writing nothing, and the UI offers
+a nonblocking "Move anyway" toast (drag reverts optimistically; a second
+call with `confirm: true` proceeds — deliberate double-booking is one
+extra click, never blocked). No-op moves and untimed/all-day moves are
+never intercepted; endpoint-touching/zero-length false-positive
+protections re-asserted. tests/planner.test.ts: 28 → 41. Browser-verified
+after integration: indicators visible in all three views with zero
+console errors.
+
+### PostgreSQL integration tests (parallel workstream)
+
+Seven new files: the three data backfills proven idempotent by full-row
+snapshots; routine idempotency end to end (duplicate detection, ordinal
+2 on deliberate re-apply, P2002 on forced duplicates); meal idempotency
+by key; reminder exactly-once ledger (cross-user same-key allowed,
+replay never advances twice, 7-day sweep scoped to the caller); NULLS
+DISTINCT tripwires for every nullable unique the app relies on;
+overlapping health-export re-import updating shared days in place with
+manual rows byte-identical throughout; and current-user/allowlist
+behaviour incl. live revocation. **Integration total: 85 tests, 11
+files, all passing** via `npm run test:integration`.
+
+### E2E/rendering suite (parallel workstream)
+
+Committed Playwright suite (`playwright.config.ts`, `tests/e2e/`,
+`npm run test:e2e`; chromium from the preinstalled browsers, no
+downloads; storage-state sign-in via the dev form). Covers: signed-out
+redirects, unauthorized-email refusal, shell + sign-out, surface
+postures (read-only dashboard vs interactive Today vs planner
+affordances), the loading skeleton (made deterministic by holding the
+RSC response), dialog focus trapping, 404 handling, health source
+labels, live session start/discard, responsive overflow at 900/1280 px,
+and reduced-motion. **After integration: 25 passed, 1 skipped** — the
+skip is a deliberate `test.fixme` documenting a real gap (controlled
+Radix dialogs without a `DialogTrigger` drop focus to `<body>` on close;
+listed as follow-up). The suite also surfaced a real app bug: a
+focus-triggered reminder-feed refresh can abort an in-flight toggle
+action's response on /today (documented in the spec; workaround in
+place there).
+
+### ESLint
+
+ESLint 9 flat config (`eslint.config.mjs`): `next/core-web-vitals` +
+`next/typescript` via the compat bridge, an `_`-prefix convention for
+deliberately unused values, and a scoped service-worker override —
+no rule disabled repo-wide. `npm run lint` is noninteractive and
+**passes with zero problems** after fixing all 16 genuine findings
+(dead imports/variables across 12 files, an accumulated-but-never-read
+counter, a `require()` in tailwind.config, a stale eslint-disable).
+Lint joins CI in Phase 27.
+
+### Verification (integrated tree)
+
+`npm run lint` clean · typecheck clean · **unit 673/673** ·
+**integration 85/85** · **e2e 25 passed / 1 documented skip** · build
+clean · targeted browser pass over the new features (planner conflict
+indicators in all three views, template dialog with grouping, barcode
+dialog with manual fallback and on-device copy) — zero console errors.
