@@ -521,7 +521,7 @@ describe("hosted export", () => {
     const exported = await exportBackup();
     expect(exported.ok).toBe(true);
     if (!exported.ok) return;
-    expect(exported.data.meta.recordCounts.habits).toBe(1);
+    expect(exported.data.meta?.recordCounts.habits).toBe(1);
 
     // Round-trip: bob importing alice's export gets his own copies and
     // alice's rows stay hers.

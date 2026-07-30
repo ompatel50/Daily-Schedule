@@ -82,6 +82,7 @@ model User {
   scheduleOverrides ScheduleOverride[]
   seedBatches       SeedBatch[]
   healthImportBatches HealthImportBatch[]
+  healthImportSessions HealthImportSession[]
 
   // --- day score configuration ----------------------------------------------
   /// JSON map of category → weight, e.g. {"planner":30,"habits":30,"goals":40}.
@@ -855,9 +856,70 @@ model HealthMetric {
   @@index([batchId])
 }
 
+/// One in-flight health import between "the browser parsed the file" and
+/// "the user confirmed". The raw export never leaves the user's device: the
+/// browser parses it in a Web Worker and uploads only normalised rows, in
+/// bounded chunks, into a session created by — and owned by — the server.
+/// Sessions expire after two hours and are swept opportunistically; confirm
+/// and cancel both delete the staged data.
+model HealthImportSession {
+  id     String @id @default(cuid())
+  userId String
+  user   User   @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  /// uploading → staged → (deleted on confirm/cancel). A failed confirm keeps
+  /// the session so the user can retry without re-parsing.
+  status String @default("uploading")
+
+  source   String // apple_health | csv
+  fileType String // xml | zip | csv
+  /// Base filename only — never a path from the user's machine.
+  fileName String
+  fileSize Int?
+
+  /// Chunks the client declared at creation; all must arrive before finalize.
+  totalChunks Int @default(0)
+
+  examined Int    @default(0)
+  invalid  Int    @default(0)
+  /// JSON array [{type, count}] of unsupported record types.
+  unsupported String @default("[]")
+  /// JSON array of parser warnings (bounded).
+  warnings String @default("[]")
+
+  /// After finalize: the server-validated plan (rows, workouts, dupe lists)
+  /// the confirm step writes from. Never the raw file.
+  stagedPlan String?
+
+  expiresAt DateTime
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  chunks HealthImportChunk[]
+
+  @@index([userId, status])
+  @@index([expiresAt])
+}
+
+/// One bounded slice of normalised rows uploaded by the browser. The unique
+/// (sessionId, seq) makes an accidental duplicate submission a no-op.
+model HealthImportChunk {
+  id        String              @id @default(cuid())
+  sessionId String
+  session   HealthImportSession @relation(fields: [sessionId], references: [id], onDelete: Cascade)
+
+  seq     Int
+  /// JSON: { rows: NormalizedHealthRow[], workouts: RawWorkout[] }
+  payload String
+
+  createdAt DateTime @default(now())
+
+  @@unique([sessionId, seq])
+}
+
 /// One import run — the unit of review and of removal. Only counts and safe
-/// metadata are kept; the raw export is parsed, staged temporarily and deleted,
-/// never stored in the database.
+/// metadata are kept; the raw export is parsed in the browser and never
+/// stored anywhere server-side.
 model HealthImportBatch {
   id     String @id @default(cuid())
   userId String

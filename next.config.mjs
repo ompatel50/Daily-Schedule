@@ -1,13 +1,16 @@
 /** @type {import('next').NextConfig} */
 const nextConfig = {
   reactStrictMode: true,
-  // The app is a single-user local tool; keep the dev experience noise-free.
+  // ESLint runs as its own CI step (npm run lint); builds don't repeat it.
   eslint: { ignoreDuringBuilds: true },
   experimental: {
-    // Server Actions receive JSON payloads and file uploads. The ceiling exists
-    // for the Apple Health import — a multi-year export.zip is large, and it is
-    // parsed locally and discarded rather than stored.
-    serverActions: { bodySizeLimit: "400mb" },
+    // The largest server-action payload is a full JSON backup on import.
+    // Health exports never travel through an action any more — they are
+    // parsed in the browser and only bounded (<1 MB) chunks of normalised
+    // rows are uploaded. (Serverless platforms may impose a lower hard cap
+    // per request — Vercel's is ~4.5 MB — which bounds importable backup
+    // size there; chunks are unaffected.)
+    serverActions: { bodySizeLimit: "16mb" },
   },
 };
 

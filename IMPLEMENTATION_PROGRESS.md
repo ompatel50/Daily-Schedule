@@ -1703,8 +1703,8 @@ npm test && npm run typecheck && npm run build
 | 19 | Production PostgreSQL foundation                  | ✅ done |
 | 20 | Authentication and user isolation                 | ✅ done |
 | 21 | Local backup → hosted-account migration           | ✅ done |
-| 22 | Hosted health-import architecture                 | ⏳ in progress |
-| 23 | Navigation and route performance                  | — |
+| 22 | Hosted health-import architecture                 | ✅ done |
+| 23 | Navigation and route performance                  | ⏳ in progress |
 | 24 | Deferred feature improvements                     | — |
 | 25 | Production security                               | — |
 | 26 | Deployment and production configuration           | — |
@@ -2080,3 +2080,105 @@ Deliberately not done: optional private object storage for oversized
 backups (a browser download remains the required recovery method; noted for
 Phase 26 docs — Vercel's ~4.5 MB request cap bounds single-request imports,
 which comfortably fits this app's real backups today).
+
+---
+
+## Phase 22 — hosted health-import architecture
+
+### The architecture
+
+The local importer sent the raw export (up to 400 MB) through one server
+action and staged the parsed plan in the OS temp directory — both fatal on
+serverless (per-request body caps, no shared disk between invocations).
+The hosted architecture inverts it: **the raw Apple Health export never
+leaves the user's device.**
+
+* **Parsing runs in the browser, in a Web Worker**
+  (`src/components/health/import-worker.ts`): ZIP extraction
+  (`zip-browser.ts`, a `DataView` + `DecompressionStream("deflate-raw")`
+  port of the minimal reader — Node 18+ has the same API, so the unit tests
+  exercise the exact browser code), the XML scanner, the strict CSV parser
+  and the rollup were already pure/browser-portable and now run off the
+  main thread. File-type detection moved to a pure module (`detect.ts`).
+* **Only normalised rows travel**, in bounded sequence-numbered chunks
+  (≤2,000 rows and ≤800 KB each), into a **database-backed import session**
+  (`HealthImportSession`/`HealthImportChunk`, migration
+  `20260730052646`): serverless-safe, multi-instance-safe, expiring after
+  two hours with opportunistic sweeps.
+* **Session security** (`src/server/health-import-session.ts`): the server
+  creates the session id tied to the authenticated user — the browser
+  cannot choose an owner; chunks only attach to the owner's own
+  `uploading` session; the unique `(sessionId, seq)` makes duplicate
+  submissions no-ops; **finalize revalidates every row** (zod: known
+  metric/workout types, day-key format, finite bounded values, bounded
+  strings) and **recomputes every fingerprint from row content** — a
+  tampered fingerprint is ignored; **provenance is enforced** (an XML/ZIP
+  session's rows must claim `apple_health`; a CSV session's rows only the
+  CSV source set — a CSV can no more forge "measured by Apple Health"
+  than it could before). The validated plan is staged on the session row,
+  chunks deleted, and the existing preview/confirm/cancel pipeline works
+  on top unchanged: preview writes no health rows, confirm is one
+  transaction with the failure-batch record, cancel deletes the session
+  (owner-checked).
+* `serverActions.bodySizeLimit` dropped **400 MB → 16 MB** (the largest
+  remaining action payload is a backup JSON; health chunks are <1 MB).
+* **Summary rebuilding is no longer a sequential full-span walk**:
+  `rebuildSummariesForDates` recomputes exactly the days an import or
+  batch removal touched, each widened ±6 days (a day's score can depend on
+  its week under either week-start convention — identical results to the
+  full-range rebuild), with bounded concurrency (8 days at a time);
+  `rebuildSummaries` (seed/backup restore) shares the same engine.
+* Wizard UX: live stage line ("Reading the file on this device…" →
+  "Uploading summary rows n/m…" → "Checking against your existing
+  records…"), same preview dialog, cancel at any stage discards the
+  session. An interrupted upload's staged data expires server-side.
+
+### A real performance bug found by measuring
+
+The first measured run showed parse time going **superlinear** (9.2 s for
+1 year → 95.3 s for 3 years in the worker; worse under Node). Cause: the
+XML scanner re-ran `indexOf("<Workout ", cursor)` on every record — for a
+workout-free export that walks the rest of the file once per record,
+O(n²). Fixed by caching next-occurrence positions (results identical;
+the whole suite still passes). **3-year parse: 95.3 s → 0.4 s.**
+
+### Measured (production build, real browser, synthetic exports)
+
+First import into an empty account — after the fix:
+
+| Export | File | Parse (worker) | Upload | Server preview | Confirm (write + rebuild) | Days recomputed |
+|---|---|---|---|---|---|---|
+| 1 month (~1.2 k records) | 0.2 MB | 0.1 s | 0.1 s | 0.1 s | 1.0 s | 42 |
+| 1 year (~15 k records) | 2.5 MB | 0.2 s | 0.2 s | 0.5 s | 1.9 s | 377 |
+| 3 years (~45 k records) | 7.5 MB | 0.4 s | 0.4 s | 0.6 s | 4.9 s | 1,107 |
+
+First-run row counts written: 180 / 2,190 / 6,570. A second import of the
+same files through the same UI wrote **0 new rows** at every size — the
+fingerprint dedup holds end to end in the hosted pipeline. Zero console
+errors in every run. Peak memory stays bounded by the file's bytes plus
+the normalised plan (the 7.5 MB export produced a ~6-8 MB plan in worker
+memory; no 400 MB server buffering anywhere).
+
+### Verification
+
+* **Integration (real PostgreSQL): 12 new tests, 46/46 total** — chunks
+  cannot attach to another user's session; another user cannot finalize,
+  confirm or cancel a session; duplicate chunk submission is a no-op;
+  out-of-range sequence numbers and malformed rows are rejected; finalize
+  refuses an incomplete upload; forged fingerprints are recomputed away;
+  a CSV session cannot smuggle `apple_health` provenance; preview writes
+  nothing and confirm writes exactly the selection (summaries included);
+  same-rows re-import reports duplicates and writes nothing; cancel
+  removes staged data; expired sessions are swept; batch removal deletes
+  the batch's rows and recomputes exactly the touched days.
+* Unit tests 594/594 (ZIP suite now exercises the browser implementation,
+  async; detection suite moved to the pure module) · typecheck clean ·
+  build clean.
+* Browser: the three-size measurement runs above (which also re-verified
+  preview→confirm→outcome and the re-import dedup end to end).
+
+Honest limits: an in-flight *upload* does not survive leaving the page
+(the parsed plan lives in the page's memory; the server session simply
+expires) — an interrupted import is restarted by re-picking the file,
+and nothing partial is ever written. The optional object-storage fallback
+was not needed: browser parsing handled the multi-year case comfortably.

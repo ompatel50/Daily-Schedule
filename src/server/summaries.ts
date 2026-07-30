@@ -9,7 +9,7 @@
  * upgrade set out to remove.
  */
 import { prisma } from "@/lib/db";
-import { type DayKey, dayRange, daysBetween, weekRange } from "@/lib/date";
+import { type DayKey, dayRange, daysBetween, shiftDay, weekRange } from "@/lib/date";
 import { aggregateDayAll } from "@/lib/logic/health";
 import { round, sum } from "@/lib/utils";
 import { getDayScore, scoreOptionsFor } from "@/server/day-score";
@@ -128,15 +128,46 @@ export async function recomputeDay(userId: string, date: DayKey): Promise<void> 
   });
 }
 
-/** Recompute a contiguous range — used by seeding, import and restore. */
-export async function rebuildSummaries(userId: string, from: DayKey, to: DayKey): Promise<number> {
-  const days = dayRange(from, to);
-  for (const day of days) {
-    // Sequential on purpose: SQLite serialises writes anyway, and this keeps
-    // memory flat when rebuilding a year of history.
-    await recomputeDay(userId, day);
+/** How many days recompute concurrently during a rebuild. */
+const REBUILD_CONCURRENCY = 8;
+
+async function recomputeDays(userId: string, days: DayKey[]): Promise<number> {
+  // Bounded concurrency: each day's recompute is ~10 independent reads plus
+  // one upsert, so running a small batch in parallel multiplies throughput on
+  // Postgres without unbounded connection or memory pressure. Results are
+  // identical to the sequential walk — recomputeDay(d) only ever writes d.
+  for (let index = 0; index < days.length; index += REBUILD_CONCURRENCY) {
+    await Promise.all(
+      days.slice(index, index + REBUILD_CONCURRENCY).map((day) => recomputeDay(userId, day)),
+    );
   }
   return days.length;
+}
+
+/** Recompute a contiguous range — used by seeding, import and restore. */
+export async function rebuildSummaries(userId: string, from: DayKey, to: DayKey): Promise<number> {
+  return recomputeDays(userId, dayRange(from, to));
+}
+
+/**
+ * Recompute exactly the days an import (or removal) touched, instead of the
+ * whole span between its first and last date. Each touched day is expanded
+ * by ±6 days: a day's score can depend on the rest of its week (weekly
+ * goals), and the widened window covers the containing week under either
+ * week-start convention — so the result is identical to a full-range
+ * rebuild, without walking years of untouched days in between.
+ */
+export async function rebuildSummariesForDates(
+  userId: string,
+  dates: Iterable<DayKey>,
+): Promise<number> {
+  const expanded = new Set<DayKey>();
+  for (const date of dates) {
+    for (let offset = -6; offset <= 6; offset += 1) {
+      expanded.add(shiftDay(date, offset));
+    }
+  }
+  return recomputeDays(userId, [...expanded].sort());
 }
 
 export async function getSummaries(userId: string, from: DayKey, to: DayKey) {

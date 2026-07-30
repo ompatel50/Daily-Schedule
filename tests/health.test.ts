@@ -303,9 +303,10 @@ describe("privacy — health data goes nowhere", () => {
       path.join(__dirname, "../src/lib/logic/health-import"),
       path.join(__dirname, "../src/server/health.ts"),
       path.join(__dirname, "../src/server/health-import.ts"),
-      path.join(__dirname, "../src/server/health-import"),
+      path.join(__dirname, "../src/server/health-import-session.ts"),
       path.join(__dirname, "../src/server/actions/health.ts"),
       path.join(__dirname, "../src/server/actions/health-import.ts"),
+      path.join(__dirname, "../src/components/health/import-worker.ts"),
     ];
     const files: string[] = [];
     for (const root of roots) {

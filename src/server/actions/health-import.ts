@@ -7,43 +7,60 @@ import { fail, succeed, type ActionResult } from "@/lib/validation";
 import {
   confirmHealthImport,
   discardStaged,
+  finalizeStagedPreview,
   listImportBatches,
-  MAX_IMPORT_BYTES,
   previewBatchRemoval,
-  previewHealthFile,
   removeImportBatch,
   type BatchRemovalPreview,
   type ImportOutcome,
   type ImportPreviewResult,
 } from "@/server/health-import";
+import { appendChunk, createSession } from "@/server/health-import-session";
 
 /**
- * Server actions for the staged health import. The heavy lifting (parsing,
- * staging, transactional writes, batch removal) lives in
- * `src/server/health-import.ts`; these wrappers add the user, the input
- * validation and the cache revalidation. Preview writes nothing; only confirm
- * does. The uploaded file is parsed and discarded — it never leaves this
- * machine and is never retained.
+ * Server actions for the staged health import.
+ *
+ * The raw export file NEVER travels through these: the browser parses it in a
+ * Web Worker and uploads only normalised rows, chunk by bounded chunk, into a
+ * session created here — tied to the authenticated user, impossible to point
+ * at anyone else. Every row is re-validated server-side at finalize, every
+ * fingerprint recomputed. Preview writes no health records; only confirm
+ * does. Cancel (and expiry) removes the staged rows.
  */
 
 function revalidateAll() {
   revalidatePath("/", "layout");
 }
 
-export async function previewHealthImportAction(
-  formData: FormData,
+export async function createHealthImportSessionAction(
+  meta: unknown,
+): Promise<ActionResult<{ sessionId: string }>> {
+  const user = await getCurrentUser();
+  const result = await createSession(user.id, meta);
+  if (!result.ok) return fail(result.error);
+  return succeed({ sessionId: result.sessionId });
+}
+
+export async function uploadHealthImportChunkAction(input: {
+  sessionId: string;
+  seq: number;
+  payload: string;
+}): Promise<ActionResult<null>> {
+  const user = await getCurrentUser();
+  if (typeof input?.sessionId !== "string" || typeof input?.payload !== "string") {
+    return fail("Invalid upload.");
+  }
+  const result = await appendChunk(user.id, input.sessionId, input.seq, input.payload);
+  if (!result.ok) return fail(result.error);
+  return succeed(null);
+}
+
+export async function finalizeHealthImportAction(
+  sessionId: string,
 ): Promise<ActionResult<ImportPreviewResult>> {
   const user = await getCurrentUser();
-
-  const file = formData.get("file");
-  if (!(file instanceof File)) return fail("No file was uploaded.");
-  if (file.size === 0) return fail("The file is empty.");
-  if (file.size > MAX_IMPORT_BYTES) {
-    return fail("That file is larger than 400 MB, which this importer cannot stage safely.");
-  }
-
-  const bytes = Buffer.from(await file.arrayBuffer());
-  const result = await previewHealthFile(user.id, file.name, bytes);
+  if (typeof sessionId !== "string") return fail("Invalid import session.");
+  const result = await finalizeStagedPreview(user.id, sessionId);
   if (!result.ok) return fail(result.error);
   return succeed(result.preview);
 }

@@ -21,20 +21,64 @@ import { formatNumber } from "@/lib/utils";
 import {
   cancelHealthImportAction,
   confirmHealthImportAction,
-  previewHealthImportAction,
+  createHealthImportSessionAction,
+  finalizeHealthImportAction,
+  uploadHealthImportChunkAction,
 } from "@/server/actions/health-import";
 import type { ImportOutcome, ImportPreviewResult } from "@/server/health-import";
+import type { ImportPlan } from "@/lib/logic/health-import/types";
+import type { ParseResponse } from "./import-worker";
+
+/** Bounded upload chunks — must stay inside the server's per-chunk limits. */
+const ROWS_PER_CHUNK = 2000;
+const MAX_CHUNK_JSON = 800 * 1024;
 
 /**
- * The staged import flow: pick a file → preview (nothing written) → choose
- * categories → confirm → results. Cancelling at the preview discards the
- * staged parse; the database is only touched by the confirm step.
+ * Slice the plan's rows and workouts into sequence-numbered chunks, each
+ * bounded in row count and serialised size.
+ */
+function buildChunks(plan: ImportPlan): string[] {
+  const chunks: string[] = [];
+  const push = (rows: ImportPlan["rows"], workouts: ImportPlan["workouts"]) => {
+    const json = JSON.stringify({ rows, workouts });
+    if (json.length > MAX_CHUNK_JSON && rows.length > 1) {
+      const half = Math.ceil(rows.length / 2);
+      push(rows.slice(0, half), []);
+      push(rows.slice(half), workouts);
+      return;
+    }
+    chunks.push(json);
+  };
+
+  for (let index = 0; index < plan.rows.length; index += ROWS_PER_CHUNK) {
+    push(plan.rows.slice(index, index + ROWS_PER_CHUNK), []);
+  }
+  for (let index = 0; index < plan.workouts.length; index += ROWS_PER_CHUNK) {
+    push([], plan.workouts.slice(index, index + ROWS_PER_CHUNK));
+  }
+  if (chunks.length === 0) chunks.push(JSON.stringify({ rows: [], workouts: [] }));
+  return chunks;
+}
+
+type Stage =
+  | { step: "idle" }
+  | { step: "parsing" }
+  | { step: "uploading"; done: number; total: number }
+  | { step: "finalizing" };
+
+/**
+ * The staged import flow, hosted edition: pick a file → parse it ON THIS
+ * DEVICE in a Web Worker (the raw export is never uploaded) → send only the
+ * normalised rows in bounded chunks → server-checked preview (nothing
+ * written) → choose categories → confirm → results. Cancelling discards the
+ * staged rows; the health tables are only touched by the confirm step.
  */
 export function ImportWizard() {
   const router = useRouter();
   const fileRef = React.useRef<HTMLInputElement>(null);
   const [open, setOpen] = React.useState(false);
   const [busy, setBusy] = React.useState(false);
+  const [stage, setStage] = React.useState<Stage>({ step: "idle" });
   const [preview, setPreview] = React.useState<ImportPreviewResult | null>(null);
   const [outcome, setOutcome] = React.useState<ImportOutcome | null>(null);
   const [selected, setSelected] = React.useState<Set<string>>(new Set());
@@ -46,12 +90,71 @@ export function ImportWizard() {
 
     setBusy(true);
     setOutcome(null);
+    let sessionId: string | null = null;
     try {
-      const formData = new FormData();
-      formData.set("file", file);
-      const result = await previewHealthImportAction(formData);
+      // 1. Parse on-device, off the main thread.
+      setStage({ step: "parsing" });
+      const buffer = await file.arrayBuffer();
+      const worker = new Worker(new URL("./import-worker", import.meta.url));
+      const parsed = await new Promise<ParseResponse>((resolve, reject) => {
+        worker.onmessage = (message: MessageEvent<ParseResponse>) => resolve(message.data);
+        worker.onerror = () => reject(new Error("The file could not be parsed."));
+        worker.postMessage({ buffer, fileName: file.name }, [buffer]);
+      }).finally(() => worker.terminate());
+
+      if (!parsed.ok) {
+        toast.error(parsed.error);
+        return;
+      }
+      const { plan, fileType } = parsed;
+      if (plan.rows.length === 0 && plan.workouts.length === 0) {
+        toast.error("Nothing importable was found in the file.");
+        return;
+      }
+
+      // 2. Upload normalised rows in bounded, sequence-numbered chunks.
+      const chunks = buildChunks(plan);
+      setStage({ step: "uploading", done: 0, total: chunks.length });
+
+      const created = await createHealthImportSessionAction({
+        source: plan.kind,
+        fileType,
+        fileName: file.name,
+        fileSize: file.size,
+        totalChunks: chunks.length,
+        examined: plan.examined,
+        invalid: plan.invalid,
+        unsupported: Object.entries(plan.unsupported)
+          .map(([type, count]) => ({ type, count }))
+          .slice(0, 200),
+        warnings: plan.warnings.slice(0, 40),
+      });
+      if (!created.ok) {
+        toast.error(created.error);
+        return;
+      }
+      sessionId = created.data.sessionId;
+
+      for (let seq = 0; seq < chunks.length; seq += 1) {
+        const uploaded = await uploadHealthImportChunkAction({
+          sessionId,
+          seq,
+          payload: chunks[seq],
+        });
+        if (!uploaded.ok) {
+          toast.error(uploaded.error);
+          await cancelHealthImportAction(sessionId);
+          return;
+        }
+        setStage({ step: "uploading", done: seq + 1, total: chunks.length });
+      }
+
+      // 3. Server-side revalidation + duplicate detection → the preview.
+      setStage({ step: "finalizing" });
+      const result = await finalizeHealthImportAction(sessionId);
       if (!result.ok) {
         toast.error(result.error);
+        await cancelHealthImportAction(sessionId);
         return;
       }
       setPreview(result.data);
@@ -59,8 +162,10 @@ export function ImportWizard() {
       setOpen(true);
     } catch {
       toast.error("The file could not be read. Nothing was imported.");
+      if (sessionId) await cancelHealthImportAction(sessionId).catch(() => undefined);
     } finally {
       setBusy(false);
+      setStage({ step: "idle" });
     }
   }
 
@@ -124,10 +229,18 @@ export function ImportWizard() {
         <a className="text-xs text-muted-foreground underline underline-offset-2" href="/health-template.csv" download>
           Download the CSV template
         </a>
+        {stage.step !== "idle" && (
+          <span className="text-xs text-muted-foreground" role="status">
+            {stage.step === "parsing" && "Reading the file on this device…"}
+            {stage.step === "uploading" && `Uploading summary rows ${stage.done}/${stage.total}…`}
+            {stage.step === "finalizing" && "Checking against your existing records…"}
+          </span>
+        )}
       </div>
       <p className="mt-2 text-xs text-muted-foreground">
-        Apple Health export.zip, export.xml or a CSV. The file is parsed on your machine, previewed
-        before anything is saved, and never sent anywhere.
+        Apple Health export.zip, export.xml or a CSV. The raw file is parsed on your device and
+        never uploaded — only the summarised rows you preview and confirm are saved to your
+        account.
       </p>
 
       <Dialog open={open} onOpenChange={(next) => (!next ? void cancel() : setOpen(true))}>
