@@ -1,10 +1,13 @@
 /**
  * Backup format.
  *
- * The whole database belongs to one user, so a backup is simply every table
- * serialised as JSON. IDs are preserved: restoring into an empty database
- * reproduces the original graph exactly, and re-importing the same file is a
- * no-op rather than a duplicate (import is upsert-by-id).
+ * A backup is one account's records, every table serialised as JSON, in the
+ * ids the exporting app used. On import those ids are never trusted: the
+ * hosted restore (src/server/backup-restore.ts) deterministically remaps
+ * every id into the authenticated account, which preserves all internal
+ * relationships, keeps re-importing the same file a no-op rather than a
+ * duplicate, and makes it structurally impossible for a file to address
+ * another account's rows.
  *
  * Lives outside the `"use server"` module because a server-actions file may
  * only export async functions.

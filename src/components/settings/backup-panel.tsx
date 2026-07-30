@@ -145,11 +145,19 @@ export function BackupPanel() {
 
       const result = await importBackup(pending.parsed, mode);
       if (result.ok) {
-        toast.success(`Imported ${result.data.imported} records`, {
-          description:
-            result.data.tables.slice(0, 8).join(", ") +
-            (result.data.tables.length > 8 ? "…" : ""),
+        const report = result.data;
+        const skippedNote = report.totalSkipped > 0 ? `, ${report.totalSkipped} already present` : "";
+        const droppedNote = report.totalDropped > 0 ? `, ${report.totalDropped} unusable rows skipped` : "";
+        toast.success(`Imported ${report.totalCreated} records${skippedNote}${droppedNote}`, {
+          description: "A verification report has been downloaded alongside your data.",
         });
+        // The post-import verification report: what the file contained, what
+        // was written, and per-table counts now in the account.
+        download(
+          `import-report-${toDayKey(new Date())}.json`,
+          JSON.stringify(report, null, 2),
+          "application/json",
+        );
         setPending(null);
         router.refresh();
       } else {
@@ -290,9 +298,10 @@ export function BackupPanel() {
                 </div>
 
                 <p className="text-xs text-muted-foreground">
-                  A backup of your current data downloads automatically before anything is written,
-                  and a copy is kept in the system temp folder. A failure rolls the whole import
-                  back.
+                  Everything imports into <strong>this account only</strong>. A backup of your
+                  current data downloads automatically before anything is written — keep it; it is
+                  the way back. A failure rolls the whole import back, and a verification report
+                  downloads after it completes.
                 </p>
 
                 <DialogFooter className="gap-2">

@@ -1702,8 +1702,8 @@ npm test && npm run typecheck && npm run build
 | 18 | Permanent pre-web safety checkpoint               | ✅ done |
 | 19 | Production PostgreSQL foundation                  | ✅ done |
 | 20 | Authentication and user isolation                 | ✅ done |
-| 21 | Local backup → hosted-account migration           | ⏳ in progress |
-| 22 | Hosted health-import architecture                 | — |
+| 21 | Local backup → hosted-account migration           | ✅ done |
+| 22 | Hosted health-import architecture                 | ⏳ in progress |
 | 23 | Navigation and route performance                  | — |
 | 24 | Deferred feature improvements                     | — |
 | 25 | Production security                               | — |
@@ -1995,3 +1995,88 @@ user-scoped, and these defects, all fixed:
   not user data, and a backup restored into a different account must never
   carry the original's Google binding.
 * The backup import's cross-user id hazard is Phase 21's core work, next.
+
+---
+
+## Phase 21 — local backup → hosted-account migration
+
+### The rewrite (`src/server/backup-restore.ts`)
+
+The local app restored a backup by **upserting rows under the file's own
+primary keys** — correct single-user, and a cross-account overwrite vector in
+a shared database (a crafted file carrying a victim's cuids would rewrite
+their rows and re-point them at the importer). It also swallowed per-row
+errors *inside* one transaction, which PostgreSQL turns into "first failure
+aborts everything after it". Both are gone; the import was rewritten
+around four rules:
+
+1. **No id from the file is ever trusted.** Every imported row gets a
+   deterministic new id — `hash(userId | oldId)` — so a file structurally
+   cannot address another account's rows, every internal relationship
+   survives (all references remapped with the same function, including the
+   polymorphic `ScheduleRule.ownerId`, `Goal.sourceRef`, favourites'
+   `refId`-by-kind, seed-record targets, series parents, and even the ids
+   embedded inside `ReminderDelivery.key`), and re-importing the same file
+   is still idempotent (same input → same ids → skipped as duplicates).
+2. **References resolve strictly inside the file.** A child pointing at a
+   parent that didn't travel with it is dropped (required link) or unlinked
+   (optional link) and counted — never attached to a row in the database.
+3. **Validation happens before the transaction.** Rows are sanitised
+   against the Prisma schema itself (DMMF-derived column whitelist + type
+   checks + DateTime coercion); damaged rows are dropped and reported
+   up front — the Postgres-compatible replacement for in-transaction
+   `catch {}` row skipping.
+4. **Writes are batched `createMany … skipDuplicates`** in true FK order
+   (the legacy order wrote schedule items before the meals they reference —
+   masked on SQLite by the old error swallowing) inside one transaction:
+   a real mid-flight failure rolls back everything; merge-mode collisions
+   with the account's own data are skipped without poisoning the
+   transaction. Series items write parents before children.
+
+Shared reference data is the one deliberate exception: bundled foods
+(`userId: null`) that already exist are reused by identity and **never
+modified** (a file claiming a bundled id with poisoned values changes
+nothing); provider-cached foods are matched by `(provider, externalId)` —
+the same shared-cache behaviour a live search has; anything else becomes the
+importer's own copy.
+
+Also new:
+* **A safe subset of the exported User row is applied** to the account
+  (name, timezone, units, week start, day window, score settings —
+  never email/id/image), so day keys keep meaning what they meant locally.
+  The old import silently dropped all of it.
+* **The tmpdir pre-import snapshot is gone** (a serverless temp dir does not
+  survive the request); the automatic **browser download before confirm is
+  the recovery path**, and the dialog says so.
+* **A post-import verification report downloads automatically**: mode, file
+  version, per-table in-file/created/skipped/dropped, totals, and per-table
+  row counts now in the account.
+* Summary rebuild now spans the earliest date across schedule items, meals,
+  habit logs, metrics and workouts (was: schedule items only).
+
+### Verification
+
+* **Integration (real PostgreSQL): 14 new tests, 34/34 total** — full-graph
+  import into an empty account asserting every relationship by remapped id;
+  re-import creates nothing; replace clears first / merge keeps existing;
+  preview writes nothing; checksum + older-version warnings; future version
+  refused before writing; **a file carrying another user's real ids leaves
+  their rows untouched** (the importer gets an inert copy); **a child row
+  aimed at another user's parent is dropped, not attached**; existing
+  bundled foods are reused and never modified; int4-overflow mid-import
+  rolls the whole import back; a damaged row is dropped and reported while
+  the rest imports; a v2 file gets every-day schedules backfilled; hosted
+  export round-trips into another account with both accounts intact.
+* **Browser (production build): 7/7** — Settings → Backup: export downloads
+  a valid v3 file; choosing a synthetic file opens the preview (nothing
+  written); confirming downloads the pre-import backup **and** the
+  verification report, imports 3 records, and the imported habit renders in
+  the app; zero console errors.
+* Unit tests 594/594 (backup-format suite updated: the "covers every table"
+  assertions now check the restore engine, plus a new assertion that every
+  imported row is remapped) · typecheck clean · build clean.
+
+Deliberately not done: optional private object storage for oversized
+backups (a browser download remains the required recovery method; noted for
+Phase 26 docs — Vercel's ~4.5 MB request cap bounds single-request imports,
+which comfortably fits this app's real backups today).
