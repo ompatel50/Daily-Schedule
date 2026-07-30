@@ -40,14 +40,14 @@
 | 9  | Nutrition provider architecture & food search      | ✅ done (providers built + tested against fixtures; **no live API call was possible** — see below) |
 | 10 | Workout session system                             | ✅ done |
 | 11 | Health imports & health metrics                    | ✅ done |
-| 12 | Demo-data separation & onboarding                  | ⬜ not started |
+| 12 | Demo-data separation & onboarding                  | ✅ done |
 | 13 | Reminders                                          | ⬜ not started |
 | 14 | Search & command palette                           | ⬜ not started |
 | 15 | Backup & import updates                            | ⬜ not started |
 | 16 | Accessibility, responsiveness, performance         | ⬜ not started |
 | 17 | Full testing & polish                              | ⬜ not started |
 
-**Current phase:** 12 — Demo-data separation & onboarding (**not started**)
+**Current phase:** 13 — Reminders (**not started**)
 
 **The task's stated highest-priority milestone is complete** (central schedule
 engine, scheduled goals, scheduled habits, rest-day behaviour, streaks, day
@@ -703,8 +703,13 @@ These are stated plainly so nothing reads as finished when it is not:
    `moveScheduleItem` still has no conflict check of its own, so dragging an
    item onto an occupied slot succeeds silently and only shows the warning
    afterwards.
-4. **`SeedBatch`/`SeedRecord` exist but nothing writes to them**, so "remove demo
-   data" is not yet possible.
+4. ~~`SeedBatch`/`SeedRecord` exist but nothing writes to them.~~ **Fixed in
+   Phase 12** — the seed registers every record it creates; removal deletes
+   exactly the registered set. One documented nuance: logging a manual value
+   for a day+metric the demo also covers **upserts onto the demo row** (that
+   is what the manual fingerprint is for), so the edited value is still part
+   of the batch and leaves with it. A record is "yours" when you *created* it,
+   not when you edited a demo one.
 5. **Reminders are not schedule-aware yet** — `reminder-watcher.tsx` still fires
    from the old `Reminder` table. The `reminderEnabled`/`reminderMinute` fields
    on `ScheduleRule` are written by the editor but **not yet consumed**.
@@ -1321,12 +1326,90 @@ which left ghost batches after a reseed.
 
 ---
 
+## Phase 12 — demo-data separation & onboarding
+
+### The design
+
+**One generator, two callers.** The 900-line seed body moved verbatim from
+`prisma/seed.ts` into `prisma/demo-data.ts` as `seedDemoData(prisma, {userId?})`;
+the CLI (`npm run db:seed`) is now a thin wrapper, and the in-app "Start with
+sample data" action calls the *same* function — a second generator would be
+the exact duplication this upgrade exists to remove.
+
+**Registration by enumeration, not id-plumbing.** The generator is the only
+writer for its user during a run (the wipe just emptied the tables — a no-op
+on the in-app path, which requires an empty account), so "everything the user
+owns at the end" is exactly "everything this run created". `recordSeedBatch`
+enumerates 20 models and registers 2,858 records in one `SeedBatch` — sparing
+900 lines of per-create id collection. The bundled food table is deliberately
+**not** registered: foods are shared reference data (`userId: null`), and
+removing the demo must not empty the food search.
+
+**Removal deletes only what was registered**, children before parents
+(`DEMO_MODEL_ORDER`, exported and tested against the FK graph), chunked, with
+the batch row deleted last so a crash mid-way leaves removal re-runnable.
+Afterwards the demo span — anchored on the batch's creation date, not on
+today, so removing months-old sample data recomputes the right days — is
+rebuilt through the same `rebuildSummaries` every other write uses.
+
+**Load is only offered while the account is empty.** Sample data is a
+starting point, not something to mix into a life already being tracked; the
+guard (plus the refuse-if-batch-exists check) is also what makes the action
+idempotent. `npm run setup:empty` is the CLI equivalent of choosing "start
+empty". The user row is never overwritten by any path — the CLI upsert only
+ever creates, and the in-app path passes the existing user through untouched
+(asserted in the browser: name, timezone and unit system identical after an
+in-app load).
+
+**The onboarding checklist is state on the user, ticked by hand.**
+`User.onboardingState` (existing, previously unused) holds `{dismissed,
+done[]}` behind a defensive parser; steps are ticked by the user rather than
+inferred, because "has a meal row" cannot distinguish demo data from a real
+first log. The card is dismissible from the dashboard and restorable from
+Settings → Sample data.
+
+### Files
+
+```
+prisma/demo-data.ts                          the generator + batch registration
+prisma/seed.ts                               now a thin CLI wrapper
+src/lib/logic/onboarding.ts                  checklist state (pure)
+src/server/demo.ts                           status / load / removal
+src/server/actions/demo.ts                   the demo + onboarding actions
+src/components/dashboard/onboarding-card.tsx
+src/components/settings/demo-panel.tsx
+tests/onboarding.test.ts                     8 tests
+```
+
+### Phase 12 verification
+
+`npm test` 562/562 (8 new), typecheck and build clean. Seed idempotency
+re-verified: two consecutive `db:seed` runs leave 1 batch, 2,858 seed records,
+662 schedule items. Browser verification (Playwright, production build) —
+**27/27 checks**: checklist shows, a tick persists across reloads, dismissal
+hides it, Settings restores it with ticks intact; the demo panel reports the
+loaded batch; a genuinely new record (a distance metric the seed never
+writes) is created **unregistered**; removal preview lists per-model counts;
+removal deletes all 662 planner items, all habits and every registered row
+while the real record survives; batch and registry end empty; summaries
+recompute to zero planner data; load is refused while the real record exists,
+offered once the account is truly empty; the in-app load re-seeds the full
+dataset with user settings untouched; 0 px overflow at 900 px; zero console
+errors and zero page errors. (A first run of that suite caught the same
+Badge-inside-`<p>` hydration mistake in the new demo panel that Phase 11 had
+made — fixed the same way.)
+
+---
+
 ## Exact next step
 
-**Phase 12 — demo-data separation & onboarding.** `SeedBatch`/`SeedRecord`
-exist but nothing writes them; the seed cannot be removed separately from real
-records, and there is no start-empty / sample-data choice or onboarding
-checklist (`User.onboardingState` exists, unused).
+**Phase 13 — schedule-aware reminders.** `reminder-watcher.tsx` still fires
+from the old `Reminder` table with no knowledge of schedules: nothing suppresses
+a reminder on a rest day, for an inactive habit, for a completed/excused/
+cancelled item, or for an occurrence already delivered. The
+`reminderEnabled`/`reminderMinute` fields on `ScheduleRule` are written by the
+schedule editor but consumed by nothing. In-app fallback behaviour is needed
+where browser notifications are unavailable.
 
 Also still open from earlier phases:
 

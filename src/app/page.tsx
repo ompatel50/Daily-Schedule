@@ -14,6 +14,7 @@ import {
 } from "lucide-react";
 
 import { DashboardQuickActions } from "@/components/dashboard/quick-actions";
+import { OnboardingCard } from "@/components/dashboard/onboarding-card";
 import { TrendAreaChart, CategoryBarChart } from "@/components/shared/charts";
 import { DayScoreCard } from "@/components/shared/day-score-card";
 import { EmptyState } from "@/components/shared/empty-state";
@@ -32,9 +33,11 @@ import {
   shiftDay,
   today,
 } from "@/lib/date";
+import { parseOnboardingState } from "@/lib/logic/onboarding";
 import { trendDelta } from "@/lib/logic/scoring";
 import { SURFACE_ROLES, surfaceHref } from "@/lib/logic/surfaces";
 import { cn, formatNumber, pct, sum } from "@/lib/utils";
+import { getDemoStatus } from "@/server/demo";
 import { getConsistencyWindow, getDayOverview, getToday, getWindowStats } from "@/server/queries";
 
 export const dynamic = "force-dynamic";
@@ -49,6 +52,10 @@ export default async function DashboardPage() {
     getWindowStats(shiftDay(date, -6), date),
     getWindowStats(shiftDay(date, -13), shiftDay(date, -7)),
   ]);
+
+  const onboarding = parseOnboardingState(overview.user.onboardingState);
+  // The demo status is only needed while the checklist is showing.
+  const demoStatus = onboarding.dismissed ? null : await getDemoStatus(overview.user.id);
 
   const {
     user,
@@ -117,6 +124,10 @@ export default async function DashboardPage() {
           </Button>
         }
       />
+
+      {!onboarding.dismissed && (
+        <OnboardingCard state={onboarding} canLoadSample={demoStatus?.canLoad ?? false} />
+      )}
 
       {/*
         Rolling-week tiles, each a link to the surface that owns the number.

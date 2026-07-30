@@ -24,7 +24,9 @@
     "db:migrate": "tsx prisma/migrate-data.ts",
     "db:reset": "prisma db push --force-reset && npm run db:seed",
     "presetup": "node scripts/ensure-env.mjs",
-    "setup": "prisma generate && prisma db push && npm run db:migrate && npm run db:seed"
+    "setup": "prisma generate && prisma db push && npm run db:migrate && npm run db:seed",
+    "presetup:empty": "node scripts/ensure-env.mjs",
+    "setup:empty": "prisma generate && prisma db push && npm run db:migrate"
   },
   "prisma": {
     "seed": "tsx prisma/seed.ts"

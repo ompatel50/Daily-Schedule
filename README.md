@@ -19,15 +19,21 @@ anywhere. It is built to answer six questions every day:
 
 ```bash
 npm install
-npm run setup      # generate Prisma client, create the DB, seed ~10 weeks of sample data
-npm run dev        # http://localhost:3000
+npm run setup        # generate Prisma client, create the DB, seed ~10 weeks of sample data
+# — or —
+npm run setup:empty  # the same, but start with a completely empty app
+npm run dev          # http://localhost:3000
 ```
 
 That's it. There is no account, no login and no cloud service to configure. On first run a
 `.env` is created for you from `.env.example` (it only sets `DATABASE_URL="file:./dev.db"`).
 
-`npm run setup` is idempotent — re-running it re-seeds the demo dataset. To start from a genuinely
-empty app, run `npm run db:push` and then use **Settings → Danger zone → Reset everything**.
+`npm run setup` is idempotent — re-running it re-seeds the demo dataset. **Sample data is
+explicitly tracked**: every seeded record is registered in a seed batch, so
+**Settings → Sample data → Remove sample data** deletes exactly the demo records — anything you
+created yourself stays, and scores, streaks, the calendar and insights are recalculated. Starting
+empty, the dashboard's optional getting-started checklist offers to load the sample dataset
+in-app (only while the account is empty, so demo history can never mix into real records).
 
 ### Other commands
 
