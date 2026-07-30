@@ -10,7 +10,6 @@
 type TestSession = { user: { id: string; email?: string | null; name?: string | null } } | null;
 
 declare global {
-  // eslint-disable-next-line no-var
   var __TEST_SESSION__: TestSession | undefined;
 }
 

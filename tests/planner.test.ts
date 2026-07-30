@@ -5,11 +5,14 @@ import {
   findConflicts,
   nextApplicationOrdinal,
   parseSourceKey,
+  planMove,
   planTemplateApplication,
   spansOverlap,
+  summarizeConflicts,
   templateSourceKey,
   type ConflictCandidate,
   type ExistingTemplateRow,
+  type MoveSource,
   type TemplateRow,
 } from "@/lib/logic/planner";
 
@@ -264,5 +267,164 @@ describe("findConflicts / conflictsByItem", () => {
   it("finds nothing in an empty or single-item day", () => {
     expect(findConflicts([])).toEqual([]);
     expect(findConflicts([span("a", 540, 600)])).toEqual([]);
+  });
+});
+
+describe("summarizeConflicts", () => {
+  it("is null when there is nothing to say", () => {
+    expect(summarizeConflicts([])).toBeNull();
+  });
+
+  it("names a single clash verbatim", () => {
+    expect(summarizeConflicts(["Standup"])).toBe("Standup");
+  });
+
+  it("compresses several into the first plus a count", () => {
+    expect(summarizeConflicts(["Standup", "Review", "Gym"])).toBe("Standup and 2 more");
+  });
+});
+
+describe("planMove", () => {
+  /** A 09:00–11:00 block being moved. */
+  const moving = (extra: Partial<MoveSource> = {}): MoveSource => ({
+    id: "moving",
+    date: "2026-07-20",
+    startMinute: 540,
+    endMinute: 660,
+    allDay: false,
+    status: "planned",
+    ...extra,
+  });
+
+  it("flags a date-only move whose time-of-day lands on an occupied slot", () => {
+    const plan = planMove({
+      item: moving(),
+      date: "2026-07-21",
+      targetItems: [{ ...span("b", 600, 720), title: "Standup" }],
+    });
+
+    expect(plan.conflicts).toEqual(["Standup"]);
+    // Time-of-day travels with the item.
+    expect(plan.startMinute).toBe(540);
+    expect(plan.endMinute).toBe(660);
+    expect(plan.allDay).toBe(false);
+  });
+
+  it("keeps the duration when re-timing, clamped to midnight", () => {
+    const retimed = planMove({ item: moving(), date: "2026-07-20", startMinute: 900, targetItems: [] });
+    expect(retimed.startMinute).toBe(900);
+    expect(retimed.endMinute).toBe(1020);
+
+    const late = planMove({ item: moving(), date: "2026-07-20", startMinute: 1380, targetItems: [] });
+    expect(late.endMinute).toBe(1439);
+  });
+
+  it("clears the time on an explicit null start, which cannot conflict", () => {
+    const plan = planMove({
+      item: moving(),
+      date: "2026-07-21",
+      startMinute: null,
+      targetItems: [span("busy", 0, 1439)],
+    });
+
+    expect(plan).toEqual({ startMinute: null, endMinute: null, allDay: true, conflicts: [] });
+  });
+
+  it("moves an untimed item between days without conflicting", () => {
+    const plan = planMove({
+      item: moving({ startMinute: null, endMinute: null }),
+      date: "2026-07-21",
+      targetItems: [span("busy", 0, 1439)],
+    });
+
+    expect(plan.conflicts).toEqual([]);
+    expect(plan.startMinute).toBeNull();
+    // Mirrors the write: no start after a move means all-day.
+    expect(plan.allDay).toBe(true);
+  });
+
+  it("reports nothing when the move leaves the item exactly where it is", () => {
+    // The day already clashes; a no-op call is not creating that overlap, so
+    // the badges keep the job and the confirm stays quiet.
+    const plan = planMove({
+      item: moving(),
+      date: "2026-07-20",
+      targetItems: [
+        { ...span("moving", 540, 660), title: "Moving" },
+        { ...span("b", 600, 720), title: "Standup" },
+      ],
+    });
+
+    expect(plan.conflicts).toEqual([]);
+  });
+
+  it("never clashes with itself when re-timed within the same day", () => {
+    const plan = planMove({
+      item: moving(),
+      date: "2026-07-20",
+      startMinute: 600,
+      targetItems: [
+        { ...span("moving", 540, 660), title: "Moving" },
+        { ...span("c", 900, 960), title: "Gym" },
+      ],
+    });
+
+    expect(plan.conflicts).toEqual([]);
+  });
+
+  it("does not flag touching endpoints, zero-length or all-day items on the target day", () => {
+    const plan = planMove({
+      item: moving(),
+      date: "2026-07-21",
+      targetItems: [
+        span("before", 480, 540),
+        span("after", 660, 720),
+        span("instant", 600, 600),
+        span("allday", null, null, { allDay: true }),
+      ],
+    });
+
+    expect(plan.conflicts).toEqual([]);
+  });
+
+  it("ignores skipped items on either side of the move", () => {
+    expect(
+      planMove({
+        item: moving({ status: "skipped" }),
+        date: "2026-07-21",
+        targetItems: [span("b", 600, 720)],
+      }).conflicts,
+    ).toEqual([]);
+
+    expect(
+      planMove({
+        item: moving(),
+        date: "2026-07-21",
+        targetItems: [span("b", 600, 720, { status: "skipped" })],
+      }).conflicts,
+    ).toEqual([]);
+  });
+
+  it("still flags a completed target, because it did occupy the time", () => {
+    const plan = planMove({
+      item: moving(),
+      date: "2026-07-21",
+      targetItems: [{ ...span("b", 600, 720, { status: "done" }), title: "Standup" }],
+    });
+
+    expect(plan.conflicts).toEqual(["Standup"]);
+  });
+
+  it("lists clashes earliest first regardless of input order", () => {
+    const plan = planMove({
+      item: moving(),
+      date: "2026-07-21",
+      targetItems: [
+        { ...span("late", 620, 640), title: "Later" },
+        { ...span("early", 560, 580), title: "Earlier" },
+      ],
+    });
+
+    expect(plan.conflicts).toEqual(["Earlier", "Later"]);
   });
 });

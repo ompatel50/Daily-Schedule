@@ -94,7 +94,6 @@ export async function getWeeklyReview(
   // --- habits ---------------------------------------------------------------
   let habitScheduled = 0;
   let habitCompleted = 0;
-  let habitMissed = 0;
   let habitExcused = 0;
 
   for (const view of habitViews) {
@@ -108,7 +107,6 @@ export async function getWeeklyReview(
         habitCompleted += 1;
       } else if (resolved === "missed" || resolved === "skipped") {
         habitScheduled += 1;
-        habitMissed += 1;
       } else if (resolved === "pending") {
         habitScheduled += 1;
       } else if (resolved === "excused") {

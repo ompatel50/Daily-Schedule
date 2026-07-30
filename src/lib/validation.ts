@@ -11,7 +11,6 @@ import {
   PRIORITIES,
   SCHEDULE_CATEGORIES,
   SERVING_UNITS,
-  TIMES_OF_DAY,
   WORKOUT_TYPES,
 } from "./enums";
 import { FOOD_PROVIDERS } from "./logic/food";
@@ -214,6 +213,26 @@ export const addSessionSetSchema = z.object({
   targetWeightKg: z.number().min(0).max(2000).nullable().optional(),
 });
 
+/**
+ * Rest override for one exercise's sets within the open session. Null (or 0)
+ * clears it back to the session default.
+ */
+export const setExerciseRestSchema = z.object({
+  workoutId: z.string().min(1),
+  exercise: z.string().trim().min(1, "Exercise is required").max(120),
+  restSec: z.number().int().min(0).max(3600).nullable(),
+});
+
+/**
+ * Writing a progression estimate onto an exercise's outstanding targets. Only
+ * ever sent from an explicit "apply" tap — suggestions never apply themselves.
+ */
+export const applyProgressionSchema = z.object({
+  workoutId: z.string().min(1),
+  exercise: z.string().trim().min(1, "Exercise is required").max(120),
+  targetWeightKg: z.number().min(0).max(2000),
+});
+
 export const workoutSetSchema = z.object({
   id: z.string().optional(),
   exercise: z.string().trim().min(1).max(120),
@@ -266,6 +285,8 @@ export const workoutTemplateSchema = z.object({
         weightKg: z.number().min(0).max(2000).optional(),
         restSec: z.number().int().min(0).max(3600).optional(),
         notes: z.string().max(300).optional(),
+        /** Superset/circuit key ("A", "B"…). Absent means ungrouped. */
+        group: z.string().trim().max(10).optional(),
       }),
     )
     .default([]),

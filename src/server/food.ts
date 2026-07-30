@@ -4,11 +4,13 @@ import type { Prisma, FoodItem } from "@prisma/client";
 
 import { prisma } from "@/lib/db";
 import {
+  blendProviderResults,
   dedupeByIdentity,
   foodIdentity,
   parseExtraNutrients,
   rankFoodResults,
   sanitizeNormalizedFood,
+  selectStaleFoods,
   PROVIDER_SHORT_LABELS,
   type FoodProviderId,
   type FoodSearchResult,
@@ -305,6 +307,77 @@ export async function materializeFood(
 }
 
 // ---------------------------------------------------------------------------
+// Background refresh
+// ---------------------------------------------------------------------------
+
+/** How many stale cached rows one search will refresh in the background. */
+const REFRESH_BATCH_MAX = 4;
+/** A refresh attempt — success or not — is not repeated within this window. */
+const REFRESH_RETRY_MS = 60 * 60 * 1000;
+
+const refreshAttempts = new Map<string, number>();
+
+let pendingRefresh: Promise<number> = Promise.resolve(0);
+
+/**
+ * Cached provider rows go stale — upstream records get corrected, servings get
+ * filled in. A search that surfaces a row older than ~30 days queues a
+ * re-fetch that runs after the search has answered: it never blocks the
+ * search, never fails it, and never runs for a provider that is not
+ * configured.
+ *
+ * Only the `FoodItem` row is updated. Meal entries carry their own snapshot,
+ * so a refresh can never rewrite a logged day.
+ */
+export async function refreshStaleCachedFoods(
+  foods: NormalizedFood[],
+  now: Date = new Date(),
+): Promise<number> {
+  const due = selectStaleFoods(foods, now, REFRESH_BATCH_MAX * 2)
+    .filter((food) => {
+      const attempted = refreshAttempts.get(foodIdentity(food));
+      return attempted === undefined || now.getTime() - attempted > REFRESH_RETRY_MS;
+    })
+    .slice(0, REFRESH_BATCH_MAX);
+
+  let refreshed = 0;
+  for (const food of due) {
+    // Recorded before the attempt: a provider that is down is not re-asked on
+    // every keystroke for the same stale row.
+    refreshAttempts.set(foodIdentity(food), now.getTime());
+
+    const source = food.externalId ? providerById(food.provider) : null;
+    if (!source || !source.status().configured) continue;
+
+    try {
+      const outcome = await source.details(food.externalId as string);
+      if (outcome.ok && outcome.data) {
+        await cacheFood(outcome.data);
+        refreshed += 1;
+      }
+    } catch {
+      // Opportunistic by design; a failed refresh changes nothing.
+    }
+  }
+  return refreshed;
+}
+
+function scheduleStaleRefresh(foods: FoodSearchResult[]): void {
+  pendingRefresh = refreshStaleCachedFoods(foods).catch(() => 0);
+}
+
+/** Exposed for tests — lets them await work the search deliberately does not. */
+export function pendingFoodRefresh(): Promise<number> {
+  return pendingRefresh;
+}
+
+/** Exposed for tests — the attempt log is process-global and would leak between them. */
+export function clearFoodRefreshState(): void {
+  refreshAttempts.clear();
+  pendingRefresh = Promise.resolve(0);
+}
+
+// ---------------------------------------------------------------------------
 // Short-lived search memo
 // ---------------------------------------------------------------------------
 
@@ -409,6 +482,9 @@ export async function searchAllFoods(
   const askRemote = !options.localOnly && (options.forceRemote || !enoughLocally);
 
   if (!askRemote) {
+    // Any stale cached rows the search surfaced get refreshed after the
+    // answer — but not offline, where localOnly says the network is out.
+    if (!options.localOnly) scheduleStaleRefresh(local);
     return {
       results: rankFoodResults(term, local).slice(0, limit),
       providers,
@@ -468,10 +544,26 @@ export async function searchAllFoods(
   // A provider result already sitting in the local set is the same food; the
   // local row wins because it carries the internal id, the favourite flag and
   // any correction the user made.
-  const merged = [...local, ...remote.filter((food) => !identities.has(foodIdentity(food)))];
+  const localRanked = rankFoodResults(term, local).slice(0, limit);
+  const freshRemote = dedupeByIdentity(remote.filter((food) => !identities.has(foodIdentity(food))));
+
+  // Each provider gets a fair share of the slots local results left over,
+  // ranked within itself first so its quota keeps its best matches.
+  const byProvider = new Map<FoodProviderId, FoodSearchResult[]>();
+  for (const food of freshRemote) {
+    const bucket = byProvider.get(food.provider);
+    if (bucket) bucket.push(food);
+    else byProvider.set(food.provider, [food]);
+  }
+  const blended = blendProviderResults(
+    Array.from(byProvider, ([provider, foods]) => ({ provider, foods: rankFoodResults(term, foods) })),
+    limit - localRanked.length,
+  );
+
+  scheduleStaleRefresh(local);
 
   return {
-    results: rankFoodResults(term, dedupeByIdentity(merged)).slice(0, limit),
+    results: [...localRanked, ...rankFoodResults(term, blended)],
     providers,
     failures,
     searchedRemotely: !memoed,
@@ -492,4 +584,60 @@ export async function getFoodDetails(
   const outcome = await source.details(externalId);
   if (!outcome.ok) return null;
   return outcome.data;
+}
+
+// ---------------------------------------------------------------------------
+// Barcode lookup
+// ---------------------------------------------------------------------------
+
+export interface BarcodeLookupOutcome {
+  food: FoodSearchResult | null;
+  /** Set when the provider could not answer — distinct from "no such product". */
+  failure: ProviderFailure | null;
+}
+
+/**
+ * One food by its retail barcode: local rows first (a product scanned before
+ * is already cached and works offline), then Open Food Facts, the provider
+ * that indexes by barcode. Only the digits leave the machine.
+ */
+export async function lookupFoodByBarcode(
+  userId: string,
+  barcode: string,
+): Promise<BarcodeLookupOutcome> {
+  const code = barcode.trim();
+
+  const row = await prisma.foodItem.findFirst({
+    where: { barcode: code, OR: [{ userId: null }, { userId }] },
+  });
+  if (row) {
+    const usage = await prisma.favoriteItem.findUnique({
+      where: { userId_kind_refId: { userId, kind: "food", refId: row.id } },
+    });
+    const isFavorite = usage !== null && usage.sortOrder >= 0;
+    const isRecent = usage !== null;
+    return {
+      food: {
+        ...rowToNormalizedFood(row),
+        isFavorite,
+        isRecent,
+        origin: isFavorite ? "favorite" : isRecent ? "recent" : row.cached ? "cache" : "local",
+      },
+      failure: null,
+    };
+  }
+
+  const source = providerById("off");
+  if (!source || !source.status().configured) {
+    return {
+      food: null,
+      failure: { reason: "not_configured", message: "Barcode lookup is not available right now." },
+    };
+  }
+
+  const outcome = await source.details(code);
+  if (!outcome.ok) return { food: null, failure: outcome.failure };
+  if (!outcome.data) return { food: null, failure: null };
+
+  return { food: { ...outcome.data, isRecent: false, origin: "off" }, failure: null };
 }

@@ -1,11 +1,12 @@
 import type { Metadata } from "next";
-import { Bell, Database, Keyboard } from "lucide-react";
+import { Database, Keyboard } from "lucide-react";
 
 import { BackupPanel } from "@/components/settings/backup-panel";
 import { DemoPanel } from "@/components/settings/demo-panel";
 import { GoalsPanel } from "@/components/settings/goals-panel";
 import { SettingsForm } from "@/components/settings/settings-form";
 import { NotificationsPanel } from "@/components/settings/notifications-panel";
+import { PushPanel } from "@/components/settings/push-panel";
 import { PageHeader } from "@/components/shared/page-header";
 import { SectionCard } from "@/components/shared/section-card";
 import { KEYBOARD_SHORTCUTS } from "@/lib/navigation";
@@ -62,6 +63,7 @@ export default async function SettingsPage() {
         />
 
         <NotificationsPanel />
+        <PushPanel />
 
         <DemoPanel
           demoLoaded={demoStatus.batch !== null}

@@ -1705,11 +1705,11 @@ npm test && npm run typecheck && npm run build
 | 21 | Local backup → hosted-account migration           | ✅ done |
 | 22 | Hosted health-import architecture                 | ✅ done |
 | 23 | Navigation and route performance                  | ✅ done |
-| 24 | Deferred feature improvements                     | ⏳ in progress |
-| 25 | Production security                               | — |
-| 26 | Deployment and production configuration           | — |
-| 27 | CI and complete verification                      | — |
-| 28 | Documentation and release handoff                 | — |
+| 24 | Deferred feature improvements                     | ✅ done |
+| 25 | Production security                               | ✅ done |
+| 26 | Deployment and production configuration           | ✅ done (deployment itself is the remaining human credential step) |
+| 27 | CI and complete verification                      | ✅ done |
+| 28 | Documentation and release handoff                 | ✅ done |
 
 ---
 
@@ -2266,3 +2266,290 @@ displayed numbers (the sample-data panel) and cost one round-trip;
 per-action `revalidatePath("/", "layout")` stays — with the render this
 cheap, scoping invalidation per-action across 91 actions is risk without
 measurable reward.
+
+---
+
+## Phase 24 — deferred feature improvements
+
+> Note on process: PR #8 (Phases 18 through the Web Push commit) was merged
+> into `main` by the owner mid-session. The branch was restarted from the
+> merged `main` per the session rules; Phase 24's remaining work continues
+> on the same branch name under a new PR.
+
+### Background reminders — Web Push + PWA (built by hand; committed in PR #8)
+
+See the `Phase 24 (reminders)` commit: `PushSubscription` model, a
+CRON_SECRET-protected `/api/reminders/run` endpoint, a runner that
+evaluates the SAME schedule-aware feed per user in that user's timezone
+and claims the exactly-once `ReminderDelivery` key before pushing (push
+and open tabs can never double-deliver; every suppression rule applies by
+construction), a push-and-click-only service worker (no caching by
+design), manifest + icons, and a Settings panel with per-device
+enable/disable/revoke and honest unsupported/unconfigured states. 10
+integration tests cover endpoint auth, ownership, exactly-once across
+runs and channels, dead-subscription cleanup and schedule-aware
+suppression. **Honest limit:** real delivery needs HTTPS + a reachable
+push service — unavailable in this sandbox; verified to the transport
+boundary with the transport mocked, exact setup steps in the docs.
+
+### Food search + barcode (parallel workstream, reviewed & verified)
+
+Per-provider quotas with fair round-robin blending (a generous USDA
+response can no longer crowd out Open Food Facts; the crowd-out
+regression is pinned by a test: 20 USDA + 2 OFF at limit 10 → 8/2);
+local/favourites/recents/cache always rank first. Background refresh of
+stale cached provider foods (30-day threshold, ≤4 per sweep, 1-hour
+retry throttle, never blocks or fails a search, never touches MealEntry
+snapshots — the test's prisma mock has no mealEntry delegate, so a
+violation throws). Recents pager (bounded pages of 12, capped offset).
+Barcode scanning via the native `BarcodeDetector` + camera preview —
+camera starts only on explicit click and always stops on close; denial
+and unsupported-browser states; manual digit entry always available and
+running the same OFF lookup path; no image ever leaves the device and
+the UI says so. `scripts/smoke-food-providers.mjs` is the live smoke
+test for a networked machine — **no live provider call succeeded from
+this sandbox (CONNECT 403), and none is claimed**; the script was run
+here and fails gracefully and honestly.
+
+### Workout sessions (parallel workstream, reviewed & verified)
+
+Session default-rest editor (wiring the previously-UI-less
+`setSessionRest`, verified ownership-scoped) and per-exercise rest
+override (stored on the exercise's sets; timer precedence: set rest over
+session default). Rest-timer completion cue: always an in-app
+toast/aria-live announcement, browser Notification only when permission
+was already granted, an enable affordance otherwise — the timer stays
+derived (no stored ticking state). Progression suggestions from the
+user's own last completed performance (+2.5 kg only when every set hit
+target at uniform weight, otherwise repeat; none for bodyweight/duration
+work or missing data), labelled as estimates with an explicit
+not-professional-advice disclaimer, applied only on explicit
+confirmation and only to outstanding sets. Superset/circuit grouping in
+templates (additive `group` key), round-robin set interleaving, blocks
+in the panel, group-aware rest (none inside a round, full rest when the
+round completes, out-of-order ticking handled), a new template editor
+dialog (none existed), byte-for-byte backward compatibility for
+ungrouped templates pinned by tests. tests/session.test.ts: 62 → 98.
+
+### Planner conflicts (parallel workstream, reviewed & verified)
+
+Conflict indicators on the timeline (amber edge + triangle + tooltip +
+sr-only label), week view (column header count + marked cards) and month
+view (dot with accessible label) — all computed by the one existing
+`findConflicts`. `moveScheduleItem` now pre-checks: a move that would
+overlap returns `status: "conflict"` writing nothing, and the UI offers
+a nonblocking "Move anyway" toast (drag reverts optimistically; a second
+call with `confirm: true` proceeds — deliberate double-booking is one
+extra click, never blocked). No-op moves and untimed/all-day moves are
+never intercepted; endpoint-touching/zero-length false-positive
+protections re-asserted. tests/planner.test.ts: 28 → 41. Browser-verified
+after integration: indicators visible in all three views with zero
+console errors.
+
+### PostgreSQL integration tests (parallel workstream)
+
+Seven new files: the three data backfills proven idempotent by full-row
+snapshots; routine idempotency end to end (duplicate detection, ordinal
+2 on deliberate re-apply, P2002 on forced duplicates); meal idempotency
+by key; reminder exactly-once ledger (cross-user same-key allowed,
+replay never advances twice, 7-day sweep scoped to the caller); NULLS
+DISTINCT tripwires for every nullable unique the app relies on;
+overlapping health-export re-import updating shared days in place with
+manual rows byte-identical throughout; and current-user/allowlist
+behaviour incl. live revocation. **Integration total: 85 tests, 11
+files, all passing** via `npm run test:integration`.
+
+### E2E/rendering suite (parallel workstream)
+
+Committed Playwright suite (`playwright.config.ts`, `tests/e2e/`,
+`npm run test:e2e`; chromium from the preinstalled browsers, no
+downloads; storage-state sign-in via the dev form). Covers: signed-out
+redirects, unauthorized-email refusal, shell + sign-out, surface
+postures (read-only dashboard vs interactive Today vs planner
+affordances), the loading skeleton (made deterministic by holding the
+RSC response), dialog focus trapping, 404 handling, health source
+labels, live session start/discard, responsive overflow at 900/1280 px,
+and reduced-motion. **After integration: 25 passed, 1 skipped** — the
+skip is a deliberate `test.fixme` documenting a real gap (controlled
+Radix dialogs without a `DialogTrigger` drop focus to `<body>` on close;
+listed as follow-up). The suite also surfaced a real app bug: a
+focus-triggered reminder-feed refresh can abort an in-flight toggle
+action's response on /today (documented in the spec; workaround in
+place there).
+
+### ESLint
+
+ESLint 9 flat config (`eslint.config.mjs`): `next/core-web-vitals` +
+`next/typescript` via the compat bridge, an `_`-prefix convention for
+deliberately unused values, and a scoped service-worker override —
+no rule disabled repo-wide. `npm run lint` is noninteractive and
+**passes with zero problems** after fixing all 16 genuine findings
+(dead imports/variables across 12 files, an accumulated-but-never-read
+counter, a `require()` in tailwind.config, a stale eslint-disable).
+Lint joins CI in Phase 27.
+
+### Verification (integrated tree)
+
+`npm run lint` clean · typecheck clean · **unit 673/673** ·
+**integration 85/85** · **e2e 25 passed / 1 documented skip** · build
+clean · targeted browser pass over the new features (planner conflict
+indicators in all three views, template dialog with grouping, barcode
+dialog with manual fallback and on-device copy) — zero console errors.
+
+---
+
+## Phase 25 — production security
+
+* **Headers** (next.config, verified live on the running server):
+  a same-origin Content Security Policy (`default-src 'self'`; inline
+  script/style allowed for Next hydration and Tailwind — documented, with
+  nonce-based CSP noted as a possible hardening step; `worker-src 'self'
+  blob:` for the health-import worker; `frame-ancestors 'none'`;
+  `form-action 'self'`; `object-src 'none'`), `X-Content-Type-Options:
+  nosniff`, `X-Frame-Options: DENY`, `Referrer-Policy:
+  strict-origin-when-cross-origin`, `Permissions-Policy` denying
+  everything except same-origin camera (the barcode scanner), and
+  production-only `Strict-Transport-Security` (2 years,
+  includeSubDomains). Dynamic pages already carry `Cache-Control:
+  private, no-cache, no-store` — verified. **The full e2e suite passes
+  under the CSP** (auth, dialogs, charts, camera dialog unaffected).
+* **Error handling**: raw error text no longer reaches a browser — the
+  two passthrough sites (backup import failure, health-import batch
+  error) now log server-side under a short reference id
+  (`src/server/safe-error.ts`, message text only, never payloads) and
+  send the user only the reference. `global-error.tsx` added as the
+  static last-resort boundary; `(app)/error.tsx` was Phase 23.
+* **Health endpoint**: `/api/health` — `SELECT 1` against the database,
+  `{status: "ok"}` or 503, nothing else revealed; public for uptime
+  monitors.
+* **Upload/import protection** (mostly established in earlier phases,
+  now completed): authentication + ownership everywhere, 16 MB action
+  body ceiling, bounded sequence-numbered chunks with server
+  revalidation, zod type validation, transaction boundaries with
+  timeouts, and a new cap of 3 concurrent uploading import sessions per
+  user. Rate limiting beyond that is deliberately platform-level: this
+  is a private allowlisted app whose only authenticated users are the
+  owner's own accounts (documented in the security guide).
+* **Privacy**: no third-party analytics of any kind; the client-bundle
+  scan finds no secret names, no database URL, no provider hosts and no
+  tracking hosts (only library-documentation URLs inside vendored code).
+  Prisma's optional query log stays parameter-free by construction.
+* **Cookies**: Auth.js issues `__Secure-`-prefixed, HttpOnly, SameSite
+  Lax session cookies on HTTPS automatically — appropriate for the OAuth
+  redirect flow.
+
+Verified: headers present on live responses, `/api/health` ok, the cron
+endpoint fails closed (503 unconfigured / 401 wrong secret), e2e 25
+passed / 1 documented skip under the CSP, lint and typecheck clean.
+
+---
+
+## Phase 27 — CI, dependency audit, final acceptance
+
+### GitHub Actions (`.github/workflows/ci.yml`)
+
+Two jobs, no secrets anywhere (all values are deliberately fake; nothing
+is exposed to pull requests):
+
+* **checks** — npm ci, prisma generate, ESLint, type check, unit tests,
+  the full PostgreSQL integration suite against a disposable service
+  container, migration validation (`migrate deploy` from empty **and**
+  `migrate diff --exit-code` proving migrations ≡ schema), production
+  build.
+* **e2e** — migrations, build, server start (waiting on `/api/health`),
+  the Playwright suite with the dev sign-in enabled; failure traces
+  uploaded as artifacts. The one spec needing a pre-seeded Apple Health
+  batch is skipped in CI via `CI_SKIP_SEEDED` (visible in the config,
+  not silently).
+
+### Dependency audit — reviewed individually, no forced fix
+
+`npm audit`: 13 findings (12 high, 1 moderate), reducing to **two root
+causes, neither reachable in this app's production runtime**:
+
+1. **`brace-expansion` DoS** (unbounded expansion → OOM) via `minimatch`
+   under the ESLint tool-chain — **development-only**; it never ships and
+   only runs on developer machines/CI against our own glob patterns.
+   `npm audit fix` (non-forced) changes nothing; forcing a cross-major
+   override risks breaking the linter for zero production gain.
+2. **`postcss` (XSS in stringified output; sourceMappingURL file read)
+   and `sharp`/libvips CVEs vendored inside `next@15.5.22`** — postcss
+   runs at build time against this repo's own CSS only, and sharp is
+   `next/image`'s optimizer, which this app never uses (no `next/image`
+   anywhere — verified). **No patched 15.x exists** (15.5.22 is the
+   newest 15); the only "fix" is the next major (16.x), a breaking
+   upgrade this hardening pass deliberately does not take.
+   `npm audit fix --force` would install a broken downgrade and was not
+   run.
+
+**Residual risk statement:** no production code path reaches any of the
+flagged code. Revisit trigger: the Next 16 upgrade, or a 15.x patch
+release. (Full details: this section + `npm audit` output.)
+
+### Final acceptance suite (all actually executed, in order)
+
+* ESLint **clean** · type check **clean** · unit **673/673** ·
+  PostgreSQL integration **85/85** · Playwright e2e **25 passed /
+  1 documented fixme** · production build **clean**.
+* Production migrations applied to a **freshly created empty database**
+  + data backfills run cleanly on top.
+* **axe WCAG 2 A+AA: 0 violations on all 11 routes** — the audit caught
+  one real regression (the timeline "now" chip, white on red-500 at
+  10 px = 3.76:1), fixed to red-600.
+* **Zero browser-console errors on all 10 app routes** — this sweep
+  caught one real hydration bug (the new push panel read `window` during
+  render), fixed by deciding support after mount.
+* Secret-leak scan over tracked files: clean. Tracked-file scan: no
+  `.env`, database, backup JSON, health export, key or credential
+  tracked. Client-bundle scan (Phase 25): no secrets, no third-party
+  hosts.
+* Cross-user security: the 20-test isolation suite plus ownership tests
+  across backup, health sessions and push — all green (part of the 85).
+* Live USDA / Open Food Facts: **not run — impossible from this sandbox**
+  (both hosts blocked at CONNECT); `scripts/smoke-food-providers.mjs` is
+  the one-command check for a networked machine.
+* Web Push end-to-end delivery: **not run — needs HTTPS + a reachable
+  push service**; verified to the transport boundary with the transport
+  mocked.
+
+---
+
+## Phase 26 + 28 — deployment configuration, documentation, handoff
+
+**Deployment status, stated plainly: no deployment was performed and none
+is claimed.** This environment holds no Vercel credentials (verified),
+so the deliverable is a demonstrably deployment-ready repository plus the
+exact human path:
+
+* `vercel.json` (cron for the reminder runner), a `vercel-build` script
+  that applies committed migrations on every deploy through
+  `DIRECT_DATABASE_URL`, `.env.example` documenting every variable by
+  name, `/api/health` for uptime checks, CI green on every push.
+* `docs/deployment-guide.md` is the master runbook: create the Vercel
+  project → create a colocated managed PostgreSQL database → set the
+  environment variables → deploy a **preview** → run the smoke checklist
+  (sign-in, unauthorized-email rejection, every route, backup
+  export/preview, synthetic imports, sign-out) → deploy production →
+  verify HTTPS, the allowlist, and that no demo data loaded.
+
+**Documentation** (written for a nontechnical owner, in `docs/`):
+deployment guide, Google OAuth setup (exact redirect URIs), local
+development, **migrating from the local app** (export → preview →
+pre-import backup → import → verification report → count confirmation →
+failed-import recovery → returning to the pre-web SQLite version by
+checkpoint hash), backup & recovery, health-import privacy, Web Push
+setup, security & privacy (including the three access off-switches and
+secret rotation), troubleshooting, and performance measurement. README
+gained a Guides table and had its stale claims corrected surgically.
+
+### Session epilogue — honest wrap-up
+
+* PR #8 (Phases 18–23 + Web Push) was merged to `main` by the owner
+  mid-session; the remaining phases (24 completion, 25–28) live on the
+  restarted branch under PR #9.
+* Everything in the completion checklist is done except the two items
+  that physically require the outside world, both stated wherever they
+  appear: a live food-provider request (network-blocked here; one-command
+  smoke script provided) and real push delivery over HTTPS (transport
+  verified with a mock; setup guide provided). Deployment itself is the
+  human credential step, with the runbook written.

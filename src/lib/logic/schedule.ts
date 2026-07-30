@@ -384,7 +384,7 @@ const NEUTRAL: Pick<Occurrence, "active" | "flexible" | "breaksStreakIfMissed" |
 export function getOccurrenceForDate(
   item: SchedulableItem,
   date: DayKey,
-  settings: ScheduleSettings,
+  _settings: ScheduleSettings,
 ): Occurrence {
   const base = { date, rule: null, override: null, timeMinute: null, daypart: "anytime" };
 

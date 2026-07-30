@@ -133,6 +133,15 @@ export async function createSession(
 
   await sweepExpiredSessions();
 
+  // A user has no honest reason to hold many parallel uploads; the cap keeps
+  // a runaway client from filling the staging table.
+  const active = await prisma.healthImportSession.count({
+    where: { userId, status: "uploading", expiresAt: { gt: new Date() } },
+  });
+  if (active >= 3) {
+    return { ok: false, error: "Too many imports in flight — cancel one or wait for it to expire." };
+  }
+
   // Base filename only — never a path from the user's machine.
   const fileName = parsed.data.fileName.split(/[\\/]/).pop() ?? "import";
 

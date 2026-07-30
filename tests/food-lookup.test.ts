@@ -12,21 +12,33 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 const foodItem = {
   findMany: vi.fn(),
   findUnique: vi.fn(),
+  findFirst: vi.fn(),
   upsert: vi.fn(),
   create: vi.fn(),
 };
-const favoriteItem = { findMany: vi.fn() };
+const favoriteItem = { findMany: vi.fn(), findUnique: vi.fn() };
 
 vi.mock("@/lib/db", () => ({
   prisma: { foodItem, favoriteItem },
   getCurrentUser: vi.fn(),
 }));
 
-const { searchAllFoods, getCachedFood, cacheFood, rowToNormalizedFood, clearFoodSearchMemo } =
-  await import("@/server/food");
+const {
+  searchAllFoods,
+  getCachedFood,
+  cacheFood,
+  lookupFoodByBarcode,
+  rowToNormalizedFood,
+  clearFoodSearchMemo,
+  clearFoodRefreshState,
+} = await import("@/server/food");
 
 import { usdaSearchResponse } from "./fixtures/usda";
-import { offSearchResponse } from "./fixtures/openfoodfacts";
+import {
+  offMissingProductResponse,
+  offProductResponse,
+  offSearchResponse,
+} from "./fixtures/openfoodfacts";
 
 const USER = "user-1";
 
@@ -106,9 +118,12 @@ function stubFetch(handler: (url: string) => { status?: number; json?: unknown }
 beforeEach(() => {
   vi.clearAllMocks();
   clearFoodSearchMemo();
+  clearFoodRefreshState();
   process.env.USDA_FDC_API_KEY = "test-key";
   favoriteItem.findMany.mockResolvedValue([]);
+  favoriteItem.findUnique.mockResolvedValue(null);
   foodItem.findMany.mockResolvedValue([]);
+  foodItem.findFirst.mockResolvedValue(null);
 });
 
 afterEach(() => {
@@ -319,6 +334,120 @@ describe("avoiding repeat provider calls", () => {
     await searchAllFoods(USER, "oats");
 
     expect(fetchCalls.length).toBeGreaterThan(after);
+  });
+});
+
+// ---------------------------------------------------------------------------
+
+describe("provider quotas", () => {
+  /** A response generous enough to fill the cap on its own. */
+  function manyUsdaFoods(count: number) {
+    return {
+      foods: Array.from({ length: count }, (_, index) => ({
+        fdcId: 500000 + index,
+        description: `USDA food ${index}`,
+        dataType: "SR Legacy",
+        foodNutrients: [{ nutrientId: 1008, value: 100 }],
+      })),
+    };
+  }
+
+  function manyOffProducts(count: number) {
+    return {
+      products: Array.from({ length: count }, (_, index) => ({
+        code: String(40000000000 + index),
+        product_name: `OFF food ${index}`,
+        nutriments: {
+          "energy-kcal_100g": 100,
+          proteins_100g: 5,
+          carbohydrates_100g: 10,
+          fat_100g: 2,
+        },
+      })),
+    };
+  }
+
+  it("splits the remaining slots evenly when both providers are generous", async () => {
+    stubFetch((url) =>
+      url.includes("openfoodfacts") ? { json: manyOffProducts(20) } : { json: manyUsdaFoods(20) },
+    );
+
+    const outcome = await searchAllFoods(USER, "food", { limit: 10 });
+
+    expect(outcome.results).toHaveLength(10);
+    expect(outcome.results.filter((food) => food.provider === "usda")).toHaveLength(5);
+    expect(outcome.results.filter((food) => food.provider === "off")).toHaveLength(5);
+  });
+
+  it("hands a short provider's unused share to the other", async () => {
+    // Before quotas, 20 USDA hits would crowd both OFF results out of a small cap.
+    stubFetch((url) =>
+      url.includes("openfoodfacts") ? { json: offSearchResponse } : { json: manyUsdaFoods(20) },
+    );
+
+    const outcome = await searchAllFoods(USER, "food", { limit: 10 });
+
+    expect(outcome.results).toHaveLength(10);
+    expect(outcome.results.filter((food) => food.provider === "off")).toHaveLength(2);
+    expect(outcome.results.filter((food) => food.provider === "usda")).toHaveLength(8);
+  });
+
+  it("keeps local rows first and blends providers into what is left", async () => {
+    foodItem.findMany.mockResolvedValue(
+      Array.from({ length: 4 }, (_, index) => row({ id: `l${index}`, name: `Food ${index}` })),
+    );
+    stubFetch((url) =>
+      url.includes("openfoodfacts") ? { json: manyOffProducts(20) } : { json: manyUsdaFoods(20) },
+    );
+
+    const outcome = await searchAllFoods(USER, "food", { limit: 10, forceRemote: true });
+
+    expect(outcome.results).toHaveLength(10);
+    expect(outcome.results.slice(0, 4).every((food) => food.id?.startsWith("l"))).toBe(true);
+    expect(outcome.results.filter((food) => food.provider === "usda")).toHaveLength(3);
+    expect(outcome.results.filter((food) => food.provider === "off")).toHaveLength(3);
+  });
+});
+
+// ---------------------------------------------------------------------------
+
+describe("barcode lookup", () => {
+  it("answers from a local row without asking the network", async () => {
+    foodItem.findFirst.mockResolvedValue(
+      row({ id: "loc", provider: "off", externalId: "3017620422003", cached: true }),
+    );
+    stubFetch(() => ({ json: offProductResponse }));
+
+    const outcome = await lookupFoodByBarcode(USER, "3017620422003");
+
+    expect(outcome.food?.id).toBe("loc");
+    expect(outcome.failure).toBeNull();
+    expect(fetchCalls).toHaveLength(0);
+  });
+
+  it("asks Open Food Facts when no local row matches", async () => {
+    stubFetch(() => ({ json: offProductResponse }));
+
+    const outcome = await lookupFoodByBarcode(USER, "3017620422003");
+
+    expect(outcome.food).toMatchObject({ provider: "off", name: "Nutella", origin: "off" });
+    expect(fetchCalls.some((url) => url.includes("/api/v2/product/3017620422003"))).toBe(true);
+  });
+
+  it("reports not-found as a null food with no failure", async () => {
+    stubFetch(() => ({ json: offMissingProductResponse }));
+
+    const outcome = await lookupFoodByBarcode(USER, "0000000000000");
+    expect(outcome.food).toBeNull();
+    expect(outcome.failure).toBeNull();
+  });
+
+  it("reports an outage as a failure, not a missing product", async () => {
+    stubFetch(() => ({ status: 503 }));
+
+    const outcome = await lookupFoodByBarcode(USER, "3017620422003");
+    expect(outcome.food).toBeNull();
+    expect(outcome.failure?.reason).toBe("unavailable");
   });
 });
 

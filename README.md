@@ -4,8 +4,9 @@ A private personal operating system: **daily planner, habit tracker, nutrition t
 workout tracker and health dashboard** in one web app.
 
 It stores everything in a private PostgreSQL database you own, and never sends your data
-to anyone else. (The original local-only SQLite version is preserved at git tag
-`preview3-complete-before-web`, commit `f5b4fe1` — see `docs/` for how to return to it.)
+to anyone else. (The original local-only SQLite version is preserved at commit
+`f5b4fe1d950abf56cc11ae97d2750ac714d365fb` — tagged `preview3-complete-before-web` locally; the
+hash is the authoritative reference — see `docs/migrating-from-local.md` for how to return to it.)
 It is built to answer six questions every day:
 
 * What do I need to do today?
@@ -16,6 +17,23 @@ It is built to answer six questions every day:
 * What should I focus on next?
 
 ---
+
+## Guides
+
+Step-by-step documentation lives in `docs/`, written to be followed exactly:
+
+| Guide | What it covers |
+| --- | --- |
+| [`docs/deployment-guide.md`](docs/deployment-guide.md) | Deploying to Vercel with a managed PostgreSQL database — the master guide |
+| [`docs/google-oauth-setup.md`](docs/google-oauth-setup.md) | Creating the Google sign-in credentials |
+| [`docs/local-development.md`](docs/local-development.md) | Running and testing the app on your own machine |
+| [`docs/migrating-from-local.md`](docs/migrating-from-local.md) | Moving your data from the local app to the hosted site — and back |
+| [`docs/backup-and-recovery.md`](docs/backup-and-recovery.md) | The backup habit, what the file contains, and recovery |
+| [`docs/health-import-privacy.md`](docs/health-import-privacy.md) | What a health import sends, and what never leaves your device |
+| [`docs/web-push-setup.md`](docs/web-push-setup.md) | Background reminder notifications (Web Push) |
+| [`docs/security-and-privacy.md`](docs/security-and-privacy.md) | The allowlist, isolation guarantees, headers, logs, and the off switches |
+| [`docs/troubleshooting.md`](docs/troubleshooting.md) | Symptoms → causes → fixes |
+| [`docs/performance-measurement.md`](docs/performance-measurement.md) | How the performance numbers were measured, and how to repeat them |
 
 ## Quick start
 
@@ -46,7 +64,10 @@ in-app (only while the account is empty, so demo history can never mix into real
 | `npm run dev` | Dev server with hot reload |
 | `npm run build` / `npm start` | Production build and server |
 | `npm test` | Run the unit test suite (Vitest) |
+| `npm run test:integration` | Database-backed tests against the disposable test database |
+| `npm run test:e2e` | Playwright browser tests (needs the built server running — see `docs/local-development.md`) |
 | `npm run typecheck` | TypeScript, no emit |
+| `npm run lint` | ESLint (kept at zero problems; enforced in CI) |
 | `npm run db:studio` | Prisma Studio — browse/edit the database directly |
 | `npm run db:seed` | Re-seed sample data (refuses to run against a non-local database) |
 | `npm run db:migrate` | Create + apply a schema migration locally (`prisma migrate dev`) |
@@ -330,12 +351,14 @@ if two surfaces ever claim the same job.
 * **Export/import**: full JSON backup, per-table CSV export, and JSON restore in merge or replace
   mode.
 * **Dark mode**, following the system by default.
-* **Reminders**: desktop notifications and toasts while the app is open — and
-  **schedule-aware**: nothing fires on a rest day, for something not scheduled today, for an
-  archived habit, for an item already completed / excused / skipped, or for a times-per-week
-  habit whose weekly target is already met. Every occurrence is delivered exactly once (a ledger
-  keyed per occurrence survives reloads and multiple tabs), and where browser notifications are
-  blocked or unsupported, the in-app toast still appears.
+* **Reminders**: desktop notifications and toasts while the app is open — and, when Web Push is
+  configured (`docs/web-push-setup.md`), real push notifications on opted-in devices with **no tab
+  open at all**. Either way they are **schedule-aware**: nothing fires on a rest day, for something
+  not scheduled today, for an archived habit, for an item already completed / excused / skipped, or
+  for a times-per-week habit whose weekly target is already met. Every occurrence is delivered
+  exactly once — a ledger keyed per occurrence is shared by open tabs *and* the push runner, so no
+  combination of tabs and devices double-delivers — and where browser notifications are blocked or
+  unsupported, the in-app toast still appears.
 
 ---
 
@@ -529,14 +552,19 @@ parser is missing.
 
 These were decisions the brief left open. They're all reversible.
 
-1. **Single user, no auth.** The app runs on your machine. `getCurrentUser()` in `src/lib/db.ts` is
-   the one seam where multi-user support would slot in — every query and action already takes a
-   `userId`.
+1. **Private, not public.** Originally "single user, no auth"; the hosted version signs in with
+   Google (Auth.js) behind a server-side email allowlist (`ALLOWED_EMAILS`) — no public
+   registration, and an unlisted email is refused even after Google authenticates it. Every account
+   is fully isolated: `getCurrentUser()` in `src/lib/db.ts` — the one seam every query and action
+   goes through — now resolves the authenticated session, and a database-backed cross-user test
+   suite asserts the isolation.
 2. **No nutrition API.** See above. `FoodItem` rows with `userId = null` are the bundled database;
    your custom foods carry your `userId`.
-3. **Reminders only fire while a tab is open.** A local-first app with no server genuinely cannot
-   deliver a background notification. The Settings page says so plainly rather than implying
-   otherwise; a service worker could be added later.
+3. **Reminders fire while a tab is open — and in the background once Web Push is configured.**
+   The original local-first app genuinely could not deliver a background notification; the hosted
+   version can, via a service worker and a scheduled runner (`docs/web-push-setup.md`), on devices
+   that opted in. Without that setup, in-tab reminders remain the honest baseline and the Settings
+   page says which situation you are in.
 4. **Weights are stored in the unit you read them in**, with the unit recorded per row, so
    converting later is unambiguous. Workout set weights are always kilograms internally.
 5. **Recurrence is deliberately simpler than RFC 5545** — daily/weekly/monthly with an interval,
@@ -545,10 +573,11 @@ These were decisions the brief left open. They're all reversible.
 7. **Your timezone decides what "today" is**, not the machine's clock. It is detected from the
    browser on first run and changeable in Settings. Calendar days are stored as timezone-free
    `YYYY-MM-DD` keys and converted only at the edges.
-8. **Schema changes use `prisma db push` plus idempotent data backfills** (`npm run db:migrate`)
-   rather than `prisma migrate`, because the database is a local file you own and `migrate dev`
-   can offer to reset it. Every backfill checks for its own prior output, so running it twice
-   changes nothing.
+8. **Schema changes are committed migrations plus idempotent data backfills.** The SQLite era used
+   `prisma db push`; the PostgreSQL version has a real migration history (`prisma/migrations/`),
+   applied with `npm run db:migrate` locally and `prisma migrate deploy` on every hosted deploy.
+   The TypeScript backfills (`npm run db:backfill`) still check for their own prior output, so
+   running them twice changes nothing.
 6. **The seeded profile is fictional** and exists purely to make the app look real on first run.
    Reset it from Settings when you're ready to use it for yourself.
 
@@ -557,10 +586,13 @@ These were decisions the brief left open. They're all reversible.
 ## Testing
 
 ```bash
-npm test
+npm test               # unit — pure logic, no database needed
+npm run test:integration   # database-backed, against the disposable test database
+npm run test:e2e       # Playwright browser suite (against a running production build)
 ```
 
-225 tests across ten suites, covering the logic that would be expensive to get wrong:
+Three suites, each doing the job the others can't. The **unit suite** (673 tests) covers the pure
+logic that would be expensive to get wrong:
 
 * **Scheduling** — every mode, both week-start settings, DST, leap years, month and year
   boundaries, all five override kinds, effective-dated versions, and every streak rule.
@@ -580,8 +612,18 @@ npm test
 * Plus nutrition serving maths, the natural-language quick-add parser, planner recurrence, and
   day-key/time handling including a DST boundary.
 
-The tests are pure — no database, no fixtures, no mocking — because all the logic they cover lives
-in `src/lib/logic`.
+The unit tests are pure — no database, no fixtures, no mocking — because all the logic they cover
+lives in `src/lib/logic`.
+
+The **integration suite** (85 tests) runs against a real PostgreSQL — always the disposable
+`personal_os_test` database, reset and re-migrated from zero each run — and covers what pure tests
+cannot: unique constraints, transaction rollback, backup import isolation, health-import session
+ownership, the reminder exactly-once ledger, and a cross-user suite asserting that every major
+operation against another account is refused *and* leaves the victim's row unchanged. The **e2e
+suite** drives the built app in a real browser: signed-out redirects, unauthorized-email refusal,
+surface postures, dialogs, responsive overflow and reduced motion. CI (`.github/workflows/ci.yml`)
+runs lint, typecheck, all three suites, migration validation and the production build on every push
+and pull request.
 
 ---
 
@@ -589,19 +631,22 @@ in `src/lib/logic`.
 
 Three options, in increasing order of effort:
 
-1. **Settings → Export → Full JSON backup.** Restorable back into the app, matched by id so
-   re-importing is never a duplicate.
+1. **Settings → Export → Full JSON backup.** Restorable back into the app; re-importing the same
+   file twice never creates duplicates.
 2. **Settings → Export → CSV**, per table, for spreadsheets.
-3. **A database dump** (`pg_dump`) of your PostgreSQL database, if you run it yourself.
+3. **A database-level backup** — your managed database provider's own backups/point-in-time
+   restore, or `pg_dump` if you run PostgreSQL yourself.
+
+What the file contains, merge vs replace, the verification report and every recovery scenario:
+[`docs/backup-and-recovery.md`](docs/backup-and-recovery.md).
 
 ---
 
-## Deploying later
+## Deploying
 
-The app is built for local desktop use, but nothing blocks deployment:
-
-* Change `datasource db { provider }` in `prisma/schema.prisma` to `postgresql` and point
-  `DATABASE_URL` at a managed database.
-* Add authentication and replace the body of `getCurrentUser()`.
-
-No other code needs to change — every query and mutation is already scoped by `userId`.
+The app is deployable as a private hosted website: Google sign-in behind a server-side email
+allowlist, a committed PostgreSQL migration history applied automatically on every deploy, Vercel
+configuration included (`vercel.json` schedules the background-reminder runner), and a public
+`/api/health` endpoint for uptime checks. The exact step-by-step path — Vercel project, managed
+database, environment variables, a preview deployment with a smoke checklist, then production — is
+[`docs/deployment-guide.md`](docs/deployment-guide.md).

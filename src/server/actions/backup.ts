@@ -11,6 +11,7 @@ import {
 } from "@/lib/backup-format";
 import { getCurrentUser, prisma } from "@/lib/db";
 import { restoreBackupForUser, type ImportReport } from "@/server/backup-restore";
+import { logRedactedError } from "@/server/safe-error";
 import { fail, succeed, type ActionResult } from "@/lib/validation";
 import { rebuildSummaries } from "@/server/summaries";
 import { today } from "@/lib/date";
@@ -280,9 +281,9 @@ export async function importBackup(
   try {
     ({ report } = await restoreBackupForUser(user.id, file, mode));
   } catch (error) {
+    const reference = logRedactedError("backup-import", error);
     return fail(
-      "The import failed and was rolled back — nothing was changed. " +
-        (error instanceof Error ? error.message.slice(0, 300) : ""),
+      `The import failed and was rolled back — nothing was changed. (Reference ${reference})`,
     );
   }
 

@@ -15,7 +15,7 @@ import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { MEAL_TYPE_META, WORKOUT_TYPE_META, type MealType, type WorkoutType } from "@/lib/enums";
 import { formatDuration, isDayKey, relativeDayLabel } from "@/lib/date";
-import { SURFACE_ROLES, surfaceHref } from "@/lib/logic/surfaces";
+import { surfaceHref } from "@/lib/logic/surfaces";
 import { cn, formatNumber, pct } from "@/lib/utils";
 import {
   getToday, getDayOverview } from "@/server/queries";
@@ -39,7 +39,6 @@ export default async function TodayPage({
 
   const calorieGoal = goals.get("calories")?.target ?? 0;
   const proteinGoal = goals.get("protein")?.target ?? 0;
-  const workoutGoal = goals.get("workouts_per_week")?.target ?? 0;
 
   // One score from the one service — the same object the Dashboard, the
   // calendar detail and Insights read for this date.

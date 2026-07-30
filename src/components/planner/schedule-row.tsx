@@ -30,7 +30,9 @@ import {
 } from "@/components/ui/dropdown-menu";
 import { CATEGORY_META, PRIORITY_META, type Priority, type ScheduleCategory } from "@/lib/enums";
 import { formatTimeRange, shiftDay } from "@/lib/date";
+import { summarizeConflicts } from "@/lib/logic/planner";
 import { cn } from "@/lib/utils";
+import { confirmMoveToast } from "@/components/planner/move-conflict";
 import {
   deleteScheduleItem,
   moveScheduleItem,
@@ -93,12 +95,7 @@ export function ScheduleRow({
   const recurring = Boolean(item.recurrenceRule || item.seriesId);
 
   // A warning, never a block — double-booking yourself is sometimes deliberate.
-  const conflict =
-    conflictsWith && conflictsWith.length > 0
-      ? conflictsWith.length === 1
-        ? conflictsWith[0]
-        : `${conflictsWith[0]} and ${conflictsWith.length - 1} more`
-      : null;
+  const conflict = conflictsWith ? summarizeConflicts(conflictsWith) : null;
 
   const act = (fn: () => Promise<{ ok: boolean; error?: string }>, message?: string) =>
     startTransition(async () => {
@@ -109,6 +106,23 @@ export function ScheduleRow({
       } else {
         toast.error(result.error ?? "Something went wrong");
       }
+    });
+
+  // "Push to tomorrow" can land on an occupied slot. The action reports the
+  // clash without writing; the toast's "Move anyway" repeats it confirmed.
+  const pushToTomorrow = (confirm = false) =>
+    startTransition(async () => {
+      const result = await moveScheduleItem(item.id, shiftDay(item.date, 1), undefined, { confirm });
+      if (!result.ok) {
+        toast.error(result.error ?? "Something went wrong");
+        return;
+      }
+      if (result.data.status === "conflict") {
+        confirmMoveToast(result.data.conflicts, () => pushToTomorrow(true));
+        return;
+      }
+      toast.success("Moved to tomorrow");
+      router.refresh();
     });
 
   return (
@@ -208,9 +222,7 @@ export function ScheduleRow({
               <Pencil /> Edit
             </DropdownMenuItem>
           )}
-          <DropdownMenuItem
-            onClick={() => act(() => moveScheduleItem(item.id, shiftDay(item.date, 1)), "Moved to tomorrow")}
-          >
+          <DropdownMenuItem onClick={() => pushToTomorrow()}>
             <ArrowRight /> Push to tomorrow
           </DropdownMenuItem>
           <DropdownMenuItem

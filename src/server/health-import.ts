@@ -10,6 +10,7 @@ import type {
   RawWorkout,
 } from "@/lib/logic/health-import/types";
 import { assembleValidatedPlan } from "@/server/health-import-session";
+import { logRedactedError } from "@/server/safe-error";
 import { rebuildSummariesForDates } from "@/server/summaries";
 
 /**
@@ -495,7 +496,7 @@ export async function confirmHealthImport(
           fileName: staged.fileName,
           fileSize: staged.fileSize,
           status: "failed",
-          error: error instanceof Error ? error.message.slice(0, 500) : "Unknown error",
+          error: `Import failed (reference ${logRedactedError("health-import", error)})`,
           dateFrom,
           dateTo,
           categories: JSON.stringify([...selected].sort()),

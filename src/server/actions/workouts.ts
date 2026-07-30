@@ -214,6 +214,43 @@ export async function deleteWorkoutTemplate(id: string): Promise<ActionResult<nu
   return succeed(null);
 }
 
+/** One template with its exercises parsed, for the editor. */
+export async function getWorkoutTemplate(id: string): Promise<
+  ActionResult<{
+    id: string;
+    name: string;
+    type: string;
+    description: string | null;
+    durationMin: number;
+    intensity: string;
+    exercises: Array<TemplateExercise & { group?: string }>;
+  }>
+> {
+  const user = await getCurrentUser();
+  const template = await prisma.workoutTemplate.findFirst({
+    where: { id, userId: user.id },
+  });
+  if (!template) return fail("Template not found");
+
+  let exercises: Array<TemplateExercise & { group?: string }> = [];
+  try {
+    const parsed = JSON.parse(template.exercises);
+    if (Array.isArray(parsed)) exercises = parsed;
+  } catch {
+    exercises = [];
+  }
+
+  return succeed({
+    id: template.id,
+    name: template.name,
+    type: template.type,
+    description: template.description,
+    durationMin: template.durationMin,
+    intensity: template.intensity,
+    exercises,
+  });
+}
+
 /** Turn a template into a real (completed) workout on `date`, in one click. */
 export async function startWorkoutFromTemplate(
   templateId: string,

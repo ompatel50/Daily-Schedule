@@ -9,6 +9,7 @@ import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { EmptyState } from "@/components/shared/empty-state";
 import { SectionCard } from "@/components/shared/section-card";
+import { TemplateDialog, type TemplateDraft } from "@/components/workouts/template-dialog";
 import { WorkoutDialog, type WorkoutDraft } from "@/components/workouts/workout-dialog";
 import { WORKOUT_TYPE_META, type WorkoutType } from "@/lib/enums";
 import { formatDay, formatDuration, relativeDayLabel } from "@/lib/date";
@@ -16,6 +17,7 @@ import { useUIStore } from "@/store/ui-store";
 import { formatPace, pacePerKm, totalVolume } from "@/lib/logic/workouts";
 import { cn, formatNumber } from "@/lib/utils";
 import { startSession } from "@/server/actions/session";
+import { getWorkoutTemplate } from "@/server/actions/workouts";
 
 export interface WorkoutView extends WorkoutDraft {
   id: string;
@@ -58,6 +60,8 @@ export function WorkoutManager({
   const todayKey = useUIStore((state) => state.todayKey);
   const [dialogOpen, setDialogOpen] = React.useState(false);
   const [editing, setEditing] = React.useState<WorkoutDraft | null>(null);
+  const [templateDialogOpen, setTemplateDialogOpen] = React.useState(false);
+  const [editingTemplate, setEditingTemplate] = React.useState<TemplateDraft | null>(null);
   const [busy, setBusy] = React.useState<string | null>(null);
   const [, startTransition] = React.useTransition();
 
@@ -94,6 +98,36 @@ export function WorkoutManager({
     });
   }
 
+  /** The chip list carries only a summary; the editor needs the exercises. */
+  function editTemplate(template: WorkoutTemplateView) {
+    setBusy(template.id);
+    startTransition(async () => {
+      const result = await getWorkoutTemplate(template.id);
+      setBusy(null);
+      if (!result.ok) {
+        toast.error(result.error);
+        return;
+      }
+      setEditingTemplate({
+        id: result.data.id,
+        name: result.data.name,
+        type: result.data.type,
+        description: result.data.description,
+        durationMin: result.data.durationMin,
+        intensity: result.data.intensity,
+        exercises: result.data.exercises.map((row) => ({
+          exercise: row.exercise ?? "",
+          sets: row.sets || 1,
+          reps: row.reps ?? null,
+          weightKg: row.weightKg ?? null,
+          restSec: row.restSec ?? null,
+          group: typeof row.group === "string" ? row.group : "",
+        })),
+      });
+      setTemplateDialogOpen(true);
+    });
+  }
+
   /** Repeat a past workout as a session — last time's numbers as targets. */
   function repeat(workout: WorkoutView) {
     setBusy(workout.id);
@@ -124,6 +158,15 @@ export function WorkoutManager({
           }}
         >
           <Plus /> Log workout
+        </Button>
+        <Button
+          variant="outline"
+          onClick={() => {
+            setEditingTemplate(null);
+            setTemplateDialogOpen(true);
+          }}
+        >
+          <Zap /> New template
         </Button>
       </div>
 
@@ -158,6 +201,15 @@ export function WorkoutManager({
                   >
                     {busy === template.id && <Loader2 className="animate-spin" />}
                     Start
+                  </Button>
+                  <Button
+                    size="icon-sm"
+                    variant="ghost"
+                    aria-label={`Edit template ${template.name}`}
+                    disabled={busy !== null}
+                    onClick={() => editTemplate(template)}
+                  >
+                    <Pencil />
                   </Button>
                 </div>
               );
@@ -267,6 +319,13 @@ export function WorkoutManager({
         onOpenChange={setDialogOpen}
         workout={editing}
         defaultDate={date}
+        exerciseNames={exerciseNames}
+      />
+
+      <TemplateDialog
+        open={templateDialogOpen}
+        onOpenChange={setTemplateDialogOpen}
+        template={editingTemplate}
         exerciseNames={exerciseNames}
       />
     </div>

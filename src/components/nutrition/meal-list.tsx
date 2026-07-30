@@ -78,7 +78,7 @@ export function MealList({ meals }: { meals: MealView[] }) {
   const router = useRouter();
   const [editing, setEditing] = React.useState<MealEntryView | null>(null);
   const [savingTemplate, setSavingTemplate] = React.useState<MealView | null>(null);
-  const [pending, startTransition] = React.useTransition();
+  const [, startTransition] = React.useTransition();
 
   if (meals.length === 0) {
     return (

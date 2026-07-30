@@ -228,3 +228,93 @@ export function conflictsByItem(items: ConflictCandidate[]): Map<string, string[
   }
   return map;
 }
+
+/**
+ * "Deep work", or "Deep work and 2 more". The row badge, the timeline block
+ * and the move confirmation all describe a clash with the same words; null
+ * when there is nothing to say.
+ */
+export function summarizeConflicts(titles: string[]): string | null {
+  if (titles.length === 0) return null;
+  if (titles.length === 1) return titles[0];
+  return `${titles[0]} and ${titles.length - 1} more`;
+}
+
+// ---------------------------------------------------------------------------
+// Move pre-check
+// ---------------------------------------------------------------------------
+
+/** The fields of the item being moved that the decision needs. */
+export interface MoveSource {
+  id: string;
+  date: string;
+  startMinute: number | null;
+  endMinute: number | null;
+  allDay: boolean;
+  status?: string;
+}
+
+export interface MovePlan {
+  /** The span the item occupies after the move — exactly what the write sets. */
+  startMinute: number | null;
+  endMinute: number | null;
+  allDay: boolean;
+  /**
+   * Titles on the target day the moved span would overlap, earliest first.
+   * Empty means the move is clear to write without asking.
+   */
+  conflicts: string[];
+}
+
+/**
+ * Decide what a move writes and what it would land on, before anything is
+ * written.
+ *
+ * The span mirrors `moveScheduleItem`'s write: an explicit `startMinute`
+ * re-times the item keeping its duration (clamped to midnight), `undefined`
+ * keeps its time-of-day, `null` clears it to all-day.
+ *
+ * The clash test is `spansOverlap`, so everything that engine excuses —
+ * all-day items, missing or zero-length spans, touching endpoints, skipped
+ * items, the item itself — cannot flag here either. A move that leaves the
+ * item exactly where it already is reports nothing: the caller is not
+ * creating an overlap, so there is nothing to confirm — a pre-existing clash
+ * stays the badges' job.
+ */
+export function planMove({
+  item,
+  date,
+  startMinute,
+  targetItems,
+}: {
+  item: MoveSource;
+  date: string;
+  startMinute?: number | null;
+  /** Everything already on the target day; may include `item` itself. */
+  targetItems: ConflictCandidate[];
+}): MovePlan {
+  const duration =
+    item.startMinute !== null && item.endMinute !== null ? item.endMinute - item.startMinute : null;
+
+  const nextStart = startMinute === undefined ? item.startMinute : startMinute;
+  const nextEnd =
+    nextStart !== null && duration !== null ? Math.min(1439, nextStart + duration) : item.endMinute;
+
+  const span = {
+    startMinute: nextStart,
+    endMinute: nextStart === null ? null : nextEnd,
+    allDay: nextStart === null,
+  };
+
+  const unchanged =
+    date === item.date && span.startMinute === item.startMinute && span.endMinute === item.endMinute;
+  if (unchanged) return { ...span, conflicts: [] };
+
+  const moved: ConflictCandidate = { id: item.id, title: "", status: item.status, ...span };
+  const conflicts = targetItems
+    .filter((other) => spansOverlap(moved, other))
+    .sort((a, b) => (a.startMinute ?? 0) - (b.startMinute ?? 0))
+    .map((other) => other.title);
+
+  return { ...span, conflicts };
+}

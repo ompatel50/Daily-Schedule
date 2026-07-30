@@ -1,0 +1,3 @@
+# Session cookies and per-run artifacts — never committed.
+.auth/
+.output/

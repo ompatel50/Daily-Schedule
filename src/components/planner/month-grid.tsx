@@ -4,6 +4,7 @@ import Link from "next/link";
 
 import { CATEGORY_META, type ScheduleCategory } from "@/lib/enums";
 import { formatDay, isSameMonth, isToday, monthGridDays, weekdayLabelsFor } from "@/lib/date";
+import { findConflicts } from "@/lib/logic/planner";
 import { cn } from "@/lib/utils";
 import type { ScheduleRowItem } from "@/components/planner/schedule-row";
 
@@ -49,6 +50,10 @@ export function MonthGrid({
           });
           const outside = !isSameMonth(day, anchor);
           const done = dayItems.filter((item) => item.status === "done").length;
+          // Same `findConflicts` as the day list. Cells are too small for
+          // names, so a dot with a label is the whole indicator.
+          const pairs = findConflicts(dayItems).length;
+          const pairLabel = `${pairs} overlapping ${pairs === 1 ? "pair" : "pairs"} of blocks`;
 
           return (
             <Link
@@ -70,11 +75,19 @@ export function MonthGrid({
                 >
                   {formatDay(day, "d")}
                 </span>
-                {dayItems.length > 0 && (
-                  <span className="tabular text-[10px] text-muted-foreground">
-                    {done}/{dayItems.length}
-                  </span>
-                )}
+                <div className="flex items-center gap-1.5">
+                  {pairs > 0 && (
+                    <span title={pairLabel} className="flex items-center">
+                      <span className="h-1.5 w-1.5 rounded-full bg-amber-500" aria-hidden />
+                      <span className="sr-only">{pairLabel}</span>
+                    </span>
+                  )}
+                  {dayItems.length > 0 && (
+                    <span className="tabular text-[10px] text-muted-foreground">
+                      {done}/{dayItems.length}
+                    </span>
+                  )}
+                </div>
               </div>
 
               <div className="space-y-0.5">

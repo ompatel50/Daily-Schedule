@@ -191,6 +191,52 @@ export function groupByExercise(
   }));
 }
 
+export interface SessionExerciseBlock {
+  exercise: string;
+  sets: SessionSet[];
+  done: number;
+}
+
+export interface SessionGroupBlock {
+  /** Superset/circuit key; null for an exercise worked on its own. */
+  group: string | null;
+  /** "Superset A" for a pair, "Circuit B" for three or more; null when ungrouped. */
+  label: string | null;
+  exercises: SessionExerciseBlock[];
+}
+
+/**
+ * The exercise blocks, folded into superset/circuit blocks.
+ *
+ * Only *consecutive* exercises sharing a group key merge: grouped exercises are
+ * planned interleaved, so their first appearances are adjacent, and merging
+ * across a distance would display an order you are not actually working in.
+ * With no group map (or a group that ended up with one member) every exercise
+ * stands alone — exactly the pre-grouping rendering.
+ */
+export function sessionBlocks(
+  sets: SessionSet[],
+  groupOf: Record<string, string> = {},
+): SessionGroupBlock[] {
+  const blocks: SessionGroupBlock[] = [];
+  for (const entry of groupByExercise(sets)) {
+    const group = groupOf[entry.exercise] ?? null;
+    const last = blocks.at(-1);
+    if (group !== null && last && last.group === group) {
+      last.exercises.push(entry);
+      continue;
+    }
+    blocks.push({ group, label: null, exercises: [entry] });
+  }
+  return blocks.map((block) => {
+    if (block.group === null || block.exercises.length < 2) {
+      return { ...block, group: null, label: null };
+    }
+    const kind = block.exercises.length >= 3 ? "Circuit" : "Superset";
+    return { ...block, label: `${kind} ${block.group}` };
+  });
+}
+
 // ---------------------------------------------------------------------------
 // Time
 // ---------------------------------------------------------------------------
@@ -279,6 +325,45 @@ export function formatRest(seconds: number): string {
   return `${mins}:${String(secs).padStart(2, "0")}`;
 }
 
+/**
+ * How long to rest after the set that was just ticked, or null for none.
+ *
+ * The precedence is: the set's own rest (a per-exercise override lands there)
+ * over the session default. On top of that sits the superset rule, stated
+ * once: **inside a group, rest belongs to the round, not the set** — moving to
+ * the next exercise of the round is immediate, and the full rest starts only
+ * when every exercise in the group has done its set of that round. Sets share
+ * a round by `setNumber`, so ticking out of order still ends the round on the
+ * last member, and an exercise with fewer sets simply drops out of later
+ * rounds without blocking them.
+ */
+export function restSecAfterSet(
+  lastCompleted: SessionSet | null | undefined,
+  sets: SessionSet[],
+  groupOf: Record<string, string> = {},
+  sessionDefault: number | null = null,
+): number | null {
+  if (!lastCompleted) return null;
+  const base = lastCompleted.restSec ?? sessionDefault;
+
+  const group = groupOf[lastCompleted.exercise];
+  if (group === undefined) return base;
+
+  const members = new Set(
+    sets.filter((set) => groupOf[set.exercise] === group).map((set) => set.exercise),
+  );
+  if (members.size < 2) return base;
+
+  const round = lastCompleted.setNumber;
+  const roundDone = Array.from(members).every((exercise) => {
+    const inRound = sets.find(
+      (set) => set.exercise === exercise && set.setNumber === round,
+    );
+    return !inRound || inRound.completed;
+  });
+  return roundDone ? base : null;
+}
+
 // ---------------------------------------------------------------------------
 // Planned vs actual
 // ---------------------------------------------------------------------------
@@ -347,6 +432,16 @@ export interface TemplateExerciseLike {
   reps?: number | null;
   weightKg?: number | null;
   restSec?: number | null;
+  /** Superset/circuit key ("A", "B"…). Absent or blank means ungrouped. */
+  group?: string | null;
+}
+
+function clampSetCount(sets: number): number {
+  return Math.min(Math.max(Math.round(sets || 1), 1), 20);
+}
+
+function groupKeyOf(exercise: TemplateExerciseLike): string {
+  return typeof exercise.group === "string" ? exercise.group.trim() : "";
 }
 
 /**
@@ -355,30 +450,88 @@ export interface TemplateExerciseLike {
  * The numbers become **targets**, not results — which is the whole difference
  * between starting a session and logging a finished workout. Nothing is marked
  * complete, so the session has real work outstanding from the first second.
+ *
+ * Exercises sharing a group key expand as a superset/circuit: round-robin
+ * (A1 set 1, A2 set 1, A1 set 2 …) rather than exercise by exercise, with the
+ * block anchored where the group's first member sits in the template. An
+ * exercise with fewer sets drops out of later rounds. No group keys means the
+ * expansion is byte-for-byte what it was before grouping existed.
  */
 export function planSetsFromTemplate(exercises: TemplateExerciseLike[]): PlannedSet[] {
-  const rows: PlannedSet[] = [];
-  let order = 0;
+  // Blocks preserve template order; every member of a group joins the block at
+  // its first member's position.
+  const blocks: TemplateExerciseLike[][] = [];
+  const blockByGroup = new Map<string, TemplateExerciseLike[]>();
 
   for (const exercise of exercises) {
     const name = String(exercise.exercise ?? "").trim();
     if (!name) continue;
 
-    const count = Math.min(Math.max(Math.round(exercise.sets || 1), 1), 20);
-    for (let index = 0; index < count; index += 1) {
-      rows.push({
-        exercise: name,
-        setNumber: index + 1,
-        targetReps: numberOrNull(exercise.reps),
-        targetWeightKg: numberOrNull(exercise.weightKg),
-        restSec: numberOrNull(exercise.restSec),
-        sortOrder: order,
-      });
-      order += 1;
+    const key = groupKeyOf(exercise);
+    if (!key) {
+      blocks.push([exercise]);
+      continue;
+    }
+    const existing = blockByGroup.get(key);
+    if (existing) {
+      existing.push(exercise);
+    } else {
+      const block = [exercise];
+      blockByGroup.set(key, block);
+      blocks.push(block);
+    }
+  }
+
+  const rows: PlannedSet[] = [];
+  let order = 0;
+
+  for (const block of blocks) {
+    const counts = block.map((exercise) => clampSetCount(exercise.sets));
+    const rounds = Math.max(...counts);
+    // A block of one is a plain exercise: round-robin over it is sequential.
+    for (let round = 0; round < rounds; round += 1) {
+      for (let index = 0; index < block.length; index += 1) {
+        if (round >= counts[index]) continue;
+        const exercise = block[index];
+        rows.push({
+          exercise: String(exercise.exercise).trim(),
+          setNumber: round + 1,
+          targetReps: numberOrNull(exercise.reps),
+          targetWeightKg: numberOrNull(exercise.weightKg),
+          restSec: numberOrNull(exercise.restSec),
+          sortOrder: order,
+        });
+        order += 1;
+      }
     }
   }
 
   return rows;
+}
+
+/**
+ * The template's exercise → group map, for the session panel and the rest
+ * rule. A key claimed by a single exercise is dropped — a superset of one is
+ * just an exercise, and treating it as a group would change its rest for
+ * nothing.
+ */
+export function templateGroups(exercises: TemplateExerciseLike[]): Record<string, string> {
+  const byGroup = new Map<string, string[]>();
+  for (const exercise of exercises) {
+    const name = String(exercise.exercise ?? "").trim();
+    const key = groupKeyOf(exercise);
+    if (!name || !key) continue;
+    const names = byGroup.get(key) ?? [];
+    if (!names.includes(name)) names.push(name);
+    byGroup.set(key, names);
+  }
+
+  const out: Record<string, string> = {};
+  for (const [key, names] of byGroup) {
+    if (names.length < 2) continue;
+    for (const name of names) out[name] = key;
+  }
+  return out;
 }
 
 /**
@@ -415,4 +568,80 @@ export function defaultRestSec(sets: Array<{ restSec: number | null }>): number 
     if (set.restSec && set.restSec > 0) return Math.round(set.restSec);
   }
   return null;
+}
+
+// ---------------------------------------------------------------------------
+// Progression
+// ---------------------------------------------------------------------------
+
+/** One small plate a side — the smallest step most racks can actually make. */
+export const PROGRESSION_INCREMENT_KG = 2.5;
+
+/** Matches the validator's ceiling, so an applied suggestion can never fail it. */
+const MAX_TARGET_WEIGHT_KG = 2000;
+
+export interface PriorSetPerformance {
+  reps: number | null;
+  weightKg: number | null;
+  targetReps: number | null;
+}
+
+export interface ProgressionSuggestion {
+  kind: "increase" | "repeat";
+  /** Weight to write onto the outstanding targets; null means keep them as-is. */
+  targetWeightKg: number | null;
+  /** One plain sentence of why. Shown verbatim next to the estimate label. */
+  reason: string;
+}
+
+/**
+ * A conservative next target from the last completed performance of an
+ * exercise. This is an estimate from the user's own logs, never advice — the
+ * UI labels it as such and nothing applies it without an explicit tap.
+ *
+ * The rule errs on the side of "do it again": weight goes up by one increment
+ * only when every set hit its target reps *and* the weight was the same across
+ * sets. Anything ambiguous — targets missed, no targets recorded, a pyramid of
+ * different weights — suggests repeating. And where there is no load to reason
+ * about at all (no history, bodyweight or duration work) there is no
+ * suggestion, because inventing one would be exactly the coaching this app
+ * must not do.
+ */
+export function suggestProgression(prior: PriorSetPerformance[]): ProgressionSuggestion | null {
+  if (prior.length === 0) return null;
+
+  const sets: Array<{ reps: number; weightKg: number; targetReps: number | null }> = [];
+  for (const set of prior) {
+    if (set.reps === null || set.weightKg === null) return null;
+    sets.push({ reps: set.reps, weightKg: set.weightKg, targetReps: set.targetReps });
+  }
+
+  const repeat = (reason: string): ProgressionSuggestion => ({
+    kind: "repeat",
+    targetWeightKg: null,
+    reason,
+  });
+
+  if (sets.some((set) => set.targetReps === null)) {
+    return repeat("Last time had no rep targets to compare against — repeat it before adding load.");
+  }
+  if (sets.some((set) => set.targetReps !== null && set.reps < set.targetReps)) {
+    return repeat("Not every set hit its target reps last time — repeat the same weight.");
+  }
+  const weights = new Set(sets.map((set) => set.weightKg));
+  if (weights.size > 1) {
+    return repeat("The weight varied across sets last time — repeat them before adding load.");
+  }
+
+  const weight = sets[0].weightKg;
+  const next = Math.round((weight + PROGRESSION_INCREMENT_KG) * 1000) / 1000;
+  if (next > MAX_TARGET_WEIGHT_KG) {
+    return repeat("Already at the highest weight the tracker accepts.");
+  }
+
+  return {
+    kind: "increase",
+    targetWeightKg: next,
+    reason: `Every set hit its target reps at ${weight} kg last time.`,
+  };
 }

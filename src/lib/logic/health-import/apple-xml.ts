@@ -1,6 +1,6 @@
 import type { DayKey } from "@/lib/date";
 import type { SleepStage } from "@/lib/logic/health";
-import { emptyParse, type ParsedFile, type RawSample, type RawWorkout } from "./types";
+import { emptyParse, type ParsedFile, type RawSample } from "./types";
 
 /**
  * Apple Health `export.xml` parsing.

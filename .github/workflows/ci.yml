@@ -1,0 +1,147 @@
+# Personal OS — continuous integration.
+#
+# Everything runs against disposable databases created inside the job; no
+# production secret exists here and none is ever exposed to pull requests —
+# the auth/env values below are deliberately fake and only make the dev
+# sign-in usable for browser tests.
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+env:
+  DATABASE_URL: postgresql://postgres:postgres@localhost:5432/personal_os_ci
+  DIRECT_DATABASE_URL: postgresql://postgres:postgres@localhost:5432/personal_os_ci
+  TEST_DATABASE_URL: postgresql://postgres:postgres@localhost:5432/personal_os_test
+
+jobs:
+  checks:
+    name: Lint, types, tests, build, migrations
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: personal_os_ci
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 5s
+          --health-timeout 3s
+          --health-retries 10
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Create the disposable test database
+        run: |
+          psql postgresql://postgres:postgres@localhost:5432/postgres \
+            -c 'CREATE DATABASE personal_os_test;'
+
+      - name: Prisma generate
+        run: npx prisma generate
+
+      - name: Lint
+        run: npm run lint
+
+      - name: Type check
+        run: npm run typecheck
+
+      - name: Unit tests
+        run: npm test
+
+      - name: Integration tests (real PostgreSQL)
+        run: npm run test:integration
+
+      - name: Migration validation — committed migrations apply from empty
+        run: npx prisma migrate deploy
+
+      - name: Migration validation — migrations match the schema exactly
+        run: |
+          npx prisma migrate diff \
+            --from-migrations prisma/migrations \
+            --to-schema-datamodel prisma/schema.prisma \
+            --shadow-database-url "$DATABASE_URL" \
+            --exit-code
+
+      - name: Production build
+        run: npm run build
+
+  e2e:
+    name: Browser tests
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    env:
+      PLAYWRIGHT_BROWSERS_PATH: ${{ github.workspace }}/.pw-browsers
+      AUTH_SECRET: ci-only-not-a-real-secret
+      AUTH_TRUST_HOST: "true"
+      ALLOWED_EMAILS: dev@example.com,alice@example.com,bob@example.com,you@local
+      DANGEROUSLY_ENABLE_DEV_LOGIN: "1"
+      # The seeded-data spec needs an account with an existing Apple Health
+      # import batch, which a fresh CI database does not have.
+      CI_SKIP_SEEDED: "1"
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: personal_os_ci
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 5s
+          --health-timeout 3s
+          --health-retries 10
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Install Playwright chromium
+        run: npx playwright install --with-deps chromium
+
+      - name: Apply migrations
+        run: npx prisma migrate deploy
+
+      - name: Build
+        run: npm run build
+
+      - name: Start the server
+        run: |
+          npm start &
+          for i in $(seq 1 60); do
+            curl -sf http://localhost:3000/api/health && break
+            sleep 1
+          done
+
+      - name: Run the e2e suite
+        run: npx playwright test
+
+      - name: Upload traces on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: playwright-output
+          path: tests/e2e/.output
+          retention-days: 7

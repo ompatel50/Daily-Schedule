@@ -11,7 +11,10 @@ import {
   planSetsFromTemplate,
   planSetsFromWorkout,
   sessionDurationMinutes,
+  suggestProgression,
+  templateGroups,
   type PlannedSet,
+  type ProgressionSuggestion,
   type SessionSet,
   type TemplateExerciseLike,
 } from "@/lib/logic/session";
@@ -19,7 +22,9 @@ import { estimateCaloriesBurned } from "@/lib/logic/workouts";
 import { lbToKg } from "@/lib/logic/nutrition";
 import { fail, fromZod, succeed, type ActionResult } from "@/lib/validation";
 import {
+  applyProgressionSchema,
   completeSetSchema,
+  setExerciseRestSchema,
   startSessionSchema,
   addSessionSetSchema,
 } from "@/lib/validation";
@@ -379,6 +384,134 @@ export async function setSessionRest(
   await prisma.workout.update({ where: { id: workout.id }, data: { restSecDefault: clamped } });
   revalidateAll();
   return succeed(null);
+}
+
+/**
+ * Rest override for one exercise, written onto its sets. The timer reads rest
+ * off the most recently ticked set, so the override covers completed sets too —
+ * skipping them would delay the change until the next tick. Null clears it, and
+ * the timer falls back to the session default.
+ */
+export async function setExerciseRest(input: unknown): Promise<ActionResult<null>> {
+  const parsed = setExerciseRestSchema.safeParse(input);
+  if (!parsed.success) return fromZod(parsed.error);
+
+  const user = await getCurrentUser();
+  const workout = await prisma.workout.findFirst({
+    where: { id: parsed.data.workoutId, userId: user.id, status: "in_progress" },
+    select: { id: true },
+  });
+  if (!workout) return fail("That session is not open");
+
+  const restSec =
+    parsed.data.restSec === null || parsed.data.restSec <= 0 ? null : parsed.data.restSec;
+
+  await prisma.workoutSet.updateMany({
+    where: {
+      workoutId: workout.id,
+      exercise: { equals: parsed.data.exercise, mode: "insensitive" },
+    },
+    data: { restSec },
+  });
+  revalidateAll();
+  return succeed(null);
+}
+
+/**
+ * Write a suggested weight onto an exercise's outstanding targets.
+ *
+ * Only reachable from an explicit "apply" tap — a suggestion is an estimate,
+ * and estimates never change the plan by themselves. Completed sets keep the
+ * target they were actually performed against.
+ */
+export async function applyProgression(
+  input: unknown,
+): Promise<ActionResult<{ updated: number }>> {
+  const parsed = applyProgressionSchema.safeParse(input);
+  if (!parsed.success) return fromZod(parsed.error);
+
+  const user = await getCurrentUser();
+  const workout = await prisma.workout.findFirst({
+    where: { id: parsed.data.workoutId, userId: user.id, status: "in_progress" },
+    select: { id: true },
+  });
+  if (!workout) return fail("That session is not open");
+
+  const result = await prisma.workoutSet.updateMany({
+    where: {
+      workoutId: workout.id,
+      completed: false,
+      exercise: { equals: parsed.data.exercise, mode: "insensitive" },
+    },
+    data: { targetWeightKg: parsed.data.targetWeightKg },
+  });
+  if (result.count === 0) return fail("Every set of that exercise is already done");
+
+  revalidateAll();
+  return succeed({ updated: result.count });
+}
+
+/**
+ * What the panel cannot derive from its sets alone: the template's superset
+ * groups, and a progression estimate per exercise from the last *completed*
+ * workout that logged it. Abandoned sessions are deliberately not a baseline —
+ * a day cut short says nothing about what the next one should ask for.
+ */
+export async function getSessionGuide(workoutId: string): Promise<
+  ActionResult<{
+    groups: Record<string, string>;
+    suggestions: Record<string, ProgressionSuggestion & { date: string }>;
+  }>
+> {
+  const user = await getCurrentUser();
+  const workout = await prisma.workout.findFirst({
+    where: { id: workoutId, userId: user.id },
+    select: { id: true, templateId: true, sets: { select: { exercise: true } } },
+  });
+  if (!workout) return fail("Session not found");
+
+  let groups: Record<string, string> = {};
+  if (workout.templateId) {
+    const template = await prisma.workoutTemplate.findFirst({
+      where: { id: workout.templateId, userId: user.id },
+      select: { exercises: true },
+    });
+    if (template) groups = templateGroups(parseTemplateExercises(template.exercises));
+  }
+
+  const names = Array.from(new Set(workout.sets.map((set) => set.exercise)));
+  const suggestions: Record<string, ProgressionSuggestion & { date: string }> = {};
+
+  for (const exercise of names) {
+    const latest = await prisma.workoutSet.findFirst({
+      where: {
+        exercise: { equals: exercise, mode: "insensitive" },
+        completed: true,
+        workout: { userId: user.id, status: "completed" },
+      },
+      orderBy: [
+        { workout: { date: "desc" } },
+        { workout: { completedAt: { sort: "desc", nulls: "last" } } },
+      ],
+      select: { workoutId: true, workout: { select: { date: true } } },
+    });
+    if (!latest) continue;
+
+    const priorSets = await prisma.workoutSet.findMany({
+      where: {
+        workoutId: latest.workoutId,
+        exercise: { equals: exercise, mode: "insensitive" },
+        completed: true,
+      },
+      orderBy: { setNumber: "asc" },
+      select: { reps: true, weightKg: true, targetReps: true },
+    });
+
+    const suggestion = suggestProgression(priorSets);
+    if (suggestion) suggestions[exercise] = { ...suggestion, date: latest.workout.date };
+  }
+
+  return succeed({ groups, suggestions });
 }
 
 // ---------------------------------------------------------------------------
