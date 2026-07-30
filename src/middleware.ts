@@ -20,6 +20,6 @@ export const { auth: middleware } = NextAuth(authConfig);
 export const config = {
   // Protect everything except Next.js internals and the few public files.
   matcher: [
-    "/((?!_next/static|_next/image|icon.svg|favicon.ico|health-template.csv|sw.js|manifest.webmanifest|icons/|api/reminders/run).*)",
+    "/((?!_next/static|_next/image|icon.svg|favicon.ico|health-template.csv|sw.js|manifest.webmanifest|icons/|api/reminders/run|api/health).*)",
   ],
 };

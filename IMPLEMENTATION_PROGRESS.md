@@ -1706,8 +1706,8 @@ npm test && npm run typecheck && npm run build
 | 22 | Hosted health-import architecture                 | ✅ done |
 | 23 | Navigation and route performance                  | ✅ done |
 | 24 | Deferred feature improvements                     | ✅ done |
-| 25 | Production security                               | ⏳ in progress |
-| 26 | Deployment and production configuration           | — |
+| 25 | Production security                               | ✅ done |
+| 26 | Deployment and production configuration           | ⏳ in progress |
 | 27 | CI and complete verification                      | — |
 | 28 | Documentation and release handoff                 | — |
 
@@ -2395,3 +2395,49 @@ Lint joins CI in Phase 27.
 clean · targeted browser pass over the new features (planner conflict
 indicators in all three views, template dialog with grouping, barcode
 dialog with manual fallback and on-device copy) — zero console errors.
+
+---
+
+## Phase 25 — production security
+
+* **Headers** (next.config, verified live on the running server):
+  a same-origin Content Security Policy (`default-src 'self'`; inline
+  script/style allowed for Next hydration and Tailwind — documented, with
+  nonce-based CSP noted as a possible hardening step; `worker-src 'self'
+  blob:` for the health-import worker; `frame-ancestors 'none'`;
+  `form-action 'self'`; `object-src 'none'`), `X-Content-Type-Options:
+  nosniff`, `X-Frame-Options: DENY`, `Referrer-Policy:
+  strict-origin-when-cross-origin`, `Permissions-Policy` denying
+  everything except same-origin camera (the barcode scanner), and
+  production-only `Strict-Transport-Security` (2 years,
+  includeSubDomains). Dynamic pages already carry `Cache-Control:
+  private, no-cache, no-store` — verified. **The full e2e suite passes
+  under the CSP** (auth, dialogs, charts, camera dialog unaffected).
+* **Error handling**: raw error text no longer reaches a browser — the
+  two passthrough sites (backup import failure, health-import batch
+  error) now log server-side under a short reference id
+  (`src/server/safe-error.ts`, message text only, never payloads) and
+  send the user only the reference. `global-error.tsx` added as the
+  static last-resort boundary; `(app)/error.tsx` was Phase 23.
+* **Health endpoint**: `/api/health` — `SELECT 1` against the database,
+  `{status: "ok"}` or 503, nothing else revealed; public for uptime
+  monitors.
+* **Upload/import protection** (mostly established in earlier phases,
+  now completed): authentication + ownership everywhere, 16 MB action
+  body ceiling, bounded sequence-numbered chunks with server
+  revalidation, zod type validation, transaction boundaries with
+  timeouts, and a new cap of 3 concurrent uploading import sessions per
+  user. Rate limiting beyond that is deliberately platform-level: this
+  is a private allowlisted app whose only authenticated users are the
+  owner's own accounts (documented in the security guide).
+* **Privacy**: no third-party analytics of any kind; the client-bundle
+  scan finds no secret names, no database URL, no provider hosts and no
+  tracking hosts (only library-documentation URLs inside vendored code).
+  Prisma's optional query log stays parameter-free by construction.
+* **Cookies**: Auth.js issues `__Secure-`-prefixed, HttpOnly, SameSite
+  Lax session cookies on HTTPS automatically — appropriate for the OAuth
+  redirect flow.
+
+Verified: headers present on live responses, `/api/health` ok, the cron
+endpoint fails closed (503 unconfigured / 401 wrong secret), e2e 25
+passed / 1 documented skip under the CSP, lint and typecheck clean.

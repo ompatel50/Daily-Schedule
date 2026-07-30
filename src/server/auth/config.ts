@@ -46,6 +46,7 @@ export const authConfig = {
       if (pathname === "/signin" || pathname.startsWith("/api/auth")) return true;
       if (pathname === "/sw.js" || pathname === "/manifest.webmanifest") return true;
       if (pathname.startsWith("/icons/") || pathname === "/api/reminders/run") return true;
+      if (pathname === "/api/health") return true;
       return Boolean(auth?.user);
     },
     jwt({ token, user }) {
