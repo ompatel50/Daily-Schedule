@@ -4,10 +4,11 @@
  * exists AND is allowlisted, and the allowlist is re-read per request so a
  * change locks accounts out (or in) immediately.
  *
- * The Auth.js adapter itself (first-sign-in account creation) is stubbed out
- * by vitest.integration.config.ts, so the adapter path is deliberately NOT
- * exercised here — what this file proves is the DB-level invariant every
- * request depends on after sign-in.
+ * Auth.js itself (cookie/JWT machinery) is stubbed out by
+ * vitest.integration.config.ts, so no real sign-in happens here — the
+ * password verification path has its own suite (password-auth.test.ts);
+ * what this file proves is the DB-level invariant every request depends on
+ * after sign-in.
  */
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 

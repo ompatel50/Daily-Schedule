@@ -34,11 +34,12 @@ detected rather than half-imported.
 
 What it deliberately does **not** contain:
 
-* your Google sign-in linkage (a backup restored into a different account
-  must never carry the original's sign-in binding);
+* no sign-in material at all: not your email, not the password hash, not
+  session or lockout state. Your account does have a password now, but it is
+  never exported — a backup can be stored or shared without exposing any way
+  into your account;
 * push notification device registrations (those belong to each device, which
-  can simply re-enable);
-* any password — none exist.
+  can simply re-enable).
 
 ## Re-import semantics: merge vs replace
 
@@ -87,7 +88,7 @@ restorable through the app into any account. A second, independent layer is
 the database itself:
 
 * **Managed database (the normal hosted setup):** the provider you created in
-  the deployment guide (Prisma Postgres, Neon, …) takes its own backups
+  the deployment guide (Neon, in the recommended free setup) takes its own backups
   and/or offers point-in-time restore — check the provider's dashboard for
   what your plan includes and how far back it reaches. This is the layer that
   saves you if the database itself is lost or corrupted.

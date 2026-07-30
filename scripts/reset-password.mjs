@@ -26,21 +26,48 @@ import { hashPassword } from "./lib/password-hash.mjs";
 
 const MIN_PASSWORD_LENGTH = 12;
 
-/** Prompt with the typed characters hidden. */
-function promptHidden(question) {
-  return new Promise((resolve) => {
-    const rl = readline.createInterface({ input: process.stdin, output: process.stdout });
-    const write = rl._writeToOutput?.bind(rl);
-    rl._writeToOutput = (chunk) => {
-      // Echo the question and newlines, mask everything else.
-      if (chunk.includes(question) || chunk === "\r\n" || chunk === "\n") write?.(chunk);
-    };
-    rl.question(question, (answer) => {
-      rl.close();
-      process.stdout.write("\n");
-      resolve(answer);
-    });
-  });
+/**
+ * One readline interface for the whole run, drained through a line queue —
+ * per-question interfaces drop buffered input, and `rl.question` breaks when
+ * piped stdin EOFs between questions. Questions are printed directly and
+ * readline's own echo is suppressed, so typed characters stay hidden at a
+ * terminal.
+ */
+const rl = readline.createInterface({ input: process.stdin, output: process.stdout });
+const rlWrite = rl._writeToOutput?.bind(rl);
+rl._writeToOutput = (chunk) => {
+  // Echo newlines only — every typed character stays masked.
+  if (chunk === "\r\n" || chunk === "\n") rlWrite?.(chunk);
+};
+
+const bufferedLines = [];
+const lineWaiters = [];
+let stdinClosed = false;
+rl.on("line", (line) => {
+  const waiter = lineWaiters.shift();
+  if (waiter) waiter(line);
+  else bufferedLines.push(line);
+});
+rl.on("close", () => {
+  stdinClosed = true;
+  while (lineWaiters.length > 0) lineWaiters.shift()(null);
+});
+
+function nextLine() {
+  if (bufferedLines.length > 0) return Promise.resolve(bufferedLines.shift());
+  if (stdinClosed) return Promise.resolve(null);
+  return new Promise((resolve) => lineWaiters.push(resolve));
+}
+
+async function promptHidden(question) {
+  process.stdout.write(question);
+  const line = await nextLine();
+  process.stdout.write("\n");
+  if (line === null) {
+    console.error("Input ended before a password was provided — nothing was changed.");
+    process.exit(1);
+  }
+  return line;
 }
 
 const email = (process.argv[2] ?? "").trim().toLowerCase();
@@ -81,5 +108,6 @@ try {
   });
   console.log(`Password updated for ${email}. Every signed-in device now needs the new password.`);
 } finally {
+  rl.close();
   await prisma.$disconnect();
 }

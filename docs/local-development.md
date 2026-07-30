@@ -61,28 +61,38 @@ just to poke at it before deploying.
 
 ## Signing in during development
 
-The hosted app signs in with Google, which is awkward on a laptop. The
-development sign-in exists for exactly this:
+Sign-in works locally exactly as it does everywhere else: the app's own
+email + password form. There is no Google, no OAuth, no separate
+"development login" — the door you use locally is the real one.
 
-1. In `.env`, set:
+1. In `.env` (created from `.env.example` in step 4), set:
 
    ```
-   DANGEROUSLY_ENABLE_DEV_LOGIN="1"
+   AUTH_SECRET="<generate one: openssl rand -base64 33>"
    ALLOWED_EMAILS="you@local"
    ```
 
-   (any email-shaped address works; `ALLOWED_EMAILS` applies to the dev door
-   exactly as it does to Google).
-2. Restart the dev server. The sign-in page now shows a "Development
-   sign-in" form — type an allowlisted email and you're in, no password.
+   `ALLOWED_EMAILS` applies locally exactly as in production, and it fails
+   closed — left empty, nobody can sign in.
 
-The name is deliberate: **never set `DANGEROUSLY_ENABLE_DEV_LOGIN` in
-production.** As a backstop, the app ignores it entirely when running on
-Vercel — but the variable is local-only by intent, not just by enforcement.
+2. Restart the dev server and sign in with the account the demo seed
+   created:
 
-Real Google sign-in also works locally if you add
-`http://localhost:3000/api/auth/callback/google` as a redirect URI — see
-[`google-oauth-setup.md`](google-oauth-setup.md).
+   * **Email:** `you@local`
+   * **Password:** `local-dev-password`
+
+   `npm run setup` prints this sign-in at the end of seeding. The known
+   password is only ever set on **local** databases (the seed refuses to run
+   against anything else), and only if the account doesn't already have one.
+
+If you used `npm run setup:empty`, there is no account yet — so you can walk
+the real one-time owner flow instead: also set `AUTH_SETUP_TOKEN` in `.env`
+to a long random value (`openssl rand -base64 33`; anything under 32
+characters is ignored and setup stays off), restart, and open
+<http://localhost:3000/setup>. This is the exact flow a fresh deployment
+uses — see [`auth-setup.md`](auth-setup.md). Note that `/setup` only exists
+while **no** account has a password, so after the demo seed it just
+redirects to the sign-in page — by design, not a bug.
 
 ## Commands
 
@@ -129,9 +139,10 @@ different test database can be set with `TEST_DATABASE_URL`.
 server (deliberately — building inside the test run would double its cost):
 
 ```bash
-# terminal 1 — build and start with the dev sign-in enabled:
-#   .env needs DANGEROUSLY_ENABLE_DEV_LOGIN="1" and ALLOWED_EMAILS
-#   containing you@local and alice@example.com (the test accounts)
+# terminal 1 — seed the two test accounts, then build and start:
+#   .env needs AUTH_SECRET set and ALLOWED_EMAILS containing
+#   you@local and alice@example.com (the test accounts)
+npm run seed:e2e
 npm run build
 npm start
 
@@ -139,9 +150,16 @@ npm start
 npm run test:e2e
 ```
 
+`npm run seed:e2e` creates `you@local` and `alice@example.com` with the
+known e2e password (`e2e-password-123`, or `E2E_USER_PASSWORD` if set).
+The app never creates accounts at sign-in, so the suite needs both to
+exist before the server starts; re-running the seed just resets their
+passwords, never their data. Like the demo seed, it refuses non-local
+databases — well-known credentials must never reach a real deployment.
+
 If Playwright's Chromium isn't installed yet: `npx playwright install
-chromium` once. The suite signs in through the dev form, so it needs no
-Google credentials.
+chromium` once. The suite signs in through the real password form — no
+external services involved.
 
 ## The guarded `db:reset`
 

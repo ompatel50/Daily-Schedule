@@ -12,22 +12,55 @@ a proxy) — Vercel sets the equivalent itself.
 1. Add `AUTH_TRUST_HOST="true"` to the environment.
 2. Restart the app.
 
-## Sign-in is refused: "That … isn't approved for this Personal OS"
+## Sign-in is refused: "Those details didn't sign you in"
 
-Google succeeded; the app's own allowlist said no.
+The sign-in page deliberately shows this **one message for every kind of
+failure** — wrong password, unknown email, an email not on the allowlist,
+and a temporarily locked account all read identically, so the page never
+confirms which accounts exist. That means the fix isn't always "retype the
+password". Check in this order:
 
-1. Check `ALLOWED_EMAILS` contains the **exact** email address of the Google
-   account you signed in with (comma-separated; case and surrounding spaces
-   don't matter).
-2. Remember it **fails closed**: an empty or missing `ALLOWED_EMAILS` refuses
-   everyone. That is by design, not a bug.
-3. After editing the variable, redeploy.
+1. **Allowlist.** `ALLOWED_EMAILS` must contain the **exact** email address
+   you typed (comma-separated; case and surrounding spaces don't matter).
+   It **fails closed**: an empty or missing `ALLOWED_EMAILS` refuses
+   everyone — by design, not a bug. After editing the variable, redeploy.
+2. **Lockout.** Five wrong password attempts in a row pause sign-in for
+   that account for **15 minutes** — during the pause even the correct
+   password is refused. Wait it out, or run the reset script below, which
+   also clears the lockout immediately.
+3. **Forgotten password.** There is no "forgot password" email (the app
+   sends no email at all). Recovery is the offline script, run where the
+   database connection strings are available:
 
-If the refusal comes from **Google** instead (an "Access blocked" or
-"unverified app" page before you ever reach the app), see the end of
-[`google-oauth-setup.md`](google-oauth-setup.md) — usually the consent screen
-is in Testing mode and the account isn't a test user, or a redirect URI
-doesn't match exactly.
+   ```bash
+   npm run auth:reset-password you@example.com
+   ```
+
+   It prompts for the new password with typing hidden, signs every device
+   out, and clears any lockout. The full walk-through is in
+   [`auth-setup.md`](auth-setup.md) under "Lost the password entirely".
+
+No part of sign-in involves Google, OAuth, or any other external service —
+when sign-in fails, the cause is always the password itself or the app's
+own environment variables.
+
+## `/setup` shows nothing — it just redirects to the sign-in page
+
+By design. The one-time owner setup page only exists while **all three**
+of these hold:
+
+1. `AUTH_SETUP_TOKEN` is set in the environment **and is at least 32
+   characters long** — anything shorter is ignored entirely and setup
+   stays off (generate a proper one with `openssl rand -base64 33`).
+2. `ALLOWED_EMAILS` is not empty.
+3. **No account has a password yet.** The moment setup completes — or a
+   password exists for any other reason, such as the local demo/e2e
+   seeds — the page disables itself everywhere, permanently.
+
+If a password already exists and you've lost it, `/setup` will not come
+back — deliberately, so a setup token found later can never overwrite the
+owner account. Use the reset script instead (previous section). After
+changing environment variables, redeploy.
 
 ## A deploy fails during the migration step
 
@@ -76,10 +109,12 @@ Work through this in order — each item alone can silence push:
 2. **`CRON_SECRET` set?** Without it the endpoint answers 503 and Vercel Cron
    delivers nothing. With a wrong header it answers 401. You can check the
    responses in the Vercel logs.
-3. **Is the cron actually running, and how often?** Vercel project → the Cron
-   section / runtime logs. Crons run on the production deployment only, and
-   some plans can't run every 5 minutes — a slower cadence delays delivery,
-   and an occurrence more than 30 minutes past its time is skipped.
+3. **Is the scheduler actually calling the endpoint, and how often?** On the
+   free Vercel plan the built-in cron runs only **once a day** — timely
+   delivery comes from the free external scheduler (cron-job.org) calling
+   `/api/reminders/run` every few minutes; check its dashboard shows the job
+   enabled and succeeding, and check the Vercel runtime logs. An occurrence
+   more than 30 minutes past its time is skipped on purpose.
 4. **Device enrolled and permitted?** The device must appear in Settings →
    Background reminders, and the browser's notification permission must be
    granted (check the browser's site settings).
@@ -107,11 +142,14 @@ doesn't, the problem is in steps 1–5.
 
 ## Signed out unexpectedly
 
-1. `AUTH_SECRET` was rotated (signs everyone out immediately — by design).
-2. The session hit its 30-day maximum age.
-3. Your email was removed from `ALLOWED_EMAILS` (lockout is immediate).
+1. The password was changed, "Sign out everywhere" was used (Settings →
+   Sign-in & security), or the reset script ran — each of these ends every
+   session immediately, by design.
+2. `AUTH_SECRET` was rotated (also signs everyone out immediately).
+3. The session hit its 30-day maximum age.
+4. Your email was removed from `ALLOWED_EMAILS` (lockout is immediate).
 
-Sign in again; if refused, see the allowlist section above.
+Sign in again; if refused, see the sign-in section above.
 
 ## Food search says "USDA … is not set up"
 
