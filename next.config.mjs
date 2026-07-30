@@ -1,6 +1,14 @@
+import path from "node:path";
+import { fileURLToPath } from "node:url";
+
 /** @type {import('next').NextConfig} */
 const nextConfig = {
   reactStrictMode: true,
+  // Pin the workspace root to this project. Without it, a stray lockfile in
+  // a parent directory (observed on the user's machine) makes Next guess the
+  // workspace root, which mis-scopes file tracing and prints a warning on
+  // every dev start.
+  outputFileTracingRoot: path.dirname(fileURLToPath(import.meta.url)),
   // ESLint runs as its own CI step (npm run lint); builds don't repeat it.
   eslint: { ignoreDuringBuilds: true },
   experimental: {

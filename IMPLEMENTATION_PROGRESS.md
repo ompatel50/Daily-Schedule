@@ -1704,8 +1704,8 @@ npm test && npm run typecheck && npm run build
 | 20 | Authentication and user isolation                 | ✅ done |
 | 21 | Local backup → hosted-account migration           | ✅ done |
 | 22 | Hosted health-import architecture                 | ✅ done |
-| 23 | Navigation and route performance                  | ⏳ in progress |
-| 24 | Deferred feature improvements                     | — |
+| 23 | Navigation and route performance                  | ✅ done |
+| 24 | Deferred feature improvements                     | ⏳ in progress |
 | 25 | Production security                               | — |
 | 26 | Deployment and production configuration           | — |
 | 27 | CI and complete verification                      | — |
@@ -2182,3 +2182,87 @@ Honest limits: an in-flight *upload* does not survive leaving the page
 expires) — an interrupted import is restarted by re-picking the file,
 and nothing partial is ever written. The optional object-storage fallback
 was not needed: browser parsing handled the multi-year case comfortably.
+
+---
+
+## Phase 23 — navigation and route performance
+
+All numbers are measured against the production build in a real browser
+(Playwright), with a privacy-safe query counter (`PRISMA_LOG_QUERIES=1`
+logs query text and duration only — **never parameters**, so no personal
+value can reach a log). Local database — on a hosted deployment every
+query costs a network round-trip, which is exactly why the query counts
+matter more than the local milliseconds.
+
+### Query-layer fixes (from a dedicated per-route audit)
+
+* **Request-level memoisation** (React `cache()`, options normalised to
+  primitives so equivalent calls share a key): `getCurrentUser` (Phase 20;
+  ~10 lookups per render → 1), `evaluateGoalsForDate` (the day overview and
+  the day score each ran the full ~10-query goal evaluation — now one run
+  serves both), `getHabitViews`, `getDayScore`, and `loadSchedules`
+  (habit views and the score loaded the same schedules twice; the id list
+  is sorted/joined so array identity doesn't defeat the memo).
+* **The reminder feed no longer blocks navigation.** The app shell awaited
+  `getReminderFeed()` (~15 queries of schedule resolution) on every render
+  of every page; the watcher now fetches it client-side right after mount.
+  Same reminders, zero navigation cost.
+* **`goalEntry.findMany` was unbounded** — every render fetched a
+  lifetime of manual goal entries. Now windowed to 400 days back plus the
+  evaluation week (habits already cap their logs at ~90 days).
+* **Planner opened with an N+1 write**: `extendSeriesFor` ran a
+  `findFirst` per recurring series on every planner GET, on the host
+  clock. One `groupBy` now answers "how far is each series materialised?"
+  and the caller passes the user's resolved today.
+* **Workouts fetched the same rows twice** (`getRecentWorkouts(25)` +
+  90-day history, both with sets): the recent list is now sliced from the
+  history fetch, falling back only for sparse histories. **Insights**
+  fetched goals it explicitly never used (`void goals`) — removed.
+
+### Client/bundle fixes
+
+* **Recharts is out of the first load.** `charts.tsx` is now a lazy facade
+  (`next/dynamic`, skeleton placeholder) over the unchanged
+  implementations; six routes stop shipping ~120 kB of chart code they
+  didn't need to paint.
+* **The command palette and quick-add dialog load after hydration**
+  (`shell-extras.tsx`) instead of inside every route's bundle. Keyboard
+  shortcuts stay eager (tiny, must listen immediately).
+* **`(app)/loading.tsx`**: clicking a primary tab now instantly swaps the
+  content area to a skeleton inside the persistent shell (sidebar/topbar
+  never unmount) instead of holding the old page. **`(app)/error.tsx`**:
+  a quiet route-level error boundary — no stack, no paths, just a retry
+  and the digest for log correlation.
+* `outputFileTracingRoot` pinned to the project (the workspace-root
+  warning caused by a stray parent-directory lockfile on the user's
+  machine; nothing outside the repo is touched).
+
+### Before → after
+
+Queries per navigation (measurement window includes the reminder feed —
+which before was blocking and now fires after paint):
+
+| Route | Queries before | Queries after | First-load JS before → after |
+|---|---|---|---|
+| Dashboard | 42 | 30 | 286 kB → **163 kB** |
+| Today | 28 | 16 | 216 → 217 kB |
+| Planner | 11 | 8 | 216 → 217 kB |
+| Habits | 14 | 7 | 315 → **190 kB** |
+| Calendar | 11 | 8 | 169 → 170 kB |
+| Nutrition | 13 | 10 | 323 → **198 kB** |
+| Workouts | 15 | 12 | 311 → **187 kB** |
+| Health | 10 | 7 | 300 → **174 kB** |
+| Insights | 26 | 14 | 290 → **165 kB** |
+| Settings | 24 | 21 | 189 → 190 kB |
+
+Warm client-side navigation (click a tab → content updated): **80–154 ms
+before → 47–67 ms after**, with the skeleton appearing immediately.
+Server render time stayed 35–85 ms locally on every route. Verified after
+the changes: all 10 routes render with **zero console errors**, charts
+appear on the six chart routes, and the deferred palette opens.
+
+Deliberately unchanged: `getDemoStatus`'s 10 parallel counts feed real
+displayed numbers (the sample-data panel) and cost one round-trip;
+per-action `revalidatePath("/", "layout")` stays — with the render this
+cheap, scoping invalidation per-action across 91 actions is risk without
+measurable reward.

@@ -22,15 +22,18 @@ import { deliverReminderAction, getReminderFeedAction } from "@/server/actions/r
 
 const FEED_REFRESH_MS = 5 * 60 * 1000;
 
-export function ReminderWatcher({ initial }: { initial: ReminderOccurrence[] }) {
-  const [feed, setFeed] = React.useState(initial);
+export function ReminderWatcher({ initial }: { initial?: ReminderOccurrence[] }) {
+  const [feed, setFeed] = React.useState<ReminderOccurrence[]>(initial ?? []);
   const firedRef = React.useRef<Set<string>>(new Set());
 
-  React.useEffect(() => setFeed(initial), [initial]);
+  React.useEffect(() => {
+    if (initial) setFeed(initial);
+  }, [initial]);
 
-  // Refresh the feed periodically and when the tab regains focus, so state
-  // changes made elsewhere (another tab, another device writing the DB) are
-  // honoured without a navigation.
+  // The feed loads after mount (it is deliberately NOT awaited by the app
+  // shell — reminders must never delay a navigation render), then refreshes
+  // periodically and when the tab regains focus, so state changes made
+  // elsewhere (another tab, another device) are honoured without a reload.
   React.useEffect(() => {
     let cancelled = false;
     async function refresh() {
@@ -41,6 +44,7 @@ export function ReminderWatcher({ initial }: { initial: ReminderOccurrence[] }) 
         // Offline or server restarting — keep the last feed and try later.
       }
     }
+    void refresh();
     const interval = setInterval(refresh, FEED_REFRESH_MS);
     const onFocus = () => void refresh();
     window.addEventListener("focus", onFocus);
