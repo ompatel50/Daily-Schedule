@@ -42,12 +42,12 @@
 | 11 | Health imports & health metrics                    | ✅ done |
 | 12 | Demo-data separation & onboarding                  | ✅ done |
 | 13 | Reminders                                          | ✅ done |
-| 14 | Search & command palette                           | ⬜ not started |
+| 14 | Search & command palette                           | ✅ done |
 | 15 | Backup & import updates                            | ⬜ not started |
 | 16 | Accessibility, responsiveness, performance         | ⬜ not started |
 | 17 | Full testing & polish                              | ⬜ not started |
 
-**Current phase:** 14 — Search & command palette (**not started**)
+**Current phase:** 15 — Backup & import updates (**not started**)
 
 **The task's stated highest-priority milestone is complete** (central schedule
 engine, scheduled goals, scheduled habits, rest-day behaviour, streaks, day
@@ -1473,12 +1473,50 @@ waits a beat.
 
 ---
 
+## Phase 14 — global search & command palette
+
+The palette (⌘K / Ctrl-K / `/`) already existed with navigation, quick
+actions and a five-entity search. Phase 14 finished the job rather than
+rebuilding it:
+
+* **Hit building is pure and tested** — `src/lib/logic/search.ts` turns
+  matching rows into grouped, render-ready hits; the server action feeds it
+  rows plus the user's resolved today. That removed a host-clock bug: the
+  palette's "Today/Yesterday" labels were computed against the server's
+  clock and could disagree with every page around them (known-problems #11
+  applied to search too).
+* **Four more entities are searchable** — goals, routines (schedule
+  templates), workout templates and meal templates, alongside planner items,
+  habits, workouts, foods and journal entries. Each hit deep-links to the
+  surface that owns the entity, honouring the Phase 8 ownership table
+  (a routine hit goes to the planner, where applying it runs through the
+  four-way duplicate guard; a goal hit goes to Settings).
+* **Quick actions grew** log-health-data and import-health-data entries;
+  keyboard accessibility was verified end to end rather than assumed (the
+  palette is cmdk: typeahead, arrows, Enter, Escape).
+
+Files: `src/lib/logic/search.ts` (pure), rewritten
+`src/server/actions/search.ts`, widened `searchEverything`, palette edits,
+`tests/search.test.ts` (6 tests).
+
+**Verification:** 592/592 tests, typecheck and build clean. Browser
+(Playwright, production build) — **14/14**: Ctrl-K opens with focus in the
+input; actions and navigation visible before typing; "Sunday" finds the
+seeded routine under *Routines*; "protein" finds the goal with its target in
+the subtitle; "Lower body" matches workouts and templates; ArrowDown+Enter
+navigates to the owning surface; `/` opens; Escape closes; zero console
+errors and zero page errors.
+
+---
+
 ## Exact next step
 
-**Phase 14 — global search & command palette.** The palette exists with
-navigation and quick actions; global search across app entities (items,
-habits, goals, foods, workouts, journal) with keyboard accessibility is the
-outstanding piece.
+**Phase 15 — backup & import updates.** Format v3 already covers every new
+table (the backup suite asserts export and import both walk `BACKUP_TABLES`).
+Still outstanding from the original Phase 15 list: the import UI does not show
+the preview `previewBackup()` returns, there is no automatic pre-import
+backup, the restore is not wrapped in a transaction, and a full
+export→modify→restore round trip has never been executed end to end.
 
 Also still open from earlier phases:
 

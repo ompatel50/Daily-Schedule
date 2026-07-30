@@ -8,6 +8,8 @@ import {
   CalendarPlus,
   Dumbbell,
   FileDown,
+  FileUp,
+  HeartPulse,
   Loader2,
   Moon,
   Plus,
@@ -29,7 +31,8 @@ import {
 } from "@/components/ui/command";
 import { NAV_ITEMS } from "@/lib/navigation";
 import { today } from "@/lib/date";
-import { globalSearch, type SearchHit } from "@/server/actions/search";
+import type { SearchHit } from "@/lib/logic/search";
+import { globalSearch } from "@/server/actions/search";
 import { useUIStore } from "@/store/ui-store";
 
 export function CommandPalette() {
@@ -145,6 +148,18 @@ export function CommandPalette() {
           </CommandItem>
           <CommandItem value="new habit create" onSelect={() => run(() => router.push("/habits?new=1"))}>
             <Repeat /> Create a habit
+          </CommandItem>
+          <CommandItem
+            value="log health metric weight sleep steps"
+            onSelect={() => run(() => router.push("/health"))}
+          >
+            <HeartPulse /> Log health data
+          </CommandItem>
+          <CommandItem
+            value="import health apple export csv"
+            onSelect={() => run(() => router.push("/health"))}
+          >
+            <FileUp /> Import health data
           </CommandItem>
           <CommandItem value="plan tomorrow planner" onSelect={() => run(() => router.push("/planner"))}>
             <CalendarPlus /> Open the planner
