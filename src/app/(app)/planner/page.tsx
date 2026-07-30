@@ -34,7 +34,7 @@ export default async function PlannerPage({
 
   // Top the materialised recurring series back up to the horizon whenever the
   // planner is opened. Idempotent and cheap.
-  await extendSeriesFor(user.id);
+  await extendSeriesFor(user.id, todayKey);
 
   const range =
     view === "month"

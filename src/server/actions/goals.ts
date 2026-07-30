@@ -64,8 +64,18 @@ export async function saveGoalWithSchedule(
     endDate: fields.endDate ?? null,
   };
 
+  if (data.sourceRef) {
+    // A habit-sourced goal must point at the user's own habit — a foreign id
+    // would leak another account's completions into this user's score.
+    const habit = await prisma.habit.findFirst({
+      where: { id: data.sourceRef, userId: user.id },
+      select: { id: true },
+    });
+    if (!habit) return fail("Choose which habit completes this goal", { sourceRef: ["Pick a habit"] });
+  }
+
   const goal = id
-    ? await prisma.goal.update({ where: { id }, data })
+    ? await prisma.goal.update({ where: { id, userId: user.id }, data })
     : await prisma.goal.create({
         data: {
           ...data,
@@ -221,7 +231,7 @@ export async function removeDateOverride(
   date: DayKey,
 ): Promise<ActionResult<null>> {
   const user = await getCurrentUser();
-  await clearDateOverride(ownerType, ownerId, date);
+  await clearDateOverride(user.id, ownerType, ownerId, date);
   await recomputeDay(user.id, date);
   revalidateAll();
   return succeed(null);

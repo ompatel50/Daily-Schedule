@@ -2,7 +2,6 @@ import type { Metadata, Viewport } from "next";
 import { Inter, JetBrains_Mono } from "next/font/google";
 import { Toaster } from "sonner";
 
-import { AppShell } from "@/components/layout/app-shell";
 import { ThemeProvider } from "@/components/layout/theme-provider";
 import { TooltipProvider } from "@/components/ui/tooltip";
 import "./globals.css";
@@ -12,6 +11,7 @@ const mono = JetBrains_Mono({ subsets: ["latin"], variable: "--font-mono", displ
 
 export const metadata: Metadata = {
   title: { default: "Personal OS", template: "%s · Personal OS" },
+  manifest: "/manifest.webmanifest",
   description:
     "A private, local-first personal operating system: daily planner, habits, nutrition, workouts and health in one place.",
 };
@@ -29,7 +29,7 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
       <body>
         <ThemeProvider attribute="class" defaultTheme="system" enableSystem disableTransitionOnChange>
           <TooltipProvider delayDuration={200}>
-            <AppShell>{children}</AppShell>
+            {children}
             <Toaster position="bottom-right" richColors closeButton />
           </TooltipProvider>
         </ThemeProvider>

@@ -2,7 +2,7 @@
 
 import Link from "next/link";
 import { usePathname } from "next/navigation";
-import { Command, Keyboard, Menu, Plus } from "lucide-react";
+import { CircleUser, Command, Keyboard, LogOut, Menu, Plus } from "lucide-react";
 
 import { NAV_ITEMS } from "@/lib/navigation";
 import { formatDayLong, today } from "@/lib/date";
@@ -12,12 +12,21 @@ import {
   DropdownMenu,
   DropdownMenuContent,
   DropdownMenuItem,
+  DropdownMenuLabel,
+  DropdownMenuSeparator,
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
 import { ThemeToggle } from "@/components/layout/theme-toggle";
+import { signOutAction } from "@/server/actions/auth";
 import { useUIStore } from "@/store/ui-store";
 
-export function Topbar({ todayKey }: { todayKey?: string }) {
+export function Topbar({
+  todayKey,
+  account,
+}: {
+  todayKey?: string;
+  account?: { name: string; email: string | null };
+}) {
   const pathname = usePathname();
   const setCommandOpen = useUIStore((state) => state.setCommandOpen);
   const setShortcutsOpen = useUIStore((state) => state.setShortcutsOpen);
@@ -89,6 +98,29 @@ export function Topbar({ todayKey }: { todayKey?: string }) {
         </Button>
 
         <ThemeToggle />
+
+        {account ? (
+          <DropdownMenu>
+            <DropdownMenuTrigger asChild>
+              <Button variant="ghost" size="icon" aria-label="Account">
+                <CircleUser />
+              </Button>
+            </DropdownMenuTrigger>
+            <DropdownMenuContent align="end" className="w-56">
+              <DropdownMenuLabel className="font-normal">
+                <span className="block truncate text-sm font-medium">{account.name}</span>
+                {account.email ? (
+                  <span className="block truncate text-xs text-muted-foreground">{account.email}</span>
+                ) : null}
+              </DropdownMenuLabel>
+              <DropdownMenuSeparator />
+              <DropdownMenuItem onSelect={() => void signOutAction()}>
+                <LogOut className="h-4 w-4" />
+                Sign out
+              </DropdownMenuItem>
+            </DropdownMenuContent>
+          </DropdownMenu>
+        ) : null}
       </div>
     </header>
   );

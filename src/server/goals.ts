@@ -8,8 +8,10 @@
  * hand-copied duplicate of the formula, which is precisely the drift this
  * upgrade set out to remove.
  */
+import { cache } from "react";
+
 import { prisma } from "@/lib/db";
-import { type DayKey } from "@/lib/date";
+import { type DayKey, shiftDay } from "@/lib/date";
 import {
   buildGoalEvaluation,
   describeGoalTarget,
@@ -128,6 +130,28 @@ export async function evaluateGoalsForDate(
   settings: ScheduleSettings,
   options: { historyDays?: number; scoreOptionalTasks?: boolean } = {},
 ): Promise<GoalDayResult[]> {
+  // Request-level memo: the day overview and the day score both need this
+  // evaluation for the same date in the same render — one run serves both.
+  // Options are normalised to primitives so equivalent calls share a key.
+  return evaluateGoalsForDateMemo(
+    userId,
+    date,
+    settings,
+    options.historyDays ?? -1,
+    options.scoreOptionalTasks ?? false,
+  );
+}
+
+const evaluateGoalsForDateMemo = cache(evaluateGoalsForDateImpl);
+
+async function evaluateGoalsForDateImpl(
+  userId: string,
+  date: DayKey,
+  settings: ScheduleSettings,
+  _historyDays: number,
+  scoreOptionalTasks: boolean,
+): Promise<GoalDayResult[]> {
+  const options = { scoreOptionalTasks };
   const goals = await prisma.goal.findMany({
     where: { userId, active: true, archivedAt: null },
     orderBy: [{ sortOrder: "asc" }, { createdAt: "asc" }],
@@ -148,7 +172,14 @@ export async function evaluateGoalsForDate(
   const [factsByDay, entries] = await Promise.all([
     measureFactsByDay(userId, from, to, { scoreOptionalTasks: options.scoreOptionalTasks }),
     prisma.goalEntry.findMany({
-      where: { userId, goalId: { in: goals.map((goal) => goal.id) } },
+      // Bounded: streaks and rates never look further back than this window
+      // (habits already cap theirs at ~90 days of logs), so fetching a
+      // lifetime of entries on every render would be pure waste.
+      where: {
+        userId,
+        goalId: { in: goals.map((goal) => goal.id) },
+        date: { gte: shiftDay(date, -400), lte: to },
+      },
       orderBy: { date: "asc" },
     }),
   ]);

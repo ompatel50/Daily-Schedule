@@ -85,13 +85,13 @@ describe("checksum", () => {
 });
 
 describe("the backup covers every table the app writes", () => {
-  const source = readFileSync("src/server/actions/backup.ts", "utf8");
+  const exportSource = readFileSync("src/server/actions/backup.ts", "utf8");
+  const restoreSource = readFileSync("src/server/backup-restore.ts", "utf8");
 
   it("exports and restores each table in BACKUP_TABLES", () => {
     for (const table of BACKUP_TABLES) {
-      expect(source, `${table} should be exported`).toContain(`${table},`);
-      expect(source, `${table} should be restored`).toContain(`restore<`);
-      expect(source, `${table} should have a restore handler`).toContain(`"${table}"`);
+      expect(exportSource, `${table} should be exported`).toContain(`${table},`);
+      expect(restoreSource, `${table} should have a restore handler`).toContain(`"${table}"`);
     }
   });
 
@@ -106,15 +106,21 @@ describe("the backup covers every table the app writes", () => {
     // Replace mode that skipped these would leave orphaned schedules pointing at
     // deleted goals, which the engine would then resolve against. The deletes
     // run inside the restore transaction, hence `db.` rather than `prisma.`.
-    expect(source).toContain("db.scheduleRule.deleteMany");
-    expect(source).toContain("db.scheduleRuleDay.deleteMany");
-    expect(source).toContain("db.scheduleOverride.deleteMany");
-    expect(source).toContain("db.goalEntry.deleteMany");
+    expect(restoreSource).toContain("db.scheduleRule.deleteMany");
+    expect(restoreSource).toContain("db.scheduleRuleDay.deleteMany");
+    expect(restoreSource).toContain("db.scheduleOverride.deleteMany");
+    expect(restoreSource).toContain("db.goalEntry.deleteMany");
   });
 
-  it("wraps the restore in one transaction with a pre-import snapshot", () => {
-    expect(source).toContain("prisma.$transaction(");
-    expect(source).toContain("rolled back");
-    expect(source).toContain("pre-import-");
+  it("wraps the restore in one transaction and rolls back on failure", () => {
+    expect(restoreSource).toContain("prisma.$transaction(");
+    expect(exportSource).toContain("rolled back");
+  });
+
+  it("never trusts an id from the file — every imported row is remapped", () => {
+    expect(restoreSource).toContain("remapId(");
+    // The one deliberate exception is shared reference data, which is reused
+    // by identity and never modified.
+    expect(restoreSource).toContain("keepGlobal");
   });
 });

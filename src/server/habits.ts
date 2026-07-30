@@ -8,6 +8,8 @@
  * hand-copied duplicate of the formula, which is precisely the drift this
  * upgrade set out to remove.
  */
+import { cache } from "react";
+
 import { prisma } from "@/lib/db";
 import { type DayKey, dayRange, shiftDay } from "@/lib/date";
 import {
@@ -110,7 +112,33 @@ export async function getHabitViews(
   settings: ScheduleSettings,
   options: HabitViewOptions = {},
 ): Promise<HabitView[]> {
-  const historyDays = options.historyDays ?? 90;
+  // Request-level memo with options normalised to primitives, so the several
+  // surfaces that need today's habit views in one render share one load.
+  return getHabitViewsMemo(
+    userId,
+    date,
+    settings,
+    options.historyDays ?? 90,
+    options.stripDays ?? -1,
+    options.includeArchived ?? false,
+  );
+}
+
+const getHabitViewsMemo = cache(getHabitViewsImpl);
+
+async function getHabitViewsImpl(
+  userId: string,
+  date: DayKey,
+  settings: ScheduleSettings,
+  historyDays: number,
+  stripDaysOption: number,
+  includeArchived: boolean,
+): Promise<HabitView[]> {
+  const options: HabitViewOptions = {
+    historyDays,
+    ...(stripDaysOption === -1 ? {} : { stripDays: stripDaysOption }),
+    includeArchived,
+  };
   const from = shiftDay(date, -historyDays);
 
   const habits = await prisma.habit.findMany({

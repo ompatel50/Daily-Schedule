@@ -1,10 +1,12 @@
 # Personal OS
 
-A private, local-first personal operating system: **daily planner, habit tracker, nutrition tracker,
-workout tracker and health dashboard** in one desktop web app.
+A private personal operating system: **daily planner, habit tracker, nutrition tracker,
+workout tracker and health dashboard** in one web app.
 
-It runs on your machine, stores everything in a local SQLite file, and never sends your data
-anywhere. It is built to answer six questions every day:
+It stores everything in a private PostgreSQL database you own, and never sends your data
+to anyone else. (The original local-only SQLite version is preserved at git tag
+`preview3-complete-before-web`, commit `f5b4fe1` — see `docs/` for how to return to it.)
+It is built to answer six questions every day:
 
 * What do I need to do today?
 * What did I actually finish?
@@ -19,14 +21,16 @@ anywhere. It is built to answer six questions every day:
 
 ```bash
 npm install
-npm run setup        # generate Prisma client, create the DB, seed ~10 weeks of sample data
+docker compose up -d # start local PostgreSQL 16 (postgres/postgres, personal_os_dev)
+npm run setup        # generate Prisma client, apply migrations + backfills, seed sample data
 # — or —
 npm run setup:empty  # the same, but start with a completely empty app
 npm run dev          # http://localhost:3000
 ```
 
-That's it. There is no account, no login and no cloud service to configure. On first run a
-`.env` is created for you from `.env.example` (it only sets `DATABASE_URL="file:./dev.db"`).
+On first run a `.env` is created for you from `.env.example` (it points at the
+docker-compose database). If you already run PostgreSQL yourself, edit
+`DATABASE_URL` / `DIRECT_DATABASE_URL` in `.env` instead of using Docker.
 
 `npm run setup` is idempotent — re-running it re-seeds the demo dataset. **Sample data is
 explicitly tracked**: every seeded record is registered in a seed batch, so
@@ -44,12 +48,17 @@ in-app (only while the account is empty, so demo history can never mix into real
 | `npm test` | Run the unit test suite (Vitest) |
 | `npm run typecheck` | TypeScript, no emit |
 | `npm run db:studio` | Prisma Studio — browse/edit the database directly |
-| `npm run db:seed` | Re-seed sample data |
-| `npm run db:reset` | Drop everything and re-seed (destructive) |
+| `npm run db:seed` | Re-seed sample data (refuses to run against a non-local database) |
+| `npm run db:migrate` | Create + apply a schema migration locally (`prisma migrate dev`) |
+| `npm run db:migrate:deploy` | Apply committed migrations (production-safe, used by deploys) |
+| `npm run db:migrate:status` | Show which migrations are applied |
+| `npm run db:backfill` | Run the idempotent TypeScript data backfills |
+| `npm run db:reset` | Drop everything and re-seed (destructive; guarded to local databases only) |
 
 ### Requirements
 
-Node 20+. Everything else is npm dependencies — no Docker, no database server.
+Node 20+ and a PostgreSQL 16 database — `docker compose up -d` provides one
+locally with zero configuration.
 
 ---
 
@@ -57,9 +66,9 @@ Node 20+. Everything else is npm dependencies — no Docker, no database server.
 
 | Choice | Reason |
 | --- | --- |
-| **Next.js 15 (App Router)** | Server Components let pages query SQLite directly with no API layer; Server Actions give type-safe mutations without a REST surface. |
+| **Next.js 15 (App Router)** | Server Components let pages query the database directly with no API layer; Server Actions give type-safe mutations without a REST surface. |
 | **TypeScript** | Every model, enum and action input is typed end to end. |
-| **Prisma + SQLite** | One file on disk (`prisma/dev.db`). Copy it to back up, delete it to reset. `provider` can be flipped to Postgres later without changing the schema's shape. |
+| **Prisma + PostgreSQL** | Committed migration history (`prisma/migrations/`), a docker-compose database for local dev, and a managed database in production. The pre-web SQLite version is preserved at tag `preview3-complete-before-web`. |
 | **Tailwind CSS + shadcn/ui-style components** | The UI primitives are vendored into `src/components/ui` rather than pulled from a component library, so they're readable and editable. |
 | **Recharts** | Charts are wrapped in `src/components/shared/charts.tsx` so every chart shares one visual language. |
 | **Zustand** | Client state is *only* UI state (palette open, quick-add open). Domain data always comes from the server, so there's one source of truth. |
@@ -448,8 +457,8 @@ than recomputing.
 means re-selecting the same USDA food updates the cached copy instead of creating a second row —
 and that two foods with similar names are never merged. USDA's "Chicken breast, raw" and a
 supermarket's "Chicken Breast" are different records with different numbers, and stay that way.
-Local and custom foods carry a null `externalId`, which SQLite treats as distinct, so the
-constraint never applies to them.
+Local and custom foods carry a null `externalId`, which the unique index treats as distinct
+(the default `NULLS DISTINCT` behaviour), so the constraint never applies to them.
 
 **Accidental duplication is prevented in the database, not by a disabled button.** A save carries a
 client-generated `idempotencyKey`, unique per `(mealId, idempotencyKey)`; a double-click, a retried
@@ -458,7 +467,7 @@ submit and an optimistic replay all collide and become a no-op. Meal templates r
 "apply a saved set of rows without doubling it". Deliberate duplication is a separate, explicit
 action that takes a fresh key.
 
-**Enums are TEXT.** SQLite has no enum type, so every enum-like column is validated in
+**Enums are TEXT.** Every enum-like column is stored as text and validated in
 `lib/enums.ts` and `lib/validation.ts`. This keeps the schema portable: switching `provider` to
 `postgres` needs no rewrite.
 
@@ -583,7 +592,7 @@ Three options, in increasing order of effort:
 1. **Settings → Export → Full JSON backup.** Restorable back into the app, matched by id so
    re-importing is never a duplicate.
 2. **Settings → Export → CSV**, per table, for spreadsheets.
-3. **Copy `prisma/dev.db`.** It's the whole database.
+3. **A database dump** (`pg_dump`) of your PostgreSQL database, if you run it yourself.
 
 ---
 

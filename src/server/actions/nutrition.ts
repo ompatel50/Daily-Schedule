@@ -368,7 +368,10 @@ export async function saveFoodItem(input: unknown): Promise<ActionResult<{ id: s
   };
 
   const food = id
-    ? await prisma.foodItem.update({ where: { id }, data })
+    ? // Only the user's own custom foods are editable. Without the isCustom
+      // filter an id pointing at a bundled (userId: null) or cached provider
+      // food would be rewritten and hijacked into a custom food.
+      await prisma.foodItem.update({ where: { id, userId: user.id, isCustom: true }, data })
     : await prisma.foodItem.create({ data });
 
   if (favorite !== undefined) {
@@ -391,7 +394,11 @@ export async function saveFoodItem(input: unknown): Promise<ActionResult<{ id: s
 
 export async function deleteFoodItem(id: string): Promise<ActionResult<null>> {
   const user = await getCurrentUser();
-  const inUse = await prisma.mealEntry.count({ where: { foodItemId: id } });
+  // Count only the user's own entries: another account's usage of a shared
+  // food is neither their business nor a veto on deleting their custom copy.
+  const inUse = await prisma.mealEntry.count({
+    where: { foodItemId: id, meal: { userId: user.id } },
+  });
   if (inUse > 0) {
     return fail(`This food is used in ${inUse} logged ${inUse === 1 ? "entry" : "entries"}`);
   }

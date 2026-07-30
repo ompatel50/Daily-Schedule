@@ -8,6 +8,8 @@
  * hand-copied duplicate of the formula, which is precisely the drift this
  * upgrade set out to remove.
  */
+import { cache } from "react";
+
 import { prisma } from "@/lib/db";
 import { type DayKey, dayRange, daysBetween } from "@/lib/date";
 import {
@@ -42,6 +44,25 @@ export async function getDayScore(
   settings: ScheduleSettings,
   options: DayScoreOptions = {},
 ): Promise<DayScore> {
+  return getDayScoreMemo(
+    userId,
+    date,
+    settings,
+    options.scoreOptionalTasks ?? false,
+    options.weightsJson ?? null,
+  );
+}
+
+const getDayScoreMemo = cache(getDayScoreImpl);
+
+async function getDayScoreImpl(
+  userId: string,
+  date: DayKey,
+  settings: ScheduleSettings,
+  scoreOptionalTasks: boolean,
+  weightsJson: string | null,
+): Promise<DayScore> {
+  const options: DayScoreOptions = { scoreOptionalTasks, weightsJson };
   const opportunities: ScoreOpportunity[] = [];
   const exclusions: ScoreExclusion[] = [];
 

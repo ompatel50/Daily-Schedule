@@ -8,6 +8,8 @@
  * hand-copied duplicate of the formula, which is precisely the drift this
  * upgrade set out to remove.
  */
+import { cache } from "react";
+
 import { prisma } from "@/lib/db";
 import { type DayKey, shiftDay } from "@/lib/date";
 import {
@@ -80,6 +82,24 @@ export async function loadSchedules(
   ownerType: OwnerType,
   ownerIds?: string[],
 ): Promise<Map<string, ScheduleBundle>> {
+  // Request-level memo: the habit views and the day score both load the same
+  // schedules during one render. The id list is normalised (sorted, joined)
+  // so the same set always shares a key regardless of array identity.
+  return loadSchedulesMemo(
+    userId,
+    ownerType,
+    ownerIds ? [...ownerIds].sort().join("|") : null,
+  );
+}
+
+const loadSchedulesMemo = cache(loadSchedulesImpl);
+
+async function loadSchedulesImpl(
+  userId: string,
+  ownerType: OwnerType,
+  idsKey: string | null,
+): Promise<Map<string, ScheduleBundle>> {
+  const ownerIds = idsKey === null ? undefined : idsKey === "" ? [] : idsKey.split("|");
   const where = {
     userId,
     ownerType,
@@ -358,11 +378,12 @@ export async function setDateOverride(params: {
 
 /** "Restore the normal occurrence" — remove the exception, keep the schedule. */
 export async function clearDateOverride(
+  userId: string,
   ownerType: OwnerType,
   ownerId: string,
   date: DayKey,
 ): Promise<void> {
-  await prisma.scheduleOverride.deleteMany({ where: { ownerType, ownerId, date } });
+  await prisma.scheduleOverride.deleteMany({ where: { userId, ownerType, ownerId, date } });
 }
 
 /** Remove an owner's schedule entirely — called when the owner is deleted. */

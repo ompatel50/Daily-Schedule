@@ -62,7 +62,9 @@ export async function saveWorkout(input: unknown): Promise<ActionResult<{ id: st
 
   const workout = id
     ? await prisma.$transaction(async (tx) => {
-        const updated = await tx.workout.update({ where: { id }, data });
+        // Scoped to the owner: editing someone else's id is a not-found, and
+        // the set wipe below can only ever reach a row this update matched.
+        const updated = await tx.workout.update({ where: { id, userId: user.id }, data });
         await tx.workoutSet.deleteMany({ where: { workoutId: id } });
         if (sets.length) {
           await tx.workoutSet.createMany({
@@ -198,7 +200,7 @@ export async function saveWorkoutTemplate(input: unknown): Promise<ActionResult<
   };
 
   const template = id
-    ? await prisma.workoutTemplate.update({ where: { id }, data })
+    ? await prisma.workoutTemplate.update({ where: { id, userId: user.id }, data })
     : await prisma.workoutTemplate.create({ data });
 
   revalidateAll();

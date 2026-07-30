@@ -132,9 +132,15 @@ export function parseAppleHealthXml(xml: string): ParsedFile {
   }
 
   let cursor = 0;
+  // Cached next-occurrence positions. Refreshing them only once the cursor
+  // passes them keeps the scan linear: re-running indexOf for a tag that
+  // never appears again would otherwise walk the rest of the file on every
+  // iteration — quadratic on a workout-free multi-year export.
+  let recordAt = xml.indexOf("<Record ", cursor);
+  let workoutAt = xml.indexOf("<Workout ", cursor);
   while (cursor < xml.length) {
-    const recordAt = xml.indexOf("<Record ", cursor);
-    const workoutAt = xml.indexOf("<Workout ", cursor);
+    if (recordAt !== -1 && recordAt < cursor) recordAt = xml.indexOf("<Record ", cursor);
+    if (workoutAt !== -1 && workoutAt < cursor) workoutAt = xml.indexOf("<Workout ", cursor);
     if (recordAt === -1 && workoutAt === -1) break;
 
     if (recordAt !== -1 && (workoutAt === -1 || recordAt < workoutAt)) {

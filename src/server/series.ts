@@ -16,26 +16,33 @@ import { expandRule, parseRule } from "@/lib/logic/recurrence";
  */
 export const HORIZON_DAYS = 120;
 
-export async function extendSeriesFor(userId: string): Promise<number> {
+export async function extendSeriesFor(userId: string, referenceToday: string = today()): Promise<number> {
   const parents = await prisma.scheduleItem.findMany({
     where: { userId, recurrenceRule: { not: null }, seriesId: null },
   });
   if (parents.length === 0) return 0;
 
-  const horizon = shiftDay(today(), HORIZON_DAYS);
+  const horizon = shiftDay(referenceToday, HORIZON_DAYS);
   let created = 0;
+
+  // One grouped query answers "how far is each series materialised?" —
+  // the previous per-parent findFirst was an N+1 paid on every planner open.
+  const latestBySeries = new Map(
+    (
+      await prisma.scheduleItem.groupBy({
+        by: ["seriesId"],
+        where: { userId, seriesId: { in: parents.map((parent) => parent.id) } },
+        _max: { date: true },
+      })
+    ).map((row) => [row.seriesId as string, row._max.date]),
+  );
 
   for (const parent of parents) {
     const rule = parseRule(parent.recurrenceRule);
     if (!rule) continue;
 
-    const last = await prisma.scheduleItem.findFirst({
-      where: { userId, OR: [{ id: parent.id }, { seriesId: parent.id }] },
-      orderBy: { date: "desc" },
-      select: { date: true },
-    });
-
-    const cursor = last?.date ?? parent.date;
+    const latestChild = latestBySeries.get(parent.id) ?? null;
+    const cursor = latestChild && latestChild > parent.date ? latestChild : parent.date;
     if (daysBetween(cursor, horizon) <= 0) continue;
 
     const dates = expandRule(rule, parent.date, shiftDay(cursor, 1), horizon);

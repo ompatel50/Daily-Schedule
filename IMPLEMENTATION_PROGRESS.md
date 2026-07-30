@@ -1683,3 +1683,586 @@ npm install && npx prisma generate
 npm run db:push && npm run db:migrate && npm run db:seed   # dev.db is gitignored
 npm test && npm run typecheck && npm run build
 ```
+
+---
+
+# Hosted-website upgrade: Phases 18 onward
+
+> Started 2026-07-30 on branch `claude/personal-os-hosted-perf-98w4ix`, created
+> from `main` at `f5b4fe1` (the merge of PR #7 — the completed Preview 3
+> upgrade). Objective: convert the local-only SQLite app into a secure private
+> hosted website (Auth.js + Google sign-in + email allowlist, PostgreSQL with
+> real migrations, Vercel-deployable), make navigation substantially faster,
+> and complete the deliberately deferred improvements above.
+
+## Phase checklist (18+)
+
+| #  | Phase                                             | Status |
+|----|---------------------------------------------------|--------|
+| 18 | Permanent pre-web safety checkpoint               | ✅ done |
+| 19 | Production PostgreSQL foundation                  | ✅ done |
+| 20 | Authentication and user isolation                 | ✅ done |
+| 21 | Local backup → hosted-account migration           | ✅ done |
+| 22 | Hosted health-import architecture                 | ✅ done |
+| 23 | Navigation and route performance                  | ✅ done |
+| 24 | Deferred feature improvements                     | ⏳ in progress |
+| 25 | Production security                               | — |
+| 26 | Deployment and production configuration           | — |
+| 27 | CI and complete verification                      | — |
+| 28 | Documentation and release handoff                 | — |
+
+---
+
+## Phase 18 — permanent pre-web safety checkpoint
+
+### THE PRE-WEB CHECKPOINT — read this before ever touching history
+
+**The complete, working, local-first SQLite Personal OS (Phases 0–17 + 15a) is
+commit `f5b4fe1d950abf56cc11ae97d2750ac714d365fb`** — the `main` merge commit
+of PR #7. To return to the pre-web version:
+
+```
+git checkout f5b4fe1d950abf56cc11ae97d2750ac714d365fb
+```
+
+* An annotated tag `preview3-complete-before-web` was created locally at that
+  commit. **Pushing tags is blocked by this environment's git proxy (HTTP
+  403)**, so the tag exists locally but not on GitHub; the commit hash above is
+  therefore recorded here, in the pull-request description and in the
+  deployment documentation, exactly as the task prescribes for that case. The
+  user (or any session with tag-push rights) can recreate and push it with:
+  `git tag -a preview3-complete-before-web f5b4fe1 -m "Preview 3 complete" && git push origin preview3-complete-before-web`
+* That checkpoint must never be moved, deleted or replaced. No history rewrite,
+  no force-push.
+
+### Baseline recorded at that commit (verified in this session)
+
+* `npm install` — clean. Node v22.22.2, npm 10.9.7.
+* `npm run setup` — prisma generate + db push + all 3 data migrations + seed:
+  clean (662 schedule items, 8 habits, 390 habit logs, 172 meals, 48 workouts,
+  593 health metrics, 92 foods, 2,858 seed records).
+* `npm test` — **593/593 pass** (21 files).
+* `npm run typecheck` — clean.
+* `npm run build` — clean; 12 routes. First-load JS: `/` 286 kB, `/calendar`
+  168 kB, `/habits` 314 kB, `/health` 297 kB, `/insights` 289 kB, `/nutrition`
+  321 kB, `/planner` 215 kB, `/settings` 188 kB, `/today` 215 kB, `/workouts`
+  310 kB; shared chunk 102 kB.
+* `npm audit` — 3 high-severity advisories, all inside `next 15.5.22`'s own
+  dependency tree (`postcss`, `sharp`/libvips CVEs). `npm audit fix --force`
+  would downgrade to `next@9.3.3` and was **not** run; the individual review
+  happens in Phase 27 as the task prescribes.
+* Known limitations at baseline: the "What remains deliberately open" list
+  above (no ESLint config, no live provider call ever made from this sandbox,
+  no DB-backed integration suite, `rebuildSummaries` O(days), the smaller
+  wishlist items).
+
+### Database safety
+
+* **This cloud environment started with no database at all** — `prisma/dev.db`
+  is gitignored and the clone was fresh. The only SQLite database here is the
+  demo-seeded one created by this session's baseline run. It contains only
+  synthetic seed data; the user's real database exists solely on their own
+  machine (separately copied by the user, per the task). No cloud copy of real
+  user data exists, and none is claimed.
+* The full safety drill was still executed against the seeded database so the
+  procedure itself is verified:
+  * Copied `prisma/dev.db` → scratchpad `db-safety-20260730T042218Z/dev.db.checkpoint`
+    (outside the repository). Size 2,011,136 bytes, SHA-256
+    `269f4641338c99c69daca7a3e2357314fe6609496ba59d070b05e0d960f18e3b`.
+  * The copy opens under a fresh Prisma client; per-table row counts recorded
+    (`table-counts.json`): 662 scheduleItem, 431 mealEntry, 464 workoutSet,
+    593 healthMetric, 390 habitLog, 172 meal, 92 foodItem, 85
+    calendarDaySummary, … (29 tables).
+  * A backup was exported through the application's **real**
+    `exportBackup()` service, validated by the same `inspectBackup()` the
+    import UI uses, and its checksum re-verified independently
+    (`checksumOf` over the data payload matched `meta.checksum`). File SHA-256
+    `baac9096d28c07bb0da10b8166293bfd10fc320e34a113172db85af0589be787`.
+  * That export was restored via the real `importBackup()` into a **separate
+    disposable database** (fresh schema, empty user) — never over the source —
+    and every comparable table count matched the export's `recordCounts`
+    exactly. dev.db was never written during the drill.
+* **Git tracking verification:** `git ls-files` contains no `.env`, no SQLite
+  database file, no backup JSON, no health export or ZIP, no OAuth credential,
+  no API key, no journal and no personal health record. (The only pattern
+  matches are source files: `journal-card.tsx`, `health-import/zip.ts`.)
+
+### Notes for later phases, found during Phase 18
+
+* `importBackup()` upserts rows **by their original ids** and re-points them at
+  the current user. Safe single-user; in a hosted multi-user database this is a
+  cross-account overwrite vector (a crafted backup carrying another user's
+  record ids would update that user's rows). Phase 21 must remap ids /
+  verify ownership before update. Child tables without a `userId` column
+  (`mealEntries`, `workoutSets`, `mealTemplateItems`, `scheduleItemTags`)
+  additionally attach by parent id from the file and need parent-ownership
+  validation.
+* `importBackup()` writes a pre-import snapshot to the **OS temp directory** —
+  fine locally, unusable as a durable safety net on serverless. Phase 21
+  keeps the browser download as the guaranteed path.
+* `getCurrentUser()` in `src/lib/db.ts` is the single seam every action uses
+  (`findFirst` on User, creating one if missing) — exactly where the
+  authenticated session lookup slots in during Phase 20.
+
+---
+
+## Phase 19 — production PostgreSQL foundation
+
+### What changed
+
+* **`prisma/schema.prisma` is now PostgreSQL** (`provider = "postgresql"`,
+  plus `directUrl = env("DIRECT_DATABASE_URL")` so production can put a
+  pooler on `DATABASE_URL` while migrations connect directly). The schema was
+  already provider-portable by design (TEXT enums, YYYY-MM-DD day strings, no
+  raw SQL anywhere — confirmed by a full audit); the deliberate conversion
+  work was in the details below. The SQLite version remains recoverable at
+  the Phase 18 checkpoint; per the task, there is one clean PostgreSQL
+  architecture rather than a dynamic provider switch.
+* **A real migration history exists**: `prisma/migrations/20260730044027_init/`
+  (855 lines), created with `prisma migrate dev` against local PostgreSQL 16.
+  Production applies it with `npm run db:migrate:deploy` (`prisma migrate
+  deploy`); `prisma db push` is gone from the scripts.
+* **One deliberate constraint change**: `Workout`'s unique index
+  `(source, externalId)` became `(userId, source, externalId)` — the old
+  global one would have let two *accounts* importing the same Apple Health
+  export collide. The health-import duplicate check
+  (`src/server/health-import.ts`) now filters by `userId` too.
+* **SQLite→Postgres behaviour fixes** (from a dedicated conversion audit, all
+  sites enumerated in the scratch report):
+  * `searchEverything` uses `mode: "insensitive"` on all nine `contains`
+    filters — SQLite's LIKE was case-insensitive, Postgres's is not, and
+    search would silently have become case-sensitive. (`FoodItem.searchKey`
+    sites stay exact-match: that column is lowercase-normalised on both
+    sides by construction.)
+  * Null ordering pinned where SQLite and Postgres disagree, preserving the
+    UI's existing order: planner `startMinute asc` → `nulls: "first"`
+    (untimed items stay on top), workouts `time desc` → `nulls: "last"`,
+    favourites `lastUsedAt desc` → `nulls: "last"`, open-session
+    `startedAt desc` → `nulls: "last"`.
+  * All six nullable-composite unique indexes rely on `NULLS DISTINCT` —
+    the Postgres default, verified directly against the database (two null
+    `externalId` workout rows insert fine). The schema documents that these
+    must never be switched to `NULLS NOT DISTINCT`.
+* **Scripts and local development**:
+  * `docker-compose.yml` — PostgreSQL 16 with a persistent volume; an init
+    script also creates `personal_os_test` so integration tests never touch
+    dev data. Documented alternative: any own PostgreSQL via `.env`.
+  * `npm run db:migrate` (migrate dev) / `db:migrate:deploy` /
+    `db:migrate:status` / `db:backfill` (the idempotent TypeScript data
+    backfills, renamed from the old `db:migrate`) / `db:reset` (now
+    `prisma migrate reset`, gated by `scripts/guard-local-db.mjs` which
+    refuses non-local hosts unless `DANGEROUSLY_ALLOW_REMOTE_DB=1`).
+  * `scripts/ensure-env.mjs` no-ops when `DATABASE_URL` is already set, so
+    hosted/CI builds are never sabotaged by a copied `.env`.
+  * `prisma/seed.ts` refuses non-local database hosts (`SEED_ALLOW_REMOTE=1`
+    to override for a disposable remote dev DB) — demo data can never be
+    seeded into production by accident; the in-app sample-data path stays
+    the only production route and only works into an empty account.
+  * `.env.example` documents `DATABASE_URL` + `DIRECT_DATABASE_URL`.
+* README quick start / commands / stack table updated (full docs rewrite is
+  Phase 28).
+
+### Verification
+
+* `prisma migrate deploy` onto a **clean disposable database** — applies
+  cleanly; `prisma migrate diff --from-migrations --to-schema-datamodel` —
+  **no difference** (migrations ≡ schema).
+* `npm run db:backfill` against the seeded Postgres DB — all three report
+  "nothing to do" (idempotency preserved on PG).
+* `npm run db:seed` on Postgres — identical counts to the SQLite baseline
+  (662 schedule items, 390 habit logs, 172 meals, 48 workouts, 593 metrics,
+  92 foods, 2,858 seed records).
+* `npm test` 593/593 · `npm run typecheck` clean · `npm run build` clean
+  (route sizes unchanged from baseline).
+* Production server on PostgreSQL: **all 10 routes return 200, server log
+  clean** (dashboard 0.63 s first hit, 0.15–0.35 s elsewhere, server render
+  time only).
+* The type checker caught one real error during conversion (a widened
+  `QueryMode` on the pre-built `where` in `searchFoods`) — resolved by
+  keeping that site exact-match, which it already was semantically.
+
+### Deliberately deferred within this area
+
+* `importBackup`'s per-row `catch {}` inside one interactive transaction is
+  **incompatible with Postgres** (the first failed statement aborts the
+  transaction; "partial recovery" would become "total failure"). The import
+  is being rewritten wholesale in Phase 21 (ownership remapping + id
+  minting); restructuring it twice would be waste. Until Phase 21 lands, a
+  damaged backup file rolls back entirely rather than partially restoring —
+  strictly safer, never lossier.
+* Region colocation (database next to the app) is a deployment-time
+  decision documented in the Phase 26 deployment guide.
+* Auth.js tables arrive as a second migration in Phase 20.
+
+---
+
+## Phase 20 — authentication and user isolation
+
+### Architecture
+
+* **Auth.js (next-auth v5 beta 32) + Google OAuth + Prisma adapter**, JWT
+  sessions (30-day max), **no session table** and **no stored OAuth tokens**:
+  a wrapped adapter strips access/refresh/id tokens before the Account row is
+  written — the app never calls Google after sign-in, so the tokens would be
+  pure liability at rest. Migration `20260730044542_auth` adds `Account` and
+  `User.emailVerified`/`image`.
+* **Server-side email allowlist** (`ALLOWED_EMAILS`): enforced in the
+  `signIn` callback (a Google-authenticated unknown email is refused), it
+  **fails closed** when unset, and it is re-checked on *every authenticated
+  request* in `getCurrentUser` — removing an email locks that account out on
+  its next request, not when the JWT expires. No public registration exists.
+* **Three defense layers, only the deepest trusted**: edge middleware
+  (`src/middleware.ts`, JWT check, redirects to /signin), the `(app)` route
+  group layout (`requireCurrentUser`), and — the real enforcement — every
+  server query/action resolving the user from the session.
+* **The seam did the heavy lifting**: `getCurrentUser` in `src/lib/db.ts`
+  (the one function all ~141 call sites use) now re-exports
+  `requireCurrentUser` from `src/server/auth/current-user.ts` — session →
+  allowlist re-check → User row, wrapped in React `cache()` (one DB lookup
+  per request instead of ~10), redirecting to /signin when absent. Server
+  actions therefore verify authentication independently of middleware by
+  construction. Central helpers: `getSession` / `getCurrentUser` /
+  `requireSession` / `requireCurrentUser` / `requireOwnedRecord`.
+* **Sign-in page** (`/signin`, outside the app shell): Google button, safe
+  error messages (denied ≠ technical detail), and — local development only —
+  a `DANGEROUSLY_ENABLE_DEV_LOGIN=1`-gated passwordless door that still
+  enforces the allowlist and is ignored on Vercel; it exists so development
+  and automated browser tests work without Google credentials. Sign-out
+  lives in the topbar account menu (`signOutAction`).
+* **First sign-in** creates the app user via the adapter (name falls back to
+  the email local part; timezone stays the schema default until Settings).
+  No demo data is written; the existing empty-account onboarding (sample
+  data offer) applies untouched, and later sign-ins never overwrite
+  settings.
+* The circular import db.ts ↔ auth (a webpack TDZ crash) was broken by
+  extracting `src/lib/prisma.ts`; `src/lib/db.ts` stays the compat surface.
+
+### Ownership audit — found and fixed
+
+A full audit (91 action + ~70 query functions, report in the session
+scratchpad) found the query layer and compute layer already correctly
+user-scoped, and these defects, all fixed:
+
+* **8 update-by-id mutations** took a client id with no `userId` filter — 5
+  of them would also have *stolen* the row (stamping `userId` in data):
+  `saveHabit`, `saveWorkout` (which also wiped the victim's sets),
+  `saveWorkoutTemplate`, `saveScheduleTemplate`, `saveReminder`,
+  `saveFoodItem`, `saveGoalWithSchedule`, `saveGoal`. All now filter
+  `{ id, userId }` (P2025 = not found).
+* `saveFoodItem` could rewrite **global bundled foods** (`userId: null`)
+  shared by every account — now scoped to `{ userId, isCustom: true }`.
+* `clearDateOverride` deleted by `(ownerType, ownerId, date)` with no user —
+  now takes and filters `userId`.
+* `deleteFoodItem` counted other users' meal entries (leak + veto) — now
+  counts only the caller's.
+* Health-import staging **cancel** didn't verify token ownership —
+  `discardStaged(userId, token)` now loads and checks the staged owner.
+* Client-supplied reference ids are verified: planner `habitId`/`tagIds`
+  and goal `sourceRef` must belong to the caller.
+* The health-import workout dupe-check and `Workout` unique index were
+  already made per-user in Phase 19.
+
+### Verification
+
+* **Browser (Playwright, production build): 13/13** — signed-out `/` and
+  deep routes redirect to /signin; the sign-in page carries no app shell and
+  no data; a non-allowlisted email is refused with a safe message
+  (`?error=CredentialsSignin` — surfaced via the canonical AuthError-catch
+  pattern); an allowlisted sign-in lands on the dashboard with an **empty**
+  account (no demo data); zero console errors; sign-out returns to /signin
+  and re-gates every route; a second account sees nothing of the first's
+  data. (`AUTH_TRUST_HOST` documented for self-hosted deployments — its
+  absence was caught live as an UntrustedHost 500.)
+* **Cross-user integration tests: 20/20 on real PostgreSQL** — a new
+  database-backed suite (`npm run test:integration`, disposable
+  `personal_os_test` DB, migrations applied from zero each run, stubbed
+  session chooses the signed-in user). Every major domain: habits,
+  workouts, templates, planner items, routines, tags, bundled + custom
+  foods, goals, schedule overrides, reminders, search scoping — each
+  verifying both the refusal *and* that the victim's row is unchanged.
+  Also: unauthenticated actions/queries redirect instead of running, and
+  search case-insensitivity under Postgres is pinned by a test.
+* Unit tests 593/593 (auth stubs added to the vitest config; integration
+  suite excluded from the unit run) · typecheck clean · build clean
+  (`/signin` route + 87.5 kB middleware).
+
+### Notes
+
+* `.env.example` documents `AUTH_SECRET`, `AUTH_GOOGLE_ID`,
+  `AUTH_GOOGLE_SECRET`, `ALLOWED_EMAILS`, `AUTH_TRUST_HOST`,
+  `DANGEROUSLY_ENABLE_DEV_LOGIN`. No real values are committed.
+* `Account` is deliberately **not** in `BACKUP_TABLES`: sign-in linkage is
+  not user data, and a backup restored into a different account must never
+  carry the original's Google binding.
+* The backup import's cross-user id hazard is Phase 21's core work, next.
+
+---
+
+## Phase 21 — local backup → hosted-account migration
+
+### The rewrite (`src/server/backup-restore.ts`)
+
+The local app restored a backup by **upserting rows under the file's own
+primary keys** — correct single-user, and a cross-account overwrite vector in
+a shared database (a crafted file carrying a victim's cuids would rewrite
+their rows and re-point them at the importer). It also swallowed per-row
+errors *inside* one transaction, which PostgreSQL turns into "first failure
+aborts everything after it". Both are gone; the import was rewritten
+around four rules:
+
+1. **No id from the file is ever trusted.** Every imported row gets a
+   deterministic new id — `hash(userId | oldId)` — so a file structurally
+   cannot address another account's rows, every internal relationship
+   survives (all references remapped with the same function, including the
+   polymorphic `ScheduleRule.ownerId`, `Goal.sourceRef`, favourites'
+   `refId`-by-kind, seed-record targets, series parents, and even the ids
+   embedded inside `ReminderDelivery.key`), and re-importing the same file
+   is still idempotent (same input → same ids → skipped as duplicates).
+2. **References resolve strictly inside the file.** A child pointing at a
+   parent that didn't travel with it is dropped (required link) or unlinked
+   (optional link) and counted — never attached to a row in the database.
+3. **Validation happens before the transaction.** Rows are sanitised
+   against the Prisma schema itself (DMMF-derived column whitelist + type
+   checks + DateTime coercion); damaged rows are dropped and reported
+   up front — the Postgres-compatible replacement for in-transaction
+   `catch {}` row skipping.
+4. **Writes are batched `createMany … skipDuplicates`** in true FK order
+   (the legacy order wrote schedule items before the meals they reference —
+   masked on SQLite by the old error swallowing) inside one transaction:
+   a real mid-flight failure rolls back everything; merge-mode collisions
+   with the account's own data are skipped without poisoning the
+   transaction. Series items write parents before children.
+
+Shared reference data is the one deliberate exception: bundled foods
+(`userId: null`) that already exist are reused by identity and **never
+modified** (a file claiming a bundled id with poisoned values changes
+nothing); provider-cached foods are matched by `(provider, externalId)` —
+the same shared-cache behaviour a live search has; anything else becomes the
+importer's own copy.
+
+Also new:
+* **A safe subset of the exported User row is applied** to the account
+  (name, timezone, units, week start, day window, score settings —
+  never email/id/image), so day keys keep meaning what they meant locally.
+  The old import silently dropped all of it.
+* **The tmpdir pre-import snapshot is gone** (a serverless temp dir does not
+  survive the request); the automatic **browser download before confirm is
+  the recovery path**, and the dialog says so.
+* **A post-import verification report downloads automatically**: mode, file
+  version, per-table in-file/created/skipped/dropped, totals, and per-table
+  row counts now in the account.
+* Summary rebuild now spans the earliest date across schedule items, meals,
+  habit logs, metrics and workouts (was: schedule items only).
+
+### Verification
+
+* **Integration (real PostgreSQL): 14 new tests, 34/34 total** — full-graph
+  import into an empty account asserting every relationship by remapped id;
+  re-import creates nothing; replace clears first / merge keeps existing;
+  preview writes nothing; checksum + older-version warnings; future version
+  refused before writing; **a file carrying another user's real ids leaves
+  their rows untouched** (the importer gets an inert copy); **a child row
+  aimed at another user's parent is dropped, not attached**; existing
+  bundled foods are reused and never modified; int4-overflow mid-import
+  rolls the whole import back; a damaged row is dropped and reported while
+  the rest imports; a v2 file gets every-day schedules backfilled; hosted
+  export round-trips into another account with both accounts intact.
+* **Browser (production build): 7/7** — Settings → Backup: export downloads
+  a valid v3 file; choosing a synthetic file opens the preview (nothing
+  written); confirming downloads the pre-import backup **and** the
+  verification report, imports 3 records, and the imported habit renders in
+  the app; zero console errors.
+* Unit tests 594/594 (backup-format suite updated: the "covers every table"
+  assertions now check the restore engine, plus a new assertion that every
+  imported row is remapped) · typecheck clean · build clean.
+
+Deliberately not done: optional private object storage for oversized
+backups (a browser download remains the required recovery method; noted for
+Phase 26 docs — Vercel's ~4.5 MB request cap bounds single-request imports,
+which comfortably fits this app's real backups today).
+
+---
+
+## Phase 22 — hosted health-import architecture
+
+### The architecture
+
+The local importer sent the raw export (up to 400 MB) through one server
+action and staged the parsed plan in the OS temp directory — both fatal on
+serverless (per-request body caps, no shared disk between invocations).
+The hosted architecture inverts it: **the raw Apple Health export never
+leaves the user's device.**
+
+* **Parsing runs in the browser, in a Web Worker**
+  (`src/components/health/import-worker.ts`): ZIP extraction
+  (`zip-browser.ts`, a `DataView` + `DecompressionStream("deflate-raw")`
+  port of the minimal reader — Node 18+ has the same API, so the unit tests
+  exercise the exact browser code), the XML scanner, the strict CSV parser
+  and the rollup were already pure/browser-portable and now run off the
+  main thread. File-type detection moved to a pure module (`detect.ts`).
+* **Only normalised rows travel**, in bounded sequence-numbered chunks
+  (≤2,000 rows and ≤800 KB each), into a **database-backed import session**
+  (`HealthImportSession`/`HealthImportChunk`, migration
+  `20260730052646`): serverless-safe, multi-instance-safe, expiring after
+  two hours with opportunistic sweeps.
+* **Session security** (`src/server/health-import-session.ts`): the server
+  creates the session id tied to the authenticated user — the browser
+  cannot choose an owner; chunks only attach to the owner's own
+  `uploading` session; the unique `(sessionId, seq)` makes duplicate
+  submissions no-ops; **finalize revalidates every row** (zod: known
+  metric/workout types, day-key format, finite bounded values, bounded
+  strings) and **recomputes every fingerprint from row content** — a
+  tampered fingerprint is ignored; **provenance is enforced** (an XML/ZIP
+  session's rows must claim `apple_health`; a CSV session's rows only the
+  CSV source set — a CSV can no more forge "measured by Apple Health"
+  than it could before). The validated plan is staged on the session row,
+  chunks deleted, and the existing preview/confirm/cancel pipeline works
+  on top unchanged: preview writes no health rows, confirm is one
+  transaction with the failure-batch record, cancel deletes the session
+  (owner-checked).
+* `serverActions.bodySizeLimit` dropped **400 MB → 16 MB** (the largest
+  remaining action payload is a backup JSON; health chunks are <1 MB).
+* **Summary rebuilding is no longer a sequential full-span walk**:
+  `rebuildSummariesForDates` recomputes exactly the days an import or
+  batch removal touched, each widened ±6 days (a day's score can depend on
+  its week under either week-start convention — identical results to the
+  full-range rebuild), with bounded concurrency (8 days at a time);
+  `rebuildSummaries` (seed/backup restore) shares the same engine.
+* Wizard UX: live stage line ("Reading the file on this device…" →
+  "Uploading summary rows n/m…" → "Checking against your existing
+  records…"), same preview dialog, cancel at any stage discards the
+  session. An interrupted upload's staged data expires server-side.
+
+### A real performance bug found by measuring
+
+The first measured run showed parse time going **superlinear** (9.2 s for
+1 year → 95.3 s for 3 years in the worker; worse under Node). Cause: the
+XML scanner re-ran `indexOf("<Workout ", cursor)` on every record — for a
+workout-free export that walks the rest of the file once per record,
+O(n²). Fixed by caching next-occurrence positions (results identical;
+the whole suite still passes). **3-year parse: 95.3 s → 0.4 s.**
+
+### Measured (production build, real browser, synthetic exports)
+
+First import into an empty account — after the fix:
+
+| Export | File | Parse (worker) | Upload | Server preview | Confirm (write + rebuild) | Days recomputed |
+|---|---|---|---|---|---|---|
+| 1 month (~1.2 k records) | 0.2 MB | 0.1 s | 0.1 s | 0.1 s | 1.0 s | 42 |
+| 1 year (~15 k records) | 2.5 MB | 0.2 s | 0.2 s | 0.5 s | 1.9 s | 377 |
+| 3 years (~45 k records) | 7.5 MB | 0.4 s | 0.4 s | 0.6 s | 4.9 s | 1,107 |
+
+First-run row counts written: 180 / 2,190 / 6,570. A second import of the
+same files through the same UI wrote **0 new rows** at every size — the
+fingerprint dedup holds end to end in the hosted pipeline. Zero console
+errors in every run. Peak memory stays bounded by the file's bytes plus
+the normalised plan (the 7.5 MB export produced a ~6-8 MB plan in worker
+memory; no 400 MB server buffering anywhere).
+
+### Verification
+
+* **Integration (real PostgreSQL): 12 new tests, 46/46 total** — chunks
+  cannot attach to another user's session; another user cannot finalize,
+  confirm or cancel a session; duplicate chunk submission is a no-op;
+  out-of-range sequence numbers and malformed rows are rejected; finalize
+  refuses an incomplete upload; forged fingerprints are recomputed away;
+  a CSV session cannot smuggle `apple_health` provenance; preview writes
+  nothing and confirm writes exactly the selection (summaries included);
+  same-rows re-import reports duplicates and writes nothing; cancel
+  removes staged data; expired sessions are swept; batch removal deletes
+  the batch's rows and recomputes exactly the touched days.
+* Unit tests 594/594 (ZIP suite now exercises the browser implementation,
+  async; detection suite moved to the pure module) · typecheck clean ·
+  build clean.
+* Browser: the three-size measurement runs above (which also re-verified
+  preview→confirm→outcome and the re-import dedup end to end).
+
+Honest limits: an in-flight *upload* does not survive leaving the page
+(the parsed plan lives in the page's memory; the server session simply
+expires) — an interrupted import is restarted by re-picking the file,
+and nothing partial is ever written. The optional object-storage fallback
+was not needed: browser parsing handled the multi-year case comfortably.
+
+---
+
+## Phase 23 — navigation and route performance
+
+All numbers are measured against the production build in a real browser
+(Playwright), with a privacy-safe query counter (`PRISMA_LOG_QUERIES=1`
+logs query text and duration only — **never parameters**, so no personal
+value can reach a log). Local database — on a hosted deployment every
+query costs a network round-trip, which is exactly why the query counts
+matter more than the local milliseconds.
+
+### Query-layer fixes (from a dedicated per-route audit)
+
+* **Request-level memoisation** (React `cache()`, options normalised to
+  primitives so equivalent calls share a key): `getCurrentUser` (Phase 20;
+  ~10 lookups per render → 1), `evaluateGoalsForDate` (the day overview and
+  the day score each ran the full ~10-query goal evaluation — now one run
+  serves both), `getHabitViews`, `getDayScore`, and `loadSchedules`
+  (habit views and the score loaded the same schedules twice; the id list
+  is sorted/joined so array identity doesn't defeat the memo).
+* **The reminder feed no longer blocks navigation.** The app shell awaited
+  `getReminderFeed()` (~15 queries of schedule resolution) on every render
+  of every page; the watcher now fetches it client-side right after mount.
+  Same reminders, zero navigation cost.
+* **`goalEntry.findMany` was unbounded** — every render fetched a
+  lifetime of manual goal entries. Now windowed to 400 days back plus the
+  evaluation week (habits already cap their logs at ~90 days).
+* **Planner opened with an N+1 write**: `extendSeriesFor` ran a
+  `findFirst` per recurring series on every planner GET, on the host
+  clock. One `groupBy` now answers "how far is each series materialised?"
+  and the caller passes the user's resolved today.
+* **Workouts fetched the same rows twice** (`getRecentWorkouts(25)` +
+  90-day history, both with sets): the recent list is now sliced from the
+  history fetch, falling back only for sparse histories. **Insights**
+  fetched goals it explicitly never used (`void goals`) — removed.
+
+### Client/bundle fixes
+
+* **Recharts is out of the first load.** `charts.tsx` is now a lazy facade
+  (`next/dynamic`, skeleton placeholder) over the unchanged
+  implementations; six routes stop shipping ~120 kB of chart code they
+  didn't need to paint.
+* **The command palette and quick-add dialog load after hydration**
+  (`shell-extras.tsx`) instead of inside every route's bundle. Keyboard
+  shortcuts stay eager (tiny, must listen immediately).
+* **`(app)/loading.tsx`**: clicking a primary tab now instantly swaps the
+  content area to a skeleton inside the persistent shell (sidebar/topbar
+  never unmount) instead of holding the old page. **`(app)/error.tsx`**:
+  a quiet route-level error boundary — no stack, no paths, just a retry
+  and the digest for log correlation.
+* `outputFileTracingRoot` pinned to the project (the workspace-root
+  warning caused by a stray parent-directory lockfile on the user's
+  machine; nothing outside the repo is touched).
+
+### Before → after
+
+Queries per navigation (measurement window includes the reminder feed —
+which before was blocking and now fires after paint):
+
+| Route | Queries before | Queries after | First-load JS before → after |
+|---|---|---|---|
+| Dashboard | 42 | 30 | 286 kB → **163 kB** |
+| Today | 28 | 16 | 216 → 217 kB |
+| Planner | 11 | 8 | 216 → 217 kB |
+| Habits | 14 | 7 | 315 → **190 kB** |
+| Calendar | 11 | 8 | 169 → 170 kB |
+| Nutrition | 13 | 10 | 323 → **198 kB** |
+| Workouts | 15 | 12 | 311 → **187 kB** |
+| Health | 10 | 7 | 300 → **174 kB** |
+| Insights | 26 | 14 | 290 → **165 kB** |
+| Settings | 24 | 21 | 189 → 190 kB |
+
+Warm client-side navigation (click a tab → content updated): **80–154 ms
+before → 47–67 ms after**, with the skeleton appearing immediately.
+Server render time stayed 35–85 ms locally on every route. Verified after
+the changes: all 10 routes render with **zero console errors**, charts
+appear on the six chart routes, and the deferred palette opens.
+
+Deliberately unchanged: `getDemoStatus`'s 10 parallel counts feed real
+displayed numbers (the sample-data panel) and cost one round-trip;
+per-action `revalidatePath("/", "layout")` stays — with the render this
+cheap, scoping invalidation per-action across 91 actions is risk without
+measurable reward.

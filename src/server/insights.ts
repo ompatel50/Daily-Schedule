@@ -70,10 +70,9 @@ export async function getWeeklyReview(
 ): Promise<WeeklyReview> {
   const days = daysBetween(start, end) < 0 ? [] : dayRange(start, end);
 
-  const [summaries, habitViews, goals, workouts, journals] = await Promise.all([
+  const [summaries, habitViews, workouts, journals] = await Promise.all([
     getSummaries(userId, start, end),
     getHabitViews(userId, end, settings, { historyDays: Math.max(7, days.length), stripDays: 0 }),
-    prisma.goal.findMany({ where: { userId, active: true, archivedAt: null } }),
     prisma.workout.findMany({
       where: { userId, date: { gte: start, lte: end }, status: "completed" },
       select: { durationMin: true },
@@ -157,8 +156,6 @@ export async function getWeeklyReview(
 
   const loggedDays = summaries.filter((summary) => summary.calories > 0).length;
   const totalCalories = summaries.reduce((total, summary) => total + summary.calories, 0);
-
-  void goals;
 
   return {
     start,

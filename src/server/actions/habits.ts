@@ -49,7 +49,9 @@ export async function saveHabit(input: unknown): Promise<ActionResult<{ id: stri
   };
 
   const habit = id
-    ? await prisma.habit.update({ where: { id }, data })
+    ? // The userId filter makes an edit of someone else's habit a not-found
+      // (P2025) instead of a silent ownership transfer.
+      await prisma.habit.update({ where: { id, userId: user.id }, data })
     : await prisma.habit.create({
         data: {
           ...data,

@@ -1,25 +1,32 @@
-// Personal OS — local-first schema.
+// Personal OS — hosted schema (PostgreSQL).
 //
 // Design notes:
-//  * SQLite has no enum or array support, so "enum-like" fields are stored as
-//    TEXT and validated in the app layer (see src/lib/enums.ts). This keeps the
-//    schema portable — swapping `provider` to postgres later needs no rewrite.
+//  * "Enum-like" fields are stored as TEXT and validated in the app layer
+//    (see src/lib/enums.ts). This kept the schema portable through the
+//    SQLite→PostgreSQL conversion and keeps every value readable in a backup.
 //  * Dates that represent a *calendar day* are stored as `YYYY-MM-DD` strings
 //    (`date` fields). Dates that represent an *instant* use DateTime. This
 //    avoids the classic timezone drift where "today" shifts at UTC midnight.
 //  * Every user-visible record carries createdAt/updatedAt so backups, sync and
 //    "what changed this week" views are possible without extra bookkeeping.
 //  * `externalId` + `source` columns exist on the health/workout tables so an
-//    Apple Health / watch import can upsert idempotently later without a
-//    migration.
+//    Apple Health / watch import can upsert idempotently without a migration.
+//  * Nullable columns inside unique indexes rely on the default
+//    NULLS DISTINCT semantics (two NULLs never collide) — the same behaviour
+//    SQLite had. Never switch these indexes to NULLS NOT DISTINCT.
+//  * The pre-web SQLite version of this schema is preserved at commit
+//    f5b4fe1d950abf56cc11ae97d2750ac714d365fb (tag preview3-complete-before-web).
 
 generator client {
   provider = "prisma-client-js"
 }
 
 datasource db {
-  provider = "sqlite"
+  provider = "postgresql"
   url      = env("DATABASE_URL")
+  // Migrations connect directly; DATABASE_URL may point at a pooler in
+  // production. Locally the two are simply the same URL.
+  directUrl = env("DIRECT_DATABASE_URL")
 }
 
 // ---------------------------------------------------------------------------
@@ -33,6 +40,13 @@ model User {
   timezone  String   @default("America/New_York")
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
+
+  // --- authentication (Auth.js) ---------------------------------------------
+  /// Set by the OAuth provider on first sign-in. The app itself never emails.
+  emailVerified DateTime?
+  /// Profile picture URL from the OAuth provider, shown in the topbar.
+  image         String?
+  accounts      Account[]
 
   // Personal context used by nutrition / health calculations.
   birthDate     String? // YYYY-MM-DD
@@ -68,6 +82,8 @@ model User {
   scheduleOverrides ScheduleOverride[]
   seedBatches       SeedBatch[]
   healthImportBatches HealthImportBatch[]
+  healthImportSessions HealthImportSession[]
+  pushSubscriptions PushSubscription[]
 
   // --- day score configuration ----------------------------------------------
   /// JSON map of category → weight, e.g. {"planner":30,"habits":30,"goals":40}.
@@ -78,6 +94,31 @@ model User {
   scoreOptionalTasks Boolean @default(false)
   /// JSON blob backing the dismissible onboarding checklist.
   onboardingState String @default("{}")
+}
+
+/// One linked OAuth account (Google). Shape follows the Auth.js Prisma
+/// adapter contract, but the token columns are deliberately left null: the
+/// app never calls the provider's APIs after sign-in, so access/refresh/id
+/// tokens are stripped before the row is written (see src/server/auth).
+/// Sessions are stateless JWTs — there is no Session table on purpose.
+model Account {
+  id                String  @id @default(cuid())
+  userId            String
+  type              String
+  provider          String
+  providerAccountId String
+  refresh_token     String?
+  access_token      String?
+  expires_at        Int?
+  token_type        String?
+  scope             String?
+  id_token          String?
+  session_state     String?
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([provider, providerAccountId])
+  @@index([userId])
 }
 
 // ---------------------------------------------------------------------------
@@ -657,7 +698,9 @@ model Workout {
   restSecDefault Int?
 
   // Import-friendly: an Apple Health / watch export can upsert on
-  // (source, externalId) without touching manual rows.
+  // (userId, source, externalId) without touching manual rows. Scoped per
+  // user — two accounts importing the same Apple Health export must never
+  // collide with each other.
   source     String  @default("manual") // manual | apple_health | import
   externalId String?
 
@@ -674,7 +717,7 @@ model Workout {
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
-  @@unique([source, externalId])
+  @@unique([userId, source, externalId])
   @@index([userId, date])
   @@index([userId, type])
   @@index([importBatchId])
@@ -814,9 +857,70 @@ model HealthMetric {
   @@index([batchId])
 }
 
+/// One in-flight health import between "the browser parsed the file" and
+/// "the user confirmed". The raw export never leaves the user's device: the
+/// browser parses it in a Web Worker and uploads only normalised rows, in
+/// bounded chunks, into a session created by — and owned by — the server.
+/// Sessions expire after two hours and are swept opportunistically; confirm
+/// and cancel both delete the staged data.
+model HealthImportSession {
+  id     String @id @default(cuid())
+  userId String
+  user   User   @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  /// uploading → staged → (deleted on confirm/cancel). A failed confirm keeps
+  /// the session so the user can retry without re-parsing.
+  status String @default("uploading")
+
+  source   String // apple_health | csv
+  fileType String // xml | zip | csv
+  /// Base filename only — never a path from the user's machine.
+  fileName String
+  fileSize Int?
+
+  /// Chunks the client declared at creation; all must arrive before finalize.
+  totalChunks Int @default(0)
+
+  examined Int    @default(0)
+  invalid  Int    @default(0)
+  /// JSON array [{type, count}] of unsupported record types.
+  unsupported String @default("[]")
+  /// JSON array of parser warnings (bounded).
+  warnings String @default("[]")
+
+  /// After finalize: the server-validated plan (rows, workouts, dupe lists)
+  /// the confirm step writes from. Never the raw file.
+  stagedPlan String?
+
+  expiresAt DateTime
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  chunks HealthImportChunk[]
+
+  @@index([userId, status])
+  @@index([expiresAt])
+}
+
+/// One bounded slice of normalised rows uploaded by the browser. The unique
+/// (sessionId, seq) makes an accidental duplicate submission a no-op.
+model HealthImportChunk {
+  id        String              @id @default(cuid())
+  sessionId String
+  session   HealthImportSession @relation(fields: [sessionId], references: [id], onDelete: Cascade)
+
+  seq     Int
+  /// JSON: { rows: NormalizedHealthRow[], workouts: RawWorkout[] }
+  payload String
+
+  createdAt DateTime @default(now())
+
+  @@unique([sessionId, seq])
+}
+
 /// One import run — the unit of review and of removal. Only counts and safe
-/// metadata are kept; the raw export is parsed, staged temporarily and deleted,
-/// never stored in the database.
+/// metadata are kept; the raw export is parsed in the browser and never
+/// stored anywhere server-side.
 model HealthImportBatch {
   id     String @id @default(cuid())
   userId String
@@ -1058,6 +1162,29 @@ model ReminderDelivery {
 
   @@unique([userId, key])
   @@index([userId, deliveredAt])
+}
+
+/// One browser's Web Push subscription. Endpoint + keys come from the
+/// browser's PushManager; the endpoint is an opaque provider URL, unique per
+/// browser+profile. A push failure with 404/410 means the browser revoked it —
+/// the row is deleted rather than retried forever.
+model PushSubscription {
+  id     String @id @default(cuid())
+  userId String
+  user   User   @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  endpoint String @unique
+  p256dh   String
+  auth     String
+
+  /// Coarse device label shown in Settings ("Chrome · Mac"), from the
+  /// user agent at subscribe time. Never a full fingerprint.
+  deviceLabel String?
+
+  createdAt  DateTime @default(now())
+  lastSeenAt DateTime @default(now())
+
+  @@index([userId])
 }
 
 /// Generic "pin this" across domains — foods, workouts, templates, habits.

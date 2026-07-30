@@ -10,9 +10,9 @@ import { SectionCard } from "@/components/shared/section-card";
 type Permission = "default" | "granted" | "denied" | "unsupported";
 
 /**
- * Browser notifications are opt-in and only fire while a tab is open. That
- * limitation is stated plainly rather than papered over — a local-first app
- * with no server genuinely cannot deliver a notification when it isn't running.
+ * In-tab browser notifications — opt-in, firing while a tab is open. For
+ * delivery with no tab open, the Background reminders panel below sets up
+ * Web Push; this one stays useful as the zero-setup path and the fallback.
  */
 export function NotificationsPanel() {
   const [permission, setPermission] = React.useState<Permission>("default");
@@ -39,7 +39,7 @@ export function NotificationsPanel() {
       title="Reminders"
       icon={Bell}
       accent="text-amber-500"
-      description="Desktop notifications while the app is open"
+      description="Desktop notifications while a tab is open"
     >
       <div className="flex flex-wrap items-center justify-between gap-3">
         <p className="max-w-lg text-sm text-muted-foreground">

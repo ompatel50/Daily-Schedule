@@ -10,8 +10,8 @@ import {
   WORKOUTS_CATEGORY,
 } from "@/lib/logic/health-import/rollup";
 import { isLikelyDuplicateWorkout } from "@/lib/logic/health-import/workout-dup";
-import { extractAppleHealthXml, listZipEntries } from "@/server/health-import/zip";
-import { detectFileType } from "@/server/health-import";
+import { extractAppleHealthXml, listZipEntries } from "@/lib/logic/health-import/zip-browser";
+import { detectHealthFileType } from "@/lib/logic/health-import/detect";
 import {
   APPLE_EXPORT_XML,
   APPLE_EXPORT_XML_OVERLAPPING,
@@ -374,41 +374,41 @@ describe("ZIP extraction", () => {
     return Buffer.concat([...parts, centralBuffer, eocd]);
   }
 
-  it("extracts export.xml from a deflated Apple-layout archive", () => {
+  it("extracts export.xml from a deflated Apple-layout archive", async () => {
     const zip = buildZip([
       { name: "apple_health_export/export_cda.xml", content: "<cda/>" },
       { name: "apple_health_export/export.xml", content: APPLE_EXPORT_XML },
     ]);
     expect(listZipEntries(zip)).toHaveLength(2);
-    const xml = extractAppleHealthXml(zip);
+    const xml = await extractAppleHealthXml(zip);
     expect(xml).toContain("<HealthData");
     expect(parseAppleHealthXml(xml).workouts).toHaveLength(2);
   });
 
-  it("reads stored (uncompressed) entries too", () => {
+  it("reads stored (uncompressed) entries too", async () => {
     const zip = buildZip([
       { name: "apple_health_export/export.xml", content: "<HealthData></HealthData>", store: true },
     ]);
-    expect(extractAppleHealthXml(zip)).toBe("<HealthData></HealthData>");
+    expect(await extractAppleHealthXml(zip)).toBe("<HealthData></HealthData>");
   });
 
-  it("explains itself when the archive has no export.xml", () => {
+  it("explains itself when the archive has no export.xml", async () => {
     const zip = buildZip([{ name: "notes.txt", content: "hello" }]);
-    expect(() => extractAppleHealthXml(zip)).toThrow(/export\.xml/);
+    await expect(extractAppleHealthXml(zip)).rejects.toThrow(/export\.xml/);
   });
 
-  it("rejects a non-zip buffer with a readable error", () => {
-    expect(() => extractAppleHealthXml(Buffer.from("plain text"))).toThrow(/ZIP/);
+  it("rejects a non-zip buffer with a readable error", async () => {
+    await expect(extractAppleHealthXml(Buffer.from("plain text"))).rejects.toThrow(/ZIP/);
   });
 });
 
 describe("file type detection", () => {
   it("detects by magic bytes first, extension second", () => {
-    expect(detectFileType("export.zip", Buffer.from("PKrest"))).toBe("zip");
-    expect(detectFileType("export.xml", Buffer.from("<?xml version=\"1.0\"?>"))).toBe("xml");
-    expect(detectFileType("data.csv", Buffer.from("metricType,value,date\n"))).toBe("csv");
-    expect(detectFileType("mystery.bin", Buffer.from("random"))).toBeNull();
+    expect(detectHealthFileType("export.zip", Buffer.from("PKrest"))).toBe("zip");
+    expect(detectHealthFileType("export.xml", Buffer.from("<?xml version=\"1.0\"?>"))).toBe("xml");
+    expect(detectHealthFileType("data.csv", Buffer.from("metricType,value,date\n"))).toBe("csv");
+    expect(detectHealthFileType("mystery.bin", Buffer.from("random"))).toBeNull();
     // A renamed XML file is still recognised by its content.
-    expect(detectFileType("export.txt", Buffer.from('<?xml version="1.0"?><HealthData>'))).toBe("xml");
+    expect(detectHealthFileType("export.txt", Buffer.from('<?xml version="1.0"?><HealthData>'))).toBe("xml");
   });
 });

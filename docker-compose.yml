@@ -1,0 +1,30 @@
+# Local development database for Personal OS.
+#
+#   docker compose up -d       start PostgreSQL 16 on localhost:5432
+#   docker compose down        stop it (data survives in the volume)
+#   docker compose down -v     stop it AND delete all local data
+#
+# Credentials match .env.example: postgres/postgres, database personal_os_dev.
+# A second database, personal_os_test, is created for integration tests so
+# tests can never touch development data.
+services:
+  db:
+    image: postgres:16
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+      POSTGRES_DB: personal_os_dev
+    ports:
+      - "5432:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+      - ./scripts/db-init:/docker-entrypoint-initdb.d:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -d personal_os_dev"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+volumes:
+  pgdata:

@@ -38,9 +38,8 @@ export default async function WorkoutsPage({
   const date = params.date && isDayKey(params.date) ? params.date : todayKey;
 
   const user = await getUser();
-  const [recent, templates, exerciseNames, goals, thisWeek, historyWorkouts, summaries] =
+  const [templates, exerciseNames, goals, thisWeek, historyWorkouts, summaries] =
     await Promise.all([
-      getRecentWorkouts(25),
       getWorkoutTemplates(),
       getExerciseNames(),
       getGoalMap(),
@@ -48,6 +47,12 @@ export default async function WorkoutsPage({
       getWorkouts(shiftDay(todayKey, -89), todayKey),
       getSummaries(user.id, shiftDay(todayKey, -27), todayKey),
     ]);
+
+  // The 90-day history already contains the recent list (newest first) —
+  // fetching it twice was pure duplication. Only a sparse history (fewer
+  // than 25 workouts in 90 days) needs the wider fallback query.
+  const recent =
+    historyWorkouts.length >= 25 ? historyWorkouts.slice(0, 25) : await getRecentWorkouts(25);
 
   const workoutGoal = goals.get("workouts_per_week")?.target ?? 0;
   const summaryByDate = new Map(summaries.map((summary) => [summary.date, summary]));
