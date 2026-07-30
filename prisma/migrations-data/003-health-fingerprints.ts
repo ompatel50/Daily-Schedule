@@ -1,4 +1,4 @@
-import type { PrismaClient } from "@prisma/client";
+import type { DbClient } from "../db-client";
 
 /**
  * Give pre-Phase-11 health rows the deduplication fingerprint the new unique
@@ -18,7 +18,7 @@ import type { PrismaClient } from "@prisma/client";
 export const id = "003-health-fingerprints";
 export const description = "Backfill dedup fingerprints on pre-upgrade health rows";
 
-export async function run(prisma: PrismaClient): Promise<string[]> {
+export async function run(prisma: DbClient): Promise<string[]> {
   const notes: string[] = [];
 
   const rows = await prisma.healthMetric.findMany({

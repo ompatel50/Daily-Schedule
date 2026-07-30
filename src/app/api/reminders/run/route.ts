@@ -1,6 +1,14 @@
+import { createHash, timingSafeEqual } from "node:crypto";
 import { NextResponse, type NextRequest } from "next/server";
 
 import { runScheduledReminderPush } from "@/server/push";
+
+/** Constant-time equality over digests, safe for unequal lengths. */
+function secretMatches(candidate: string, expected: string): boolean {
+  const a = createHash("sha256").update(candidate).digest();
+  const b = createHash("sha256").update(expected).digest();
+  return timingSafeEqual(a, b);
+}
 
 /**
  * The scheduled reminder endpoint. Invoked by a cron (Vercel Cron sends
@@ -15,7 +23,7 @@ export async function GET(request: NextRequest): Promise<NextResponse> {
     return NextResponse.json({ error: "Not configured" }, { status: 503 });
   }
   const header = request.headers.get("authorization");
-  if (header !== `Bearer ${secret}`) {
+  if (!header || !secretMatches(header, `Bearer ${secret}`)) {
     return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
   }
 

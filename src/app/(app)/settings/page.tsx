@@ -7,6 +7,8 @@ import { GoalsPanel } from "@/components/settings/goals-panel";
 import { SettingsForm } from "@/components/settings/settings-form";
 import { NotificationsPanel } from "@/components/settings/notifications-panel";
 import { PushPanel } from "@/components/settings/push-panel";
+import { SecurityPanel } from "@/components/settings/security-panel";
+import { MIN_PASSWORD_LENGTH } from "@/server/auth/setup";
 import { PageHeader } from "@/components/shared/page-header";
 import { SectionCard } from "@/components/shared/section-card";
 import { KEYBOARD_SHORTCUTS } from "@/lib/navigation";
@@ -35,7 +37,7 @@ export default async function SettingsPage() {
     <div className="mx-auto max-w-4xl">
       <PageHeader
         title="Settings"
-        description="Your profile, goals, reminders and backups. All stored locally."
+        description="Your profile, goals, reminders, security and backups. Private to your account."
       />
 
       <div className="space-y-6">
@@ -64,6 +66,11 @@ export default async function SettingsPage() {
 
         <NotificationsPanel />
         <PushPanel />
+        <SecurityPanel
+          minPasswordLength={MIN_PASSWORD_LENGTH}
+          lastLoginAt={user.lastLoginAt?.toISOString() ?? null}
+          lastFailedLoginAt={user.lastFailedLoginAt?.toISOString() ?? null}
+        />
 
         <DemoPanel
           demoLoaded={demoStatus.batch !== null}
@@ -105,14 +112,16 @@ export default async function SettingsPage() {
         >
           <div className="space-y-2 text-sm text-muted-foreground">
             <p>
-              Everything lives in a local SQLite file (<code className="text-xs">prisma/dev.db</code>).
-              No account, no sync. The bundled food database works offline; online food search is
-              optional, sends only your search term, and never your records.
+              Everything lives in this deployment&apos;s PostgreSQL database, scoped to your
+              account — sign-in is a private email + password, with no external identity
+              provider. Online food search is optional, sends only your search term, and never
+              your records.
             </p>
             <p>
-              To back up manually, copy that file, or use the JSON export above. Apple Health and
-              CSV imports happen on the Health page — files are parsed locally, deduplicated, and
-              removable again batch by batch without touching anything you entered by hand.
+              To back up, use the JSON export above — it captures every record you own and
+              imports cleanly into any deployment. Apple Health and CSV imports happen on the
+              Health page — files are parsed in your browser, deduplicated, and removable again
+              batch by batch without touching anything you entered by hand.
             </p>
           </div>
         </SectionCard>

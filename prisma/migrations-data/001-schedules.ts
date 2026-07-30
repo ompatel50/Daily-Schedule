@@ -1,4 +1,4 @@
-import type { PrismaClient } from "@prisma/client";
+import type { DbClient } from "../db-client";
 
 /**
  * Backfill: give every existing goal and habit a `ScheduleRule`.
@@ -70,7 +70,7 @@ function toDayKey(date: Date): string {
   return `${year}-${month}-${day}`;
 }
 
-export async function run(prisma: PrismaClient): Promise<string[]> {
+export async function run(prisma: DbClient): Promise<string[]> {
   const notes: string[] = [];
 
   // --- goals ----------------------------------------------------------------

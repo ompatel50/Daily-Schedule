@@ -26,7 +26,7 @@ import { saveGoalWithSchedule, applyDateOverride, removeDateOverride } from "@/s
 import { deleteReminder } from "@/server/actions/health";
 import { searchEverything } from "@/server/queries";
 
-import type { User } from "@prisma/client";
+import type { User } from "./helpers";
 
 let alice: User;
 let bob: User;

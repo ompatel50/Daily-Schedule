@@ -7,7 +7,9 @@
  * `globalThis.__TEST_SESSION__`, which is also how the database-backed
  * integration tests choose "who is signed in" per test.
  */
-type TestSession = { user: { id: string; email?: string | null; name?: string | null } } | null;
+type TestSession = {
+  user: { id: string; email?: string | null; name?: string | null; tokenVersion?: number };
+} | null;
 
 declare global {
   var __TEST_SESSION__: TestSession | undefined;

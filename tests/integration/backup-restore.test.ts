@@ -14,7 +14,7 @@ import { remapId } from "@/server/backup-restore";
 import { importBackup, previewBackup, exportBackup } from "@/server/actions/backup";
 import { actAs, resetDatabase, twoUsers } from "./helpers";
 
-import type { User } from "@prisma/client";
+import type { User } from "./helpers";
 
 let alice: User;
 let bob: User;

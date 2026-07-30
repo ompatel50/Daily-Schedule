@@ -12,7 +12,7 @@ import { run as runSourceKeyBackfill } from "../../prisma/migrations-data/002-te
 import { run as runFingerprintBackfill } from "../../prisma/migrations-data/003-health-fingerprints";
 import { resetDatabase, twoUsers } from "./helpers";
 
-import type { User } from "@prisma/client";
+import type { User } from "./helpers";
 
 let alice: User;
 

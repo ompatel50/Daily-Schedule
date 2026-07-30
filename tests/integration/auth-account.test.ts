@@ -15,7 +15,7 @@ import { prisma } from "@/lib/prisma";
 import { getCurrentUser, requireCurrentUser } from "@/server/auth/current-user";
 import { actAs, createUser, resetDatabase, twoUsers } from "./helpers";
 
-import type { User } from "@prisma/client";
+import type { User } from "./helpers";
 
 let alice: User;
 

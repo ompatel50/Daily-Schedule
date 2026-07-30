@@ -14,7 +14,7 @@
  *
  * Usage:  npm run db:backfill
  */
-import { PrismaClient } from "@prisma/client";
+import { createDbClient } from "./db-client";
 
 import * as schedules from "./migrations-data/001-schedules";
 import * as templateSourceKeys from "./migrations-data/002-template-source-keys";
@@ -23,7 +23,7 @@ import * as healthFingerprints from "./migrations-data/003-health-fingerprints";
 const MIGRATIONS = [schedules, templateSourceKeys, healthFingerprints];
 
 async function main() {
-  const prisma = new PrismaClient();
+  const prisma = createDbClient();
   console.log("Running data migrations…\n");
 
   try {

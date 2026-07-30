@@ -10,7 +10,7 @@ import { prisma } from "@/lib/prisma";
 import { applyScheduleTemplate, saveScheduleTemplate } from "@/server/actions/planner";
 import { actAs, expectUniqueViolation, resetDatabase, twoUsers } from "./helpers";
 
-import type { User } from "@prisma/client";
+import type { User } from "./helpers";
 
 let alice: User;
 

@@ -10,7 +10,8 @@ import { prisma } from "@/lib/prisma";
 import { logFood } from "@/server/actions/nutrition";
 import { actAs, expectUniqueViolation, resetDatabase, twoUsers } from "./helpers";
 
-import type { FoodItem, User } from "@prisma/client";
+import type { FoodItem } from "@prisma/client";
+import type { User } from "./helpers";
 
 let alice: User;
 let food: FoodItem;
