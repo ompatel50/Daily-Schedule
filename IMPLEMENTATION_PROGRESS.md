@@ -3907,9 +3907,12 @@ batch's semantics from its dates.
   matching what the server sent, React discards the tree and re-renders — and a
   click landing in that window is lost. It presented as *the undo button not
   opening its dialog*, deterministically, with no error anywhere except a
-  minified React #418 on that one page. Fixed, and `health-labels.spec.ts` now
-  asserts every page in the section hydrates cleanly, because the mistake is
-  easy to repeat and invisible to types, lint and every other test.
+  minified React #418 on that one page. Fixed twice over: `Badge` now renders a
+  `span` rather than a `div` (its base class was already `inline-flex`, so the
+  two are visually identical and the mistake becomes impossible everywhere
+  rather than guarded against in one place), and a dedicated spec asserts every
+  page in the section hydrates cleanly — for an empty account *and* the seeded
+  one, in its own file so CI's empty database does not skip it.
 * **Demo data that lied about itself.** The seeded import's rows were stamped
   `now()` while the batch's `finishedAt` was two days earlier, so undo
   classified all 1,682 readings as user-edited and the preview offered to remove
@@ -3963,7 +3966,7 @@ about those older records rather than placeholders.
 | --- | --- | --- |
 | Unit (`npm test`) | 968 | **1,011** |
 | Integration (`npm run test:integration`) | 244 | **263** |
-| Browser (`npm run test:e2e`) | 45 | **48** |
+| Browser (`npm run test:e2e`) | 45 | **49** |
 
 New coverage: the merge rule in every branch (including the grace period, the
 shared-boundary invariant with undo, and the legacy `createdAt` fallback); every
@@ -3978,8 +3981,10 @@ the v8 backup round trip plus a v7 restore.
 
 * Typecheck, lint, unit, integration, migration drift check and production
   build: all pass.
-* Browser: **four consecutive full runs, 48 passed, 0 failed** (one pre-existing
-  documented `fixme`). Health pages verified at 1280px and 720px with no
+* Browser: **four consecutive full runs, 0 failed** (one pre-existing documented
+  `fixme`). CI green on the first push: lint/types/tests/build/migrations,
+  browser tests, and the Vercel preview deployment — which is the deployment
+  limit fixed, confirmed on the real hosting stack rather than argued about. Health pages verified at 1280px and 720px with no
   horizontal overflow, and no console errors beyond the pre-existing
   `/_vercel/insights/script.js` 404 that every non-Vercel deployment produces.
 

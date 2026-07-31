@@ -122,43 +122,6 @@ test.describe("reading the seeded health data", () => {
     await expect(page.getByText(/Time asleep counts only the asleep stages/)).toBeVisible();
   });
 
-  test("every page in the section hydrates cleanly", async ({ page }) => {
-    // A guard against a whole class of bug rather than one instance of it.
-    //
-    // React error #418 is a hydration mismatch, and the commonest cause is
-    // invalid nesting — a block element inside a <p>, which the HTML parser
-    // hoists out, so the DOM no longer matches what the server sent. React
-    // then throws the tree away and re-renders, and any click that lands in
-    // that window is silently lost. That is exactly how it was found: the undo
-    // button on /health/imports stopped opening its dialog, deterministically,
-    // with no error anywhere except this one.
-    //
-    // It is asserted here rather than in one page's test because the mistake is
-    // easy to repeat and invisible to types, lint and every other test.
-    const failures: string[] = [];
-    page.on("pageerror", (error) => failures.push(error.message));
-
-    for (const path of [
-      "/health",
-      "/health/activity",
-      "/health/sleep",
-      "/health/heart",
-      "/health/body",
-      "/health/nutrition",
-      "/health/workouts",
-      "/health/vitals",
-      "/health/trends",
-      "/health/import",
-      "/health/imports",
-    ]) {
-      await page.goto(path);
-      await expect(page.getByRole("navigation", { name: "Health sections" })).toBeVisible();
-    }
-
-    expect(failures, `uncaught errors while rendering the Health section:\n${failures.join("\n")}`)
-      .toEqual([]);
-  });
-
   test("health records show a summary and never a raw trace", async ({ page }) => {
     await page.goto("/health/vitals");
     await expect(pageTitle(page, "Vitals")).toBeVisible();

@@ -908,7 +908,7 @@ reading edited after the previous import, merging one nobody touched, re-reading
 confirmation time rather than trusting a stale preview — the import dashboard's aggregates and
 recency, and the integrity checks (including that one account never sees another's).
 
-The **e2e suite** (48 tests) drives the built app in a real
+The **e2e suite** (49 tests) drives the built app in a real
 browser: signed-out redirects, password sign-in, the identical generic refusal for an unknown
 email and for a wrong password (so failed attempts reveal nothing about which emails exist), the
 full sign-up → recovery-codes → dashboard → sign-out → password-reset journey, surface postures,
@@ -918,9 +918,9 @@ checks the data across the section, re-imports it as a no-op, and undoes it agai
 refusals for a non-export, malformed XML and an entity-declaring file. Two guards keep it honest
 rather than merely green: the import flow asserts a **clean console** (uncaught errors and
 console errors alike, excluding only the Vercel analytics 404 that every non-Vercel deployment
-produces), and every page in the Health section is asserted to **hydrate cleanly** — a hydration
-mismatch makes React discard the tree and re-render, which silently swallows clicks and is
-invisible to types, lint and every other test.
+produces), and every page in the Health section is asserted to **hydrate cleanly**, for an empty
+account and for the seeded one — a hydration mismatch makes React discard the tree and re-render,
+which silently swallows clicks and is invisible to types, lint and every other test.
 
 Its browser-test accounts come from `npm run seed:e2e`, which also prunes the throwaway accounts
 the sign-up journey creates and resets the rate-limit counters in the disposable database — the
