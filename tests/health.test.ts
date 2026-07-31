@@ -353,19 +353,45 @@ describe("privacy — health data goes nowhere", () => {
       path.join(__dirname, "../src/server/apple-health"),
       path.join(__dirname, "../src/server/actions/health.ts"),
       path.join(__dirname, "../src/server/actions/health-import.ts"),
+      path.join(__dirname, "../src/server/health-upload"),
       path.join(__dirname, "../src/app/api/health/import/route.ts"),
+      path.join(__dirname, "../src/app/api/health/import/part/route.ts"),
+      path.join(__dirname, "../src/app/api/health/import/finalize/route.ts"),
     ];
     const files: string[] = [];
     for (const root of roots) {
       if (root.endsWith(".ts")) files.push(root);
       else for (const entry of readdirSync(root)) files.push(path.join(root, entry));
     }
-    expect(files.length).toBeGreaterThanOrEqual(9);
+    expect(files.length).toBeGreaterThanOrEqual(12);
     for (const file of files) {
       const source = readFileSync(file, "utf8");
       expect(source, `${file} must not fetch`).not.toMatch(/\bfetch\s*\(/);
       expect(source, `${file} must not open sockets`).not.toMatch(/node:https?|node:net|XMLHttpRequest|axios/);
     }
+  });
+
+  it("the browser's upload client can only ever talk to this app", () => {
+    /**
+     * The one health module that *does* call `fetch`, because uploading a file
+     * in parts is what it is for. So the assertion is different in kind: every
+     * URL it can construct must be a same-origin path under `/api/health/`.
+     *
+     * An absolute URL here would be a health export leaving the user's instance
+     * — the single worst thing this module could grow — and it would be
+     * invisible in review, because it would look exactly like the code beside
+     * it. Structural instead: no scheme, no host, no protocol-relative path.
+     */
+    const source = readFileSync(
+      path.join(__dirname, "../src/lib/health/staged-upload.ts"),
+      "utf8",
+    );
+    const urls = [...source.matchAll(/^const \w*URL = "([^"]+)";$/gm)].map((match) => match[1]);
+    expect(urls.length).toBeGreaterThanOrEqual(3);
+    for (const url of urls) expect(url).toMatch(/^\/api\/health\//);
+
+    expect(source, "no absolute URL").not.toMatch(/https?:\/\//);
+    expect(source, "no protocol-relative URL").not.toMatch(/["'`]\/\//);
   });
 
   it("the food-provider search options have no field a health record could travel through", async () => {

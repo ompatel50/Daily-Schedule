@@ -5,9 +5,14 @@ import { describe, expect, it } from "vitest";
 import {
   MAX_FUNCTION_SECONDS,
   MAX_UPLOAD_BYTES,
+  MAX_UPLOAD_PARTS,
+  UPLOAD_PART_BYTES,
   VERCEL_REQUEST_BODY_BYTES,
+  VERCEL_STAGED_UPLOAD_BYTES,
+  VERCEL_TMP_BYTES,
   formatLimit,
   resolveUploadLimit,
+  tooLargeMessage,
   uploadLimitNote,
 } from "@/server/apple-health/limits";
 
@@ -74,11 +79,80 @@ describe("route segment config stays inside every hosting plan's ceiling", () =>
     expect(MAX_FUNCTION_SECONDS).toBe(60);
   });
 
-  it("the health upload route asks for exactly the ceiling, no more", () => {
-    // It has to be a literal (Next.js refuses to build otherwise), so this is
-    // the assertion that keeps the literal and the constant in step.
-    const source = readFileSync(join(APP_DIR, "api", "health", "import", "route.ts"), "utf8");
-    expect(source).toContain(`export const maxDuration = ${MAX_FUNCTION_SECONDS};`);
+  it("the routes that do the health import's work ask for exactly the ceiling, no more", () => {
+    // They have to be literals (Next.js refuses to build otherwise), so this is
+    // the assertion that keeps the literals and the constant in step. Both the
+    // part upload (slow connection) and the finalize (reassemble + parse) are
+    // long-running; opening a session is a single insert and needs nothing.
+    for (const route of [
+      ["api", "health", "import", "part", "route.ts"],
+      ["api", "health", "import", "finalize", "route.ts"],
+    ]) {
+      const source = readFileSync(join(APP_DIR, ...route), "utf8");
+      expect(source, route.join("/")).toContain(
+        `export const maxDuration = ${MAX_FUNCTION_SECONDS};`,
+      );
+    }
+  });
+});
+
+/**
+ * The regression this whole staged-upload design exists to prevent.
+ *
+ * The importer used to POST an entire Apple Health `export.zip` as one request
+ * body. On Vercel that is refused at the edge with
+ * `413 FUNCTION_PAYLOAD_TOO_LARGE` before any application code runs — so it
+ * could not be caught, phrased, retried or logged by this app, and the hosted
+ * importer simply did not work. The invariant below is what keeps it working:
+ * **no request the client makes may approach the platform's body cap.**
+ */
+describe("no request in the health upload can hit a hosting platform's body cap", () => {
+  it("a part is comfortably below the platform's request-body limit", () => {
+    expect(UPLOAD_PART_BYTES).toBeLessThan(VERCEL_REQUEST_BODY_BYTES);
+    // Headroom for headers, the query string and any transfer encoding — the
+    // cap counts the whole request, not just the body this app measures.
+    expect(VERCEL_REQUEST_BODY_BYTES - UPLOAD_PART_BYTES).toBeGreaterThanOrEqual(256 * 1024);
+  });
+
+  it("the file size is no longer bounded by the request size", () => {
+    // The point of the change, stated as a number: a hosted deployment accepts
+    // an archive many times larger than a single request may carry.
+    const hosted = resolveUploadLimit({ VERCEL: "1" } as unknown as NodeJS.ProcessEnv);
+    expect(hosted.bytes).toBeGreaterThan(VERCEL_REQUEST_BODY_BYTES * 20);
+  });
+
+  it("the staged ceiling stays inside the scratch space the archive is rebuilt in", () => {
+    // The parts are reassembled into the function's own /tmp before parsing,
+    // so a ceiling above that budget would trade a 413 for a disk-full error.
+    expect(VERCEL_STAGED_UPLOAD_BYTES).toBeLessThan(VERCEL_TMP_BYTES);
+  });
+
+  it("the part count is bounded by the app's own ceiling", () => {
+    expect(MAX_UPLOAD_PARTS).toBe(Math.ceil(MAX_UPLOAD_BYTES / UPLOAD_PART_BYTES));
+    // A part index is refused outside [0, totalParts), and (session, index) is
+    // unique, so this is what caps stored bytes however a client behaves.
+    expect(MAX_UPLOAD_PARTS * UPLOAD_PART_BYTES).toBeGreaterThanOrEqual(MAX_UPLOAD_BYTES);
+  });
+
+  it("no route handler reads a whole upload out of one request body", () => {
+    // A regression guard with teeth: the old route called `request.body` and
+    // streamed the entire archive out of it. The part route still does read a
+    // body — bounded to one part — so what is asserted is that nothing under
+    // the import routes reads a body without a bound in the same module.
+    const source = readFileSync(
+      join(APP_DIR, "api", "health", "import", "part", "route.ts"),
+      "utf8",
+    );
+    expect(source).toContain("receivePart");
+    // The session and finalize routes take JSON envelopes, never file bytes.
+    for (const route of [
+      ["api", "health", "import", "route.ts"],
+      ["api", "health", "import", "finalize", "route.ts"],
+    ]) {
+      const text = readFileSync(join(APP_DIR, ...route), "utf8");
+      expect(text, route.join("/")).toContain("request.json()");
+      expect(text, route.join("/")).not.toContain("request.body");
+    }
   });
 });
 
@@ -114,13 +188,29 @@ describe("the upload limit the app advertises is the one the deployment can keep
     expect(uploadLimitNote(limit)).toContain("2 GB");
   });
 
-  it("on Vercel it drops to the platform's request-body cap", () => {
+  it("on Vercel it drops to what the platform can actually stage", () => {
     const limit = resolveUploadLimit(env({ VERCEL: "1" }));
-    expect(limit.bytes).toBe(VERCEL_REQUEST_BODY_BYTES);
+    expect(limit.bytes).toBe(VERCEL_STAGED_UPLOAD_BYTES);
     expect(limit.platformBound).toBe(true);
     // The note must name the platform as the reason, and point somewhere.
     expect(uploadLimitNote(limit)).toMatch(/hosting platform/);
     expect(uploadLimitNote(limit)).toMatch(/self-hosted/);
+    // And it must explain the mechanism, because "256 MB on a platform that
+    // refuses 5 MB requests" is otherwise not a believable claim.
+    expect(uploadLimitNote(limit)).toMatch(/parts/);
+  });
+
+  it("a refusal says what to do about it rather than only stating the number", () => {
+    const hosted = tooLargeMessage(resolveUploadLimit(env({ VERCEL: "1" })));
+    expect(hosted).toContain(formatLimit(VERCEL_STAGED_UPLOAD_BYTES));
+    expect(hosted).toMatch(/HEALTH_MAX_UPLOAD_MB/);
+    expect(hosted).toMatch(/self-host/);
+
+    // Self-hosted, the app's own number is the whole story — no platform to
+    // blame and nothing to suggest.
+    const own = tooLargeMessage(resolveUploadLimit(env()));
+    expect(own).toContain(formatLimit(MAX_UPLOAD_BYTES));
+    expect(own).not.toMatch(/hosting platform/);
   });
 
   it("an explicit override wins, and is still bounded by the app's ceiling", () => {

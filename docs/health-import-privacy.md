@@ -26,19 +26,39 @@ for their summary and then dropped; they are never stored.
 
 1. **You pick the file** at `/health/import`. Apple Health's `export.zip` or `export.xml`, or a
    CSV in the documented format (template at `/health-template.csv`).
-2. **It uploads to your server**, streamed straight to a scratch path — never held in memory, so
-   the size of your export is not limited by anyone's RAM. An unauthenticated request is refused
-   before a single byte is read.
-3. **The server parses it.** The ZIP directory is read, `export.xml` is streamed through a
-   scanner a megabyte at a time, and records are folded into per-day summaries as they go.
-4. **The upload is deleted.** In a `finally`, on every path — success, refusal, or crash.
-5. **The preview writes nothing.** You see what was found — categories, counts, date range, what
+2. **The upload is agreed first.** One small request tells your server how big the file is; it
+   answers with the part size and part count. An export larger than the deployment can stage is
+   refused here, in a second, rather than after minutes of uploading.
+3. **It uploads in parts.** Your browser slices the archive into 4 MB pieces and sends one
+   request each, a few at a time, with a progress bar and a part counter. A part that fails is
+   retried on its own. An unauthenticated request stores nothing.
+4. **The server reassembles and parses it.** The parts are streamed into a scratch file — never
+   held in memory — the ZIP directory is read, `export.xml` is streamed through a scanner a
+   megabyte at a time, and records are folded into per-day summaries as they go.
+5. **The upload is deleted.** Every part, in a `finally`, on every path — success, refusal, or
+   crash.
+6. **The preview writes nothing.** You see what was found — categories, counts, date range, what
    is already present, what was skipped and why — while your health tables are untouched.
-6. **You choose what to bring in**, per category, and confirm. The write is one transaction,
+7. **You choose what to bring in**, per category, and confirm. The write is one transaction,
    recorded as an **import batch**.
 
-Cancel at any point and the staged rows are deleted. An abandoned import expires on its own
-after two hours. Nothing reaches your health records except through the confirm step.
+Cancel at any point and the staged parts and rows are deleted. An abandoned **upload** expires on
+its own after an hour; an abandoned **preview** after two. Nothing reaches your health records
+except through the confirm step.
+
+### Why the file goes up in pieces
+
+Not for privacy — for arithmetic. A hosting platform refuses a request body over a few megabytes
+*at the edge*, before any of this app's code runs, and an Apple Health export is far larger than
+that. Sending the whole archive as one request meant the hosted importer answered
+`413 FUNCTION_PAYLOAD_TOO_LARGE` and nothing else, however good the parser behind it was.
+
+Splitting the upload changes what travels, not who sees it. The parts go to the same server, are
+owned by the same account, are readable by nobody else, and are deleted at the same moment the
+single upload used to be. While an upload is in flight its parts sit in your own database rows
+rather than on one machine's disk — because two requests to a serverless platform are not
+guaranteed to reach the same machine — which is the only substantive difference, and it is
+covered by the same per-account isolation as everything else here.
 
 ## What a "summary row" actually is
 
@@ -118,19 +138,21 @@ only what is genuinely new. You never have to remember what you imported last.
 ## The honest limits
 
 * **Your server sees the file.** That is the trade for parsing something a browser cannot hold.
-  If you self-host, that server is yours. If you deploy to a provider, the file exists on their
-  disk for the duration of the parse and is then deleted — the app cannot make a stronger
-  promise than that, and does not pretend to.
-* **A very large export takes minutes**, most of it streaming and parsing. The import page shows
-  progress; the batch records how long it actually took.
-* **A hosting platform's own limits bind before this app's do.** Vercel caps request body size
-  and execution time per plan; a self-hosted deployment has neither cap. The app detects this and
-  advertises the smaller, truthful number — the import page states what the deployment will
-  actually accept, and a refusal says the platform is the reason. `HEALTH_MAX_UPLOAD_MB`
-  overrides it when you know your real limit. If an export is larger than the platform allows,
-  self-hosting is the answer.
+  If you self-host, that server is yours. If you deploy to a provider, the archive exists in your
+  database and on their disk for the minutes between "upload started" and "preview ready", and is
+  then deleted — the app cannot make a stronger promise than that, and does not pretend to.
+* **A very large export takes minutes**, most of it uploading. The import page shows the stage,
+  the percentage and the part count as it goes; the batch records how long the parse itself took.
+* **A hosting platform's own limits still bind before this app's do — just not the same one.**
+  The request-body cap no longer bounds your export, because no request carries more than one
+  4 MB part. What bounds it now is how much the platform's function can reassemble and parse in
+  one go, which is why a hosted deployment stages up to 256 MB and a self-hosted one up to 2 GB.
+  The import page states what this deployment will actually accept, and a refusal says why and
+  what to do. `HEALTH_MAX_UPLOAD_MB` overrides it when you know your real limit.
 * **A re-import will not overwrite a reading you edited.** It is reported as kept, not written
   over, and counted on the import's own history row. See the merge rules in
   [`health-module.md`](health-module.md).
-* **An in-flight upload does not survive leaving the page.** Nothing partial is written; pick
-  the file again.
+* **An in-flight upload does not survive leaving the page.** Nothing partial is written, the
+  parts it had stored are discarded, and it expires within the hour regardless; pick the file
+  again. There is no resume — a half-finished upload is not something the app asks you to
+  reason about.

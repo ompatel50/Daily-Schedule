@@ -64,11 +64,14 @@ const nextConfig = {
   eslint: { ignoreDuringBuilds: true },
   experimental: {
     // The largest server-action payload is a full JSON backup on import.
-    // Health exports deliberately do NOT travel through an action: an action
-    // buffers its whole body in memory, so they are streamed to the route
-    // handler at /api/health/import instead. (Serverless platforms may impose
-    // a lower hard cap per request — Vercel's is ~4.5 MB — which bounds
-    // importable backup size there; the health upload route is unaffected.)
+    // Health exports deliberately do NOT travel through an action, and no
+    // longer travel as a single request at all: an Apple Health archive is
+    // uploaded in bounded parts to /api/health/import/part and reassembled
+    // server-side, because a serverless platform refuses a large body at the
+    // edge before any code here runs (Vercel's cap is ~4.5 MB). That cap still
+    // bounds importable *backup* size on such a platform — backup import is
+    // one action with one whole body — which is the next candidate for the
+    // same treatment (see docs/troubleshooting.md).
     serverActions: { bodySizeLimit: "16mb" },
   },
 };

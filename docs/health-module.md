@@ -191,9 +191,15 @@ Nothing in this list fails an import. The preview tells you what was skipped and
 
 ```
 choose a file
-   ↓  streamed to a scratch path on the server (never held in memory)
-parse            server-side; ZIP directory read, export.xml streamed through the scanner
    ↓
+open             the server agrees the part size and the part count (one round trip)
+   ↓
+upload           the browser slices the archive; one request per part, retried
+   ↓             independently — no single request is ever large
+staging          parts held, owned and bounded, in your account's own rows
+   ↓
+parse            one call: reassemble into a scratch file, read the ZIP directory,
+   ↓             stream export.xml through the scanner. Parts deleted immediately.
 validate         malformed archive / XML / entity declarations refused here
    ↓
 duplicate check  against what this account already has
@@ -207,9 +213,48 @@ summary          new, refreshed, already present, workouts, records, days recalc
 history          /health/imports — every run, with its timings and notes
 ```
 
-The uploaded file is deleted as soon as the parse finishes, on every path including failure. The
-staged rows live in the account's own import-session rows, are deleted on confirm or cancel, and
-expire after two hours if abandoned.
+The import page shows exactly these stages — *Staging → Upload → Parsing → Preview → Import →
+Summary* — with a progress bar and a part counter while the archive is going up, because
+uploading a large export takes minutes and parsing it takes seconds, and one undifferentiated
+spinner leaves you unable to tell a slow upload from a stuck one.
+
+### Why the file goes up in parts
+
+Because a hosting platform caps how much a single request may carry, and an Apple Health export
+is far larger than that cap.
+
+The importer used to POST the whole `export.zip` to `/api/health/import` as one body. On Vercel
+that is not a slow path but an impossible one: a body above ~4.5 MB is refused **at the edge**
+with `413 FUNCTION_PAYLOAD_TOO_LARGE` before any application code runs, so the app could not
+catch it, phrase it, retry it or log it. The hosted importer could not import the one file it
+exists for.
+
+The fix is to stop making the size of the file and the size of a request the same number:
+
+| | Old | Now |
+| --- | --- | --- |
+| Requests per import | 1 | 1 open + *n* parts + 1 parse |
+| Largest request | the whole archive | **4 MB** (`UPLOAD_PART_BYTES`) |
+| Hosted ceiling | 4.5 MB — the platform's request cap | **256 MB** — what the platform can *stage* |
+| A dropped connection | the whole upload again | that one part again |
+
+`PUT /api/health/import/part` is idempotent on `(session, index)`, which is what makes retrying a
+single part safe rather than merely likely to work.
+
+**Where the parts live.** In the account's own rows (`HealthUploadPart`), not on disk. Two
+requests to a serverless platform are not guaranteed to reach the same machine, so appending to
+a local file across requests silently loses data; the database is the one place both requests can
+see, it needs no extra service or credential on the free tier, and it inherits the ownership
+model everything else here already has. The bytes are transient — see below.
+
+**Cleanup and retention.** Every part is deleted inside the same invocation that reads it, on
+every path including a parse failure. Cancelling deletes them immediately. An abandoned upload
+expires after **one hour** and is swept whenever another upload is opened, and again by the daily
+cron. An account may hold **two** uploads at once; opening a third clears any of its own that
+have been idle for fifteen minutes rather than refusing outright.
+
+The staged *rows* — the parsed plan the preview renders — live in the account's own
+import-session rows, are deleted on confirm or cancel, and expire after two hours if abandoned.
 
 ### Failures, and what they cost you
 
@@ -407,7 +452,10 @@ a decade of data is a few hundred thousand small objects whether the file is 200
 
 | Concern | How it is bounded |
 | --- | --- |
-| Upload size | 2 GB, checked against `Content-Length` *and* against what actually arrives |
+| Upload size | 2 GB self-hosted, 256 MB hosted — checked against the declared size *and* recomputed from what actually arrived |
+| One upload request | 4 MB, counted as the bytes arrive rather than read from `Content-Length` |
+| Parts per upload | `ceil(2 GB / 4 MB)`; an index outside the session's range is refused, so stored bytes are capped structurally |
+| Concurrent uploads per account | 2 |
 | Decompressed XML | 6 GB, enforced as the stream is produced — a zip bomb fails the import instead of the host |
 | One XML element | 256 KB |
 | The prologue / DTD | 64 KB |
@@ -426,21 +474,29 @@ again to continue.
 **On a hosting platform, the platform's own limits bind first**, and the app now says so rather
 than promising a size it cannot accept.
 
-* **Execution time.** The upload route asks for `maxDuration = 60`, the highest value every
-  Vercel plan accepts. It has to be a literal — Next.js statically analyses route segment config
-  and refuses to build otherwise — so `tests/deploy-config.test.ts` holds every route in the app
-  to `MAX_FUNCTION_SECONDS`. A value above the plan's ceiling fails the *whole deployment* rather
-  than being clamped, which is the worst possible place to find out.
+* **Execution time.** The part and finalize routes ask for `maxDuration = 60`, the highest value
+  every Vercel plan accepts. It has to be a literal — Next.js statically analyses route segment
+  config and refuses to build otherwise — so `tests/deploy-config.test.ts` holds every route in
+  the app to `MAX_FUNCTION_SECONDS`. A value above the plan's ceiling fails the *whole deployment*
+  rather than being clamped, which is the worst possible place to find out. Reassembly and
+  parsing happen in one invocation, so this is the ceiling that bounds a hosted import; a 181 MB
+  `export.xml` parses in about five seconds, leaving ample room.
 * **Request body.** Vercel rejects a body above ~4.5 MB before the function runs, with a platform
-  413 the app never sees and cannot phrase. So when `VERCEL` is set, the importer advertises and
-  enforces *that* number instead of its own 2 GB: the import page states the real limit up front,
-  and a refusal explains that the platform is the constraint and self-hosting lifts it.
+  413 the app never sees and cannot phrase. **This no longer bounds the file**: it bounds one
+  part. `UPLOAD_PART_BYTES` is 4 MB, deliberately under the cap with headroom for headers and the
+  query string, and `tests/deploy-config.test.ts` asserts that relationship — a part size raised
+  above the platform cap would fail only in production.
+* **Scratch space.** Vercel gives a function about 500 MB of `/tmp`, and the archive is
+  reassembled there for the length of one parse. That, together with the free database tier the
+  deployment guide recommends, is what sets the hosted default of **256 MB** — roughly 57× the
+  old effective limit, and above the overwhelming majority of real exports.
 * **Overriding it.** Set `HEALTH_MAX_UPLOAD_MB` when you know better than the defaults — a
-  reverse proxy with its own `client_max_body_size`, or a plan whose body cap is higher. It can
-  never raise the app's own 2 GB ceiling, which bounds memory and disk.
+  reverse proxy with its own `client_max_body_size`, or a plan and database that can hold more.
+  It can never raise the app's own 2 GB ceiling, which bounds memory and disk.
 
-A self-hosted deployment (`npm start` behind your own proxy) has neither platform limit, which
-remains the answer for an export large enough to hit them.
+A self-hosted deployment (`npm start` behind your own proxy) has neither the execution-time cap
+nor the scratch-space one, and stages up to the app's own 2 GB — which remains the answer for an
+export large enough to hit the hosted ceiling.
 
 **Measured.** A synthetic export of 60,000 records across 400 days parses in well under a second
 and produces 400 rows — one per day per device — with heap growth in the low tens of megabytes.
@@ -465,11 +521,15 @@ row's date may have changed since last time.
   module is scoped by it; every server action resolves the user from the session and never
   accepts a user id. Database-backed tests assert another account can neither preview, confirm,
   cancel, nor undo your import.
-* **The upload is transient.** Streamed to a scratch path, parsed, deleted in a `finally` — on
-  every path, including a parse failure.
+* **The upload is transient.** Parts are held in your own account's rows, reassembled into a
+  scratch file, parsed, and deleted in a `finally` — on every path, including a parse failure.
+  Nobody but you can add a part to, read, or discard your upload: every query resolves the
+  session by `(id, userId)`, so another account's id does not exist rather than being refused.
 * **Nothing sensitive is copied.** See [what is not imported](#what-is-deliberately-not-imported).
 * **No network calls.** A committed test walks the health modules and asserts they contain no
-  `fetch`, no socket import, no HTTP client.
+  `fetch`, no socket import, no HTTP client. The one exception is the browser's upload client,
+  which necessarily calls `fetch` — a separate test asserts every URL it can construct is a
+  same-origin path under `/api/health/`, so an export cannot leave your instance.
 * **Nothing health-shaped in the logs.** Record contents are never logged; errors are logged
   under a short reference id with the message only.
 * **The parser is hostile-input hardened.** It resolves no entities, so XXE and billion-laughs

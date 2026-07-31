@@ -103,6 +103,7 @@ model User {
   seedBatches       SeedBatch[]
   healthImportBatches HealthImportBatch[]
   healthImportSessions HealthImportSession[]
+  healthUploadSessions HealthUploadSession[]
   pushSubscriptions PushSubscription[]
   recoveryCodes     RecoveryCode[]
   projects          Project[]
@@ -925,10 +926,82 @@ model HealthMetric {
   @@index([batchId])
 }
 
-/// One in-flight health import between "the browser parsed the file" and
-/// "the user confirmed". The raw export never leaves the user's device: the
-/// browser parses it in a Web Worker and uploads only normalised rows, in
-/// bounded chunks, into a session created by — and owned by — the server.
+/// One in-flight *file* upload, held in bounded parts so a large Apple Health
+/// archive never has to travel as a single request body.
+///
+/// This exists because a hosting platform caps how much a single serverless
+/// request may carry (Vercel: ~4.5 MB), and an Apple Health export is
+/// routinely a hundred times that. The browser slices the file, PUTs one
+/// part per request, and the server reassembles it inside a single function
+/// invocation, parses it, and deletes every part. The archive is transient in
+/// exactly the way the old scratch file was — it simply lives in the account's
+/// own rows for the minutes between "upload started" and "preview ready"
+/// instead of on one machine's disk, because two requests on a serverless
+/// platform are not guaranteed to reach the same machine.
+///
+/// Everything here is owned: no query in `src/server/health-upload` resolves a
+/// session without a `userId`, so an id from another account simply does not
+/// exist. Sessions expire after an hour and are swept opportunistically as
+/// well as by the daily cron.
+model HealthUploadSession {
+  id     String @id @default(cuid())
+  userId String
+  user   User   @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  /// receiving → parsing → (deleted). A failed parse deletes the parts and
+  /// keeps the row only long enough to answer the request that failed.
+  status String @default("receiving")
+
+  /// Base filename only — never a path from the user's machine.
+  fileName String
+  /// What the browser said the file is. A claim used only to size the upload;
+  /// `receivedBytes` is what the server actually counted and is what binds.
+  declaredSize Int
+  /// Bytes actually stored, recomputed from the parts after every write.
+  receivedBytes Int @default(0)
+  /// Parts this session expects, derived server-side from declaredSize.
+  totalParts Int
+  /// Parts actually stored, recomputed from the parts after every write.
+  receivedParts Int @default(0)
+  /// The slice size the session was opened with, so a resumed upload keeps
+  /// using the boundaries the stored parts were cut on.
+  partBytes Int
+
+  expiresAt DateTime
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  parts HealthUploadPart[]
+
+  @@index([userId, status])
+  @@index([expiresAt])
+}
+
+/// One slice of an uploaded archive, as raw bytes. Unique on `(sessionId, seq)`
+/// so a retried part overwrites rather than duplicating — which is what makes
+/// the upload safe to retry over a flaky connection.
+///
+/// Deliberately transient: every part is deleted the moment the archive has
+/// been parsed, on every path including failure, and an abandoned upload's
+/// parts go with its session when it expires.
+model HealthUploadPart {
+  id        String              @id @default(cuid())
+  sessionId String
+  session   HealthUploadSession @relation(fields: [sessionId], references: [id], onDelete: Cascade)
+
+  seq  Int
+  size Int
+  data Bytes
+
+  createdAt DateTime @default(now())
+
+  @@unique([sessionId, seq])
+}
+
+/// One in-flight health import between "the server parsed the file" and
+/// "the user confirmed". The upload itself is gone by this point: the parsed
+/// plan is written here as normalised rows, in bounded chunks, into a session
+/// created by — and owned by — the server.
 /// Sessions expire after two hours and are swept opportunistically; confirm
 /// and cancel both delete the staged data.
 model HealthImportSession {

@@ -1,6 +1,7 @@
 import { createHash, timingSafeEqual } from "node:crypto";
 import { NextResponse, type NextRequest } from "next/server";
 
+import { sweepExpiredUploads } from "@/server/health-upload/session";
 import { runScheduledReminderPush } from "@/server/push";
 
 /** Constant-time equality over digests, safe for unequal lengths. */
@@ -28,7 +29,21 @@ export async function GET(request: NextRequest): Promise<NextResponse> {
   }
 
   const result = await runScheduledReminderPush();
-  return NextResponse.json(result);
+
+  /**
+   * The daily maintenance tick, folded in here rather than given a cron of its
+   * own: the free Vercel plan allows two cron jobs in total, and spending one
+   * on a single indexed `deleteMany` would be a poor trade.
+   *
+   * A staged health upload is already swept opportunistically whenever another
+   * one is opened, which is enough for an app in use. This covers the case that
+   * is not — a deployment nobody has imported into since abandoning an upload —
+   * so its parts do not sit in the database indefinitely. Never fatal: a sweep
+   * that fails must not cost the reminders their run.
+   */
+  const sweptUploads = await sweepExpiredUploads().catch(() => 0);
+
+  return NextResponse.json({ ...result, sweptUploads });
 }
 
 export const dynamic = "force-dynamic";
