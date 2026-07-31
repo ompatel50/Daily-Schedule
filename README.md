@@ -29,7 +29,8 @@ Step-by-step documentation lives in `docs/`, written to be followed exactly:
 | [`docs/local-development.md`](docs/local-development.md) | Running and testing the app on your own machine |
 | [`docs/migrating-from-local.md`](docs/migrating-from-local.md) | Moving your data from the local app to the hosted site — and back |
 | [`docs/backup-and-recovery.md`](docs/backup-and-recovery.md) | The backup habit, what the file contains, and recovery |
-| [`docs/health-import-privacy.md`](docs/health-import-privacy.md) | What a health import sends, and what never leaves your device |
+| [`docs/health-module.md`](docs/health-module.md) | The Health section: supported Apple Health data, duplicate and undo rules, performance |
+| [`docs/health-import-privacy.md`](docs/health-import-privacy.md) | What a health import stores, what it drops, and how to undo it |
 | [`docs/web-push-setup.md`](docs/web-push-setup.md) | Background reminder notifications (Web Push) |
 | [`docs/security-and-privacy.md`](docs/security-and-privacy.md) | Per-account isolation guarantees, rate limits, headers, logs, and the off switches |
 | [`docs/troubleshooting.md`](docs/troubleshooting.md) | Symptoms → causes → fixes |
@@ -241,14 +242,29 @@ happened, so "beat target" and "target 5 × 110 kg" stay legible afterwards.
 
 ### 5. Health — `/health`
 
-Today's metrics with their sources, 7- and 30-day trends, manual entry, and a **private,
-local-file import** for Apple Health exports and CSVs. There is no pretend "live watch sync" — a
-desktop browser cannot subscribe to HealthKit; what actually works is importing the export file,
-and that is what this is.
+A full Health **section**, not a page: an overview plus Activity, Sleep, Heart, Body,
+Nutrition, Workouts, Vitals, Trends, Import and Import history, each on its own route so a view
+is shareable and the back button means something. Its data comes from manual entry and from
+**Apple Health exports**, which are parsed **on the server** and previewed before anything is
+saved. There is no pretend "live watch sync" — a browser cannot subscribe to HealthKit; what
+actually works is importing the export file, and that is what this is.
 
-**Metrics**: steps, active/resting calories, sleep (with stages), heart rate (day range), resting
-heart rate, HRV, body weight, body fat, hydration, walking/running distance, blood pressure, and
-mood/energy from the journal.
+**Metrics** — 55 types across eight areas:
+
+| Area | Metrics |
+|---|---|
+| Activity | Steps, walking + running distance, cycling distance, swimming distance, flights climbed, active calories, resting calories, exercise minutes, stand hours |
+| Sleep | Time asleep and time in bed, broken into core / deep / REM / awake stages |
+| Heart | Heart rate (with the day's range), resting heart rate, walking heart rate, HRV, VO₂ max |
+| Body | Weight, height, BMI, body fat, lean body mass, waist circumference |
+| Respiratory | Respiratory rate, blood oxygen, peak expiratory flow, forced vital capacity, FEV1 |
+| Nutrition | Energy, protein, fat, saturated fat, carbohydrates, fibre, sugar, cholesterol, sodium, potassium, calcium, iron, magnesium, zinc, caffeine, water, vitamins A/C/D/E/B6/B12 and folate |
+| Vitals | Blood pressure (systolic + diastolic), blood glucose, body temperature |
+| Mind | Mindful minutes, plus mood and energy from the journal |
+
+Beyond the numbers, an export's **non-numeric records** are kept as summaries: ECGs
+(classification and average rate), medications, clinical records from a connected provider, and
+workout-route metadata. Their bodies are deliberately not stored — see *Privacy* below.
 
 **Every value knows where it came from** — Manual, Apple Health, CSV import, From workouts,
 Calculated or Estimated — and the UI shows that label. Estimated or hand-typed data is never
@@ -258,37 +274,52 @@ presented as a device measurement.
 
 | Metric | Rule |
 |---|---|
-| Steps, calories, hydration, distance | Sum within one app/device, then the fullest device wins — a phone and a watch counting the same walk are never added together |
+| Steps, calories, hydration, distance, nutrition, exercise and stand time | Sum within one app/device, then the fullest device wins — a phone and a watch counting the same walk are never added together |
 | Sleep | Stage intervals are union-merged; time asleep = asleep+core+deep+REM, never in-bed or awake; a night crossing midnight belongs to the morning you woke up |
-| Body weight, body fat, blood pressure | The day's latest reading |
-| Resting HR, HRV | The day's average |
+| Body weight, body fat, BMI, blood pressure, glucose, temperature, VO₂ max | The day's latest reading |
+| Resting HR, walking HR, HRV, respiratory rate, blood oxygen | The day's average |
 | Heart rate | Average with the day's min–max range preserved |
 
+Days with no reading are **gaps, never zeros**: "didn't wear the watch" and "walked no steps"
+are different facts, so averages skip empty days and charts leave them blank.
+
+**Trends** cover steps, weight, heart rate, resting heart rate, sleep, exercise, calories,
+water, body fat and VO₂ max over 7 days, 30 days, 90 days, 1 year or all time. The range lives
+in the URL (`/health/trends?range=90d`), so it is shareable and bookmarkable.
+
 **Importing Apple Health**: in the Health app, profile picture → *Export All Health Data* → move
-`export.zip` to this machine → Health page → *Import health data*. The importer parses the file
-locally, shows what it found (categories, counts, date range, duplicates), lets you choose what
-to bring in, and only writes on confirmation. Raw sensor samples are rolled up to one row per
-day per device, workouts import as real workouts, and anything that looks like a workout you
-already logged by hand is **skipped and reported, never merged**. Unsupported record types
-(audiograms, ECGs, …) are counted and skipped, not fatal.
+`export.zip` to the device you are using → `/health/import` → *Import health data*. The file is
+streamed to the server, parsed there, and the preview shows what was found (categories, counts,
+date range, what is already present) while your health tables are still untouched. You choose
+what to bring in, per category, and only confirmation writes anything.
+
+Raw sensor samples are rolled up to one row per day per device, workouts import as real
+workouts, and anything that looks like a workout you already logged by hand is **skipped and
+reported, never merged**. Unsupported record types (audiograms, headphone audio levels, …) are
+counted and skipped, not fatal. A damaged member file inside the archive costs you that file,
+not the import.
 
 **Re-importing is safe.** Every record carries a stable fingerprint; importing the same file
 again is a no-op, and a later, larger export only adds what is genuinely new (a fuller day
-updates in place). Each import is a **batch** you can remove again as a unit — with a preview of
-exactly what would be deleted — leaving manual entries and other batches untouched, and every
-derived number (goals, day scores, calendar, insights) is recalculated.
+updates in place, and moves to the newer batch). Each import is a **batch you can undo** — with
+a preview of exactly what would be deleted *and what would be kept* — leaving manual entries,
+other batches and anything you have edited since untouched. Every derived number (goals, day
+scores, calendar, insights) is recalculated afterwards.
 
 **CSV format** (template at `/health-template.csv`): header row with `metricType,value,date`
 required; `unit,startTime,endTime,subtype,source,externalId,notes` optional. Dates must be
 `YYYY-MM-DD` and timestamps ISO 8601 — ambiguous formats like `3/4/2026` are refused rather than
 guessed. `source` may be `csv`, `manual`, `estimated` or `calculated`; claiming `apple_health`
 from a CSV is refused. Units convert automatically where they can (`l`→ml, `lb`→kg, `mi`→km,
-`kJ`→kcal, `min`→h); an unconvertible unit fails that row with a per-row message.
+`kJ`→kcal, `min`→h, `degF`→°C); an unconvertible unit fails that row with a per-row message.
 
-**Privacy**: health files are parsed on your machine, previewed from a temporary staging file
-that is deleted on confirm/cancel (and swept after two hours), and are never uploaded, never
-sent to a provider, and never touched by the food-search layer — a test asserts the health
-modules contain no network call at all.
+**Privacy**: the upload is transient — streamed to a scratch path, parsed, and deleted before
+the preview appears, on every path including failures. Records are written against your account
+and every query is scoped to it. ECG voltage traces, GPS coordinates and raw clinical documents
+are read for their summary and then dropped, never stored. Nothing is sent to any third party,
+and a committed test asserts the health modules contain no network call at all. Full detail in
+[`docs/health-import-privacy.md`](docs/health-import-privacy.md) and
+[`docs/health-module.md`](docs/health-module.md).
 
 ### 6. Calendar — `/calendar`
 
@@ -702,12 +733,18 @@ comma-separated string; `ScheduleOverride` is a one-date exception (rest / excus
 cancel / reschedule) that never edits the repeating schedule. Goals and habits share all three,
 which is what makes a single engine possible.
 
-`HealthMetric` is deliberately generic (date + type + value + unit) so new metric types need no
-migration. Both `HealthMetric` and `Workout` carry `source` and `externalId` columns with a
-uniqueness constraint on the pair, which means an **Apple Health or watch export can be imported
-later, repeatedly and idempotently, without touching anything you entered by hand**. The
-`importHealthMetrics` server action is already the landing point for exactly that; only the file
-parser is missing.
+`HealthMetric` is deliberately generic (date + type + value + unit), which is why the Apple
+Health phase added forty-one metric types without a migration. It carries a stable `fingerprint`
+— and `Workout` carries `(source, externalId)` — which is what makes an **Apple Health export
+importable repeatedly and idempotently, without touching anything you entered by hand**: the
+same file twice writes nothing, a later export adds only what is new, and a manual entry's
+fingerprint (`manual|type|date`) is a shape no import can produce.
+
+`HealthRecord` holds the parts of an export that are not a number-per-day — an ECG's summary, a
+medication, a clinical record, a route's metadata — as one table rather than four, so ownership,
+backup, undo and search work identically for every kind. Sleep sessions are deliberately not in
+it: they are already intervals in `HealthMetric`, and the Sleep page derives each night from
+those rows rather than storing it twice.
 
 ---
 
@@ -756,7 +793,7 @@ npm run test:integration   # database-backed, against the disposable test databa
 npm run test:e2e       # Playwright browser suite (against a running production build)
 ```
 
-Three suites, each doing the job the others can't. The **unit suite** (903 tests) covers the pure
+Three suites, each doing the job the others can't. The **unit suite** (968 tests) covers the pure
 logic that would be expensive to get wrong:
 
 * **Scheduling** — every mode, both week-start settings, DST, leap years, month and year
@@ -789,16 +826,31 @@ logic that would be expensive to get wrong:
 * **Reminders** — document expiry (fires once in the run-up window, once on the day, silent when
   archived / disabled / already expired, re-armed by a renewal) and budget thresholds (fires at
   the line, once per period per threshold, never for a zero target).
+* **Health metrics** — the aggregation rules (fullest device wins, sleep stages union-merged,
+  in-bed never added to time asleep), and two registry invariants that catch a half-finished
+  metric: every type can read *its own* canonical unit, and every type round-trips through the
+  display unit its entry form labels.
+* **Apple Health parsing** — the XML scanner's structure and its refusals (entity declarations,
+  external DTDs, mismatched tags, oversized elements, excessive depth), the full identifier
+  mapping including affine Fahrenheit, fractional percentages, blood-pressure pairing and ring
+  totals, and — importantly — assertions that a parsed ECG contains **no voltage sample** and a
+  parsed route **no coordinate**.
+* **Archives** — the ZIP reader against malformed directories, encrypted entries,
+  traversal-shaped names and a decompression bomb; plus a 60,000-record export asserting it
+  folds to 400 rows in bounded heap, which is the property the whole streaming design exists
+  for.
+* **Health import undo** — untouched rows removed, edited rows kept, linked rows kept.
 * Plus nutrition serving maths, the natural-language quick-add parser, planner recurrence, and
   day-key/time handling including a DST boundary.
 
 The unit tests are pure — no database, no fixtures, no mocking — because all the logic they cover
 lives in `src/lib/logic`.
 
-The **integration suite** (228 tests) runs against a real PostgreSQL — always the disposable
+The **integration suite** (244 tests) runs against a real PostgreSQL — always the disposable
 `personal_os_test` database, reset and re-migrated from zero each run — and covers what pure tests
-cannot: unique constraints, transaction rollback, backup import isolation, health-import session
-ownership, the reminder exactly-once ledger, password verification with its lockout and
+cannot: unique constraints, transaction rollback, backup import isolation, the health import end to end
+(stage → preview → confirm → re-import → incremental import → undo, with ownership refused from
+four angles and expiry enforced), the reminder exactly-once ledger, password verification with its lockout and
 session-revocation rules, public sign-up (validation, duplicate refusal, racing duplicates, the
 rate limit), recovery-code redemption (burn-once, session revocation, enumeration resistance),
 a cross-user suite asserting that every major operation against another account is refused
@@ -810,14 +862,17 @@ for every new finance/task/inbox action. The Phase-3 follow-ups have their own s
 denial), document expiry end to end through the reminder ledger, budget thresholds and weekly
 periods against real ledger rows, task tags (creation by typing, vocabulary reuse, replacement on
 edit, the per-task cap, tag deletion leaving tasks standing, two users' identical tag names
-staying separate), a v6 backup round-trip that lands documents and tag links in the *importing*
+staying separate), a v7 backup round-trip that lands documents and tag links in the *importing*
 account, and a demo-data pass that seeds every new module and then removes exactly what it
-seeded. The **e2e suite** drives the built app in a real
+seeded. The **e2e suite** (45 tests) drives the built app in a real
 browser: signed-out redirects, password sign-in, the identical generic refusal for an unknown
 email and for a wrong password (so failed attempts reveal nothing about which emails exist), the
 full sign-up → recovery-codes → dashboard → sign-out → password-reset journey, surface postures,
-dialogs, responsive overflow and reduced motion; its browser-test accounts come from
-`npm run seed:e2e`. CI (`.github/workflows/ci.yml`) runs lint, typecheck, all three suites,
+dialogs, responsive overflow and reduced motion — plus a complete Apple Health import round trip
+that **builds its own export archive** (so it runs against an empty database too), imports it,
+checks the data across the section, re-imports it as a no-op, and undoes it again, alongside the
+refusals for a non-export, malformed XML and an entity-declaring file. Its browser-test accounts
+come from `npm run seed:e2e`. CI (`.github/workflows/ci.yml`) runs lint, typecheck, all three suites,
 migration validation and the production build on every push and pull request.
 
 ---

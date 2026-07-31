@@ -76,11 +76,18 @@ mechanics are described in
 
 ### Format versions
 
-The current format is **v6**. Older files import unchanged — a v1–v5 backup
-simply has no rows for tables that did not exist yet, and columns added since
-take their defaults (a v5 budget arrives as the monthly, alert-free budget it
-was). A file written by a *newer* app version is refused rather than
-half-understood, because this app cannot know what its tables mean.
+The current format is **v7**, which added the Health module's records
+(`healthRecords` — ECGs, medications, clinical records and workout-route
+metadata) alongside the health metrics and import batches earlier versions
+already carried. Health import batches also gained their undo stamp and run
+timings.
+
+Older files import unchanged — a v1–v6 backup simply has no rows for tables
+that did not exist yet, and columns added since take their defaults (a v5
+budget arrives as the monthly, alert-free budget it was; a v6 health import
+batch arrives un-undone and untimed, which is exactly what it was). A file
+written by a *newer* app version is refused rather than half-understood,
+because this app cannot know what its tables mean.
 
 ## The verification report
 

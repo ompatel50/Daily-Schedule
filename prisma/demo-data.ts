@@ -29,7 +29,7 @@ import { addDays, addMonths, format, startOfMonth, subDays, subMonths } from "da
 
 import { SEED_FOODS } from "../src/lib/data/foods";
 import { moneyRound } from "../src/lib/logic/finance";
-import { manualDailyFingerprint } from "../src/lib/logic/health-import/rollup";
+import { fingerprintFor, manualDailyFingerprint } from "../src/lib/logic/health-import/rollup";
 // The seed calls the app's real aggregation rather than keeping its own copy of
 // the scoring formula. It used to duplicate scoreDay() by hand, which meant
 // seeded history and live recomputation could drift apart silently.
@@ -151,6 +151,7 @@ export async function seedDemoData(
   await prisma.scheduleTemplate.deleteMany({ where: { userId: user.id } });
   await prisma.habitLog.deleteMany({ where: { userId: user.id } });
   await prisma.habit.deleteMany({ where: { userId: user.id } });
+  await prisma.healthRecord.deleteMany({ where: { userId: user.id } });
   await prisma.healthMetric.deleteMany({ where: { userId: user.id } });
   await prisma.healthImportBatch.deleteMany({ where: { userId: user.id } });
   await prisma.journalEntry.deleteMany({ where: { userId: user.id } });
@@ -731,6 +732,8 @@ export async function seedDemoData(
     });
   }
 
+  await seedImportedHealth(prisma, user.id);
+
   // --- schedule templates --------------------------------------------------
   const scheduleTemplates = [
     {
@@ -1299,13 +1302,369 @@ export const DEMO_MODEL_ORDER = [
   "Goal",
   "ScheduleRule",
   "ScheduleOverride",
+  // Health rows before the batch they belong to: a batch's metrics,
+  // records and workouts all reference it.
+  "HealthRecord",
   "HealthMetric",
+  "HealthImportBatch",
   "JournalEntry",
   "Reminder",
   "FavoriteItem",
   "Tag",
 ] as const;
 export type DemoModel = (typeof DEMO_MODEL_ORDER)[number];
+
+/**
+ * A realistic Apple Health import, without an Apple Health export.
+ *
+ * The demo needs the *shape* an import leaves behind — device-attributed rows
+ * across the richer metric vocabulary, sleep with real stages, workouts marked
+ * as imported, a few ECG and medication records, and an import batch that can
+ * be undone — because otherwise every Health page except the basics reads as
+ * empty and the import history has nothing to show.
+ *
+ * Fingerprints are built with the real `fingerprintFor`, so re-seeding is
+ * idempotent for exactly the same reason a re-import is, and undoing this
+ * batch exercises the real undo path against real-shaped rows.
+ */
+async function seedImportedHealth(prisma: DbClient, userId: string): Promise<void> {
+  console.log("  · imported health (Apple Health-shaped)");
+
+  const startedAt = subDays(new Date(), 2);
+  const finishedAt = new Date(startedAt.getTime() + 8_400);
+  const batch = await prisma.healthImportBatch.create({
+    data: {
+      userId,
+      source: "apple_health",
+      fileType: "zip",
+      fileName: "export.zip",
+      fileSize: 92 * 1024 * 1024,
+      status: "completed",
+      dateFrom: day(-HISTORY_DAYS),
+      dateTo: day(0),
+      categories: JSON.stringify([
+        "active_calories",
+        "blood_oxygen",
+        "distance_km",
+        "exercise_minutes",
+        "flights_climbed",
+        "heart_rate",
+        "records",
+        "sleep_hours",
+        "stand_hours",
+        "steps",
+        "vo2_max",
+        "workouts",
+      ]),
+      examined: 1_284_902,
+      skipped: 41_233,
+      invalid: 12,
+      warnings: JSON.stringify([
+        "Skipped: 12 sleep records had a non-positive or absurd duration.",
+      ]),
+      ignoredFiles: JSON.stringify([
+        "clinical document duplicate of export.xml",
+        "raw FHIR payloads — only their index is read",
+      ]),
+      xmlBytes: BigInt(1_842_301_774),
+      startedAt,
+      finishedAt,
+      durationMs: finishedAt.getTime() - startedAt.getTime(),
+    },
+  });
+
+  const WATCH = "Apple Watch";
+  const PHONE = "iPhone";
+  const rows: Array<{
+    date: string;
+    type: string;
+    subtype: string | null;
+    value: number;
+    unit: string;
+    sourceApp: string;
+    startAt?: Date;
+    endAt?: Date;
+    minValue?: number;
+    maxValue?: number;
+    sampleCount: number;
+  }> = [];
+
+  let vo2 = 41.2;
+  for (let offset = -HISTORY_DAYS; offset <= 0; offset += 1) {
+    const date = day(offset);
+    const push = (
+      type: string,
+      value: number,
+      unit: string,
+      sourceApp: string,
+      extra: Partial<(typeof rows)[number]> = {},
+    ) => rows.push({ date, type, subtype: null, value, unit, sourceApp, sampleCount: 1, ...extra });
+
+    // The watch and the phone both count steps and distance — two source
+    // groups, which is precisely what the aggregation is built to reconcile.
+    push("steps", Math.round(between(5200, 15200)), "", WATCH, { sampleCount: intBetween(80, 260) });
+    push("steps", Math.round(between(3100, 9800)), "", PHONE, { sampleCount: intBetween(40, 120) });
+    push("distance_km", Number(between(3.2, 11.4).toFixed(2)), "km", WATCH, {
+      sampleCount: intBetween(60, 200),
+    });
+    push("flights_climbed", intBetween(2, 26), "", PHONE, { sampleCount: intBetween(2, 26) });
+    push("exercise_minutes", intBetween(12, 84), "min", WATCH, { sampleCount: intBetween(6, 30) });
+    push("stand_hours", intBetween(7, 14), "h", WATCH, { sampleCount: intBetween(7, 14) });
+    push("active_calories", Math.round(between(320, 940)), "kcal", WATCH, {
+      sampleCount: intBetween(90, 300),
+    });
+
+    const restingHr = Math.round(between(49, 61));
+    push("heart_rate", Math.round(between(66, 84)), "bpm", WATCH, {
+      minValue: restingHr - intBetween(1, 5),
+      maxValue: Math.round(between(138, 178)),
+      sampleCount: intBetween(400, 1400),
+    });
+    push("resting_hr", restingHr, "bpm", WATCH, { sampleCount: 1 });
+    push("walking_hr", Math.round(between(94, 118)), "bpm", WATCH, { sampleCount: 1 });
+    push("hrv", Math.round(between(34, 82)), "ms", WATCH, { sampleCount: intBetween(2, 8) });
+    push("blood_oxygen", Math.round(between(95, 99)), "%", WATCH, { sampleCount: intBetween(4, 22) });
+    push("respiratory_rate", Math.round(between(12, 18)), "br/min", WATCH, {
+      sampleCount: intBetween(4, 12),
+    });
+
+    // VO₂ max moves slowly and is only estimated after outdoor workouts.
+    if (chance(0.25)) {
+      vo2 += between(-0.25, 0.32);
+      rows.push({
+        date,
+        type: "vo2_max",
+        subtype: null,
+        value: Number(vo2.toFixed(1)),
+        unit: "ml/kg·min",
+        sourceApp: WATCH,
+        startAt: atHour(offset, 18),
+        sampleCount: 1,
+      });
+    }
+
+    // Nutrition, on the days a food app was actually used.
+    if (chance(0.55)) {
+      push("dietary_calories", Math.round(between(1780, 2680)), "kcal", "Food log");
+      push("protein_g", Math.round(between(95, 175)), "g", "Food log");
+      push("carbs_g", Math.round(between(150, 320)), "g", "Food log");
+      push("fat_g", Math.round(between(48, 96)), "g", "Food log");
+      push("fiber_g", Math.round(between(14, 38)), "g", "Food log");
+      push("sugar_g", Math.round(between(22, 78)), "g", "Food log");
+      push("sodium_mg", Math.round(between(1600, 3400)), "mg", "Food log");
+      push("caffeine_mg", Math.round(between(60, 280)), "mg", "Food log");
+      push("vitamin_c_mg", Math.round(between(30, 140)), "mg", "Food log");
+      push("calcium_mg", Math.round(between(600, 1400)), "mg", "Food log");
+      push("iron_mg", Number(between(6, 19).toFixed(1)), "mg", "Food log");
+    }
+
+    // Sleep, as stages that never overlap — the night belongs to the morning
+    // it ends on, which is the day key used here.
+    if (chance(0.94)) {
+      const core = between(3.1, 4.6);
+      const deep = between(0.6, 1.5);
+      const rem = between(1.0, 2.1);
+      const awake = between(0.1, 0.6);
+      let cursor = 0;
+      const bedtime = atHour(offset - 1, 23);
+      const stage = (name: string, hours: number) => {
+        const start = new Date(bedtime.getTime() + cursor * 3_600_000);
+        cursor += hours;
+        rows.push({
+          date,
+          type: "sleep_hours",
+          subtype: name,
+          value: Number(hours.toFixed(2)),
+          unit: "h",
+          sourceApp: WATCH,
+          startAt: start,
+          endAt: new Date(bedtime.getTime() + cursor * 3_600_000),
+          sampleCount: intBetween(3, 14),
+        });
+      };
+      stage("core", core);
+      stage("deep", deep);
+      stage("rem", rem);
+      stage("awake", awake);
+      rows.push({
+        date,
+        type: "sleep_hours",
+        subtype: "in_bed",
+        value: Number((core + deep + rem + awake + between(0.2, 0.5)).toFixed(2)),
+        unit: "h",
+        sourceApp: WATCH,
+        startAt: bedtime,
+        endAt: new Date(bedtime.getTime() + cursor * 3_600_000),
+        sampleCount: 1,
+      });
+    }
+  }
+
+  // Written in batches: the same shape a real confirm uses, and the only way
+  // a 70-day multi-metric seed stays a handful of statements.
+  const CHUNK = 500;
+  for (let index = 0; index < rows.length; index += CHUNK) {
+    await prisma.healthMetric.createMany({
+      data: rows.slice(index, index + CHUNK).map((row) => ({
+        userId,
+        batchId: batch.id,
+        date: row.date,
+        type: row.type,
+        subtype: row.subtype,
+        value: row.value,
+        unit: row.unit,
+        minValue: row.minValue ?? null,
+        maxValue: row.maxValue ?? null,
+        startAt: row.startAt ?? null,
+        endAt: row.endAt ?? null,
+        recordedAt: row.startAt ?? null,
+        source: "apple_health",
+        sourceApp: row.sourceApp,
+        sourceDevice: row.sourceApp,
+        sampleCount: row.sampleCount,
+        fingerprint: fingerprintFor({
+          type: row.type,
+          subtype: row.subtype as never,
+          value: row.value,
+          unit: row.unit,
+          minValue: null,
+          maxValue: null,
+          date: row.date,
+          startAt: row.startAt?.toISOString() ?? null,
+          endAt: row.endAt?.toISOString() ?? null,
+          source: "apple_health",
+          sourceApp: row.sourceApp,
+          sourceDevice: row.sourceApp,
+          externalId: null,
+          notes: null,
+          sampleCount: row.sampleCount,
+        }),
+      })),
+    });
+  }
+
+  // Imported workouts, marked as such so undo can take them back.
+  const importedWorkouts = [
+    { offset: -3, activity: "Running", type: "running", durationMin: 38, distanceKm: 7.1, calories: 512, hr: 156 },
+    { offset: -6, activity: "Cycling", type: "cycling", durationMin: 64, distanceKm: 24.6, calories: 703, hr: 141 },
+    { offset: -9, activity: "Outdoor Walk", type: "walking", durationMin: 46, distanceKm: 4.2, calories: 218, hr: 108 },
+    { offset: -13, activity: "Running", type: "running", durationMin: 52, distanceKm: 9.8, calories: 688, hr: 159 },
+    { offset: -18, activity: "Pool Swim", type: "swimming", durationMin: 35, distanceKm: 1.4, calories: 402, hr: 132 },
+  ];
+  for (const workout of importedWorkouts) {
+    const startedAtWorkout = atHour(workout.offset, 18);
+    await prisma.workout.create({
+      data: {
+        userId,
+        date: day(workout.offset),
+        time: "18:00",
+        name: workout.activity,
+        type: workout.type,
+        durationMin: workout.durationMin,
+        distanceKm: workout.distanceKm,
+        caloriesBurned: workout.calories,
+        avgHeartRate: workout.hr,
+        status: "completed",
+        startedAt: startedAtWorkout,
+        completedAt: new Date(startedAtWorkout.getTime() + workout.durationMin * 60_000),
+        source: "apple_health",
+        externalId: `ah:${startedAtWorkout.toISOString()}:HKWorkoutActivityType${workout.activity.replace(/\s+/g, "")}`,
+        importBatchId: batch.id,
+      },
+    });
+  }
+
+  // The non-numeric side of an export: ECGs, a medication, a clinical record
+  // and a route's metadata. Summaries only — never a voltage or a coordinate.
+  const records = [
+    {
+      kind: "ecg",
+      offset: -5,
+      title: "Sinus Rhythm",
+      subtitle: "Average 62 bpm",
+      value: 62,
+      unit: "bpm",
+      detail: { symptoms: "None", device: "Apple Watch" },
+    },
+    {
+      kind: "ecg",
+      offset: -27,
+      title: "Sinus Rhythm",
+      subtitle: "Average 58 bpm",
+      value: 58,
+      unit: "bpm",
+      detail: { symptoms: "None", device: "Apple Watch" },
+    },
+    {
+      kind: "medication",
+      offset: -34,
+      title: "Cholecalciferol 1000 IU",
+      subtitle: "Riverside Family Practice",
+      value: null,
+      unit: "",
+      detail: { type: "MedicationStatement", fhirVersion: "4.0.1" },
+    },
+    {
+      kind: "clinical",
+      offset: -41,
+      title: "Influenza vaccine",
+      subtitle: "Riverside Family Practice",
+      value: null,
+      unit: "",
+      detail: { type: "Immunization", fhirVersion: "4.0.1" },
+    },
+    {
+      kind: "workout_route",
+      offset: -3,
+      title: "Route · 7.10 km",
+      subtitle: "1,284 GPS points recorded",
+      value: 7.1,
+      unit: "km",
+      detail: { points: 1284 },
+    },
+  ];
+  for (const record of records) {
+    const recordedAt = atHour(record.offset, 9);
+    await prisma.healthRecord.create({
+      data: {
+        userId,
+        batchId: batch.id,
+        kind: record.kind,
+        date: day(record.offset),
+        recordedAt,
+        startAt: recordedAt,
+        title: record.title,
+        subtitle: record.subtitle,
+        value: record.value,
+        unit: record.unit,
+        detail: JSON.stringify(record.detail),
+        source: "apple_health",
+        sourceApp: record.kind === "ecg" ? "Apple Watch" : "Riverside Family Practice",
+        externalId: `demo-${record.kind}-${record.offset}`,
+        fingerprint: `ahr|${record.kind}|demo-${record.kind}-${record.offset}`,
+      },
+    });
+  }
+
+  await prisma.healthImportBatch.update({
+    where: { id: batch.id },
+    data: {
+      imported: rows.length,
+      updated: 0,
+      duplicates: 0,
+      workoutsImported: importedWorkouts.length,
+      workoutsSkipped: 2,
+      recordsImported: records.length,
+    },
+  });
+}
+
+/** A Date at a given hour on a day `offset` days from today. */
+function atHour(offset: number, hour: number): Date {
+  const date = addDays(new Date(), offset);
+  date.setHours(hour, 0, 0, 0);
+  return date;
+}
 
 async function recordSeedBatch(prisma: DbClient, userId: string): Promise<number> {
   const owned = { where: { userId }, select: { id: true } } as const;
@@ -1335,7 +1694,9 @@ async function recordSeedBatch(prisma: DbClient, userId: string): Promise<number
     ["Goal", await prisma.goal.findMany(owned)],
     ["ScheduleRule", await prisma.scheduleRule.findMany(owned)],
     ["ScheduleOverride", await prisma.scheduleOverride.findMany(owned)],
+    ["HealthRecord", await prisma.healthRecord.findMany(owned)],
     ["HealthMetric", await prisma.healthMetric.findMany(owned)],
+    ["HealthImportBatch", await prisma.healthImportBatch.findMany(owned)],
     ["JournalEntry", await prisma.journalEntry.findMany(owned)],
     ["Reminder", await prisma.reminder.findMany(owned)],
     ["FavoriteItem", await prisma.favoriteItem.findMany(owned)],

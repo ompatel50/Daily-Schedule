@@ -29,6 +29,12 @@ import type { DayKey } from "@/lib/date";
  * | blood_pressure    | latest (value + secondary)     | latest overall       |
  * | mood / energy     | latest                         | latest overall       |
  *
+ * The table lists the original vocabulary; the Apple Health phase added
+ * activity, body, heart, respiratory, nutrition, vitals and mindfulness
+ * metrics that all reuse those same five kinds — `HEALTH_METRIC_RULES` below
+ * is the complete, authoritative list, and nothing outside this module may
+ * decide how a metric aggregates.
+ *
  * A "source group" is `source + sourceApp` — your watch, your phone, a CSV, a
  * manual entry. Cumulative metrics are summed *within* a group because one
  * device's records genuinely add up, and the *best* group wins across devices
@@ -101,20 +107,43 @@ export const SLEEP_STAGE_META: Record<SleepStage, { label: string; asleep: boole
  * parser and the aggregator all read this table.
  */
 const UNIT_FACTORS: Record<string, Record<string, number>> = {
-  mass_kg: { kg: 1, kgs: 1, kilogram: 1, kilograms: 1, lb: 0.453_592_37, lbs: 0.453_592_37, pound: 0.453_592_37, pounds: 0.453_592_37, g: 0.001 },
+  mass_kg: { kg: 1, kgs: 1, kilogram: 1, kilograms: 1, lb: 0.453_592_37, lbs: 0.453_592_37, pound: 0.453_592_37, pounds: 0.453_592_37, g: 0.001, st: 6.350_293_18, stone: 6.350_293_18 },
   volume_ml: { ml: 1, milliliter: 1, milliliters: 1, l: 1000, liter: 1000, liters: 1000, litre: 1000, litres: 1000, fl_oz_us: 29.573_529_562_5, floz: 29.573_529_562_5, "fl oz": 29.573_529_562_5, oz: 29.573_529_562_5, cup: 236.588 },
   energy_kcal: { kcal: 1, cal: 1, calories: 1, kj: 1 / 4.184, kilojoule: 1 / 4.184, kilojoules: 1 / 4.184 },
   duration_h: { h: 1, hr: 1, hrs: 1, hour: 1, hours: 1, min: 1 / 60, mins: 1 / 60, minute: 1 / 60, minutes: 1 / 60, s: 1 / 3600, sec: 1 / 3600 },
-  distance_km: { km: 1, kilometer: 1, kilometers: 1, mi: 1.609_344, mile: 1.609_344, miles: 1.609_344, m: 0.001, meter: 0.001, meters: 0.001 },
+  duration_min: { min: 1, mins: 1, minute: 1, minutes: 1, h: 60, hr: 60, hrs: 60, hour: 60, hours: 60, s: 1 / 60, sec: 1 / 60, "": 1 },
+  distance_km: { km: 1, kilometer: 1, kilometers: 1, mi: 1.609_344, mile: 1.609_344, miles: 1.609_344, m: 0.001, meter: 0.001, meters: 0.001, yd: 0.000_914_4, ft: 0.000_304_8 },
+  length_cm: { cm: 1, centimeter: 1, centimeters: 1, m: 100, meter: 100, meters: 100, mm: 0.1, in: 2.54, inch: 2.54, inches: 2.54, ft: 30.48, foot: 30.48, feet: 30.48 },
+  // Nutrition arrives in whichever prefix HealthKit chose per nutrient, so the
+  // gram/milligram/microgram families each accept all three.
+  mass_g: { g: 1, gram: 1, grams: 1, mg: 0.001, mcg: 0.000_001, µg: 0.000_001, ug: 0.000_001, kg: 1000, oz: 28.349_523_125 },
+  mass_mg: { mg: 1, milligram: 1, milligrams: 1, g: 1000, gram: 1000, grams: 1000, mcg: 0.001, µg: 0.001, ug: 0.001 },
+  mass_mcg: { mcg: 1, µg: 1, ug: 1, microgram: 1, micrograms: 1, mg: 1000, g: 1_000_000 },
+  volume_l: { l: 1, liter: 1, liters: 1, litre: 1, litres: 1, ml: 0.001, dl: 0.1, cl: 0.01 },
+  flow_l_min: { "l/min": 1, "l/mins": 1, "liters/min": 1, "litres/min": 1, "l/s": 60, "ml/min": 0.001 },
   count: { "": 1, count: 1, steps: 1 },
-  bpm: { "": 1, bpm: 1, "count/min": 1 },
-  ms: { "": 1, ms: 1 },
+  bpm: { "": 1, bpm: 1, "count/min": 1, "br/min": 1, "breaths/min": 1 },
+  // One "stand hour" is one counted hour, so the count and the hour are the
+  // same number — the family accepts both spellings rather than pretending
+  // steps could be measured in hours.
+  stand_h: { "": 1, count: 1, h: 1, hr: 1, hour: 1, hours: 1 },
+  ms: { "": 1, ms: 1, s: 1000, sec: 1000 },
   percent: { "": 1, "%": 1, percent: 1 },
   mmhg: { "": 1, mmhg: 1 },
   score5: { "": 1, "/5": 1 },
+  // Ratios and indices HealthKit reports as a bare "count".
+  index: { "": 1, count: 1 },
+  vo2: { "": 1, "ml/kg·min": 1, "ml/kg*min": 1, "ml/kg/min": 1, "ml/(kg*min)": 1, "ml/(kg·min)": 1, "ml/min·kg": 1 },
+  glucose_mgdl: { "": 1, "mg/dl": 1, mgdl: 1, "mmol/l": 18.018_2, mmoll: 18.018_2 },
+  // Temperature is the one affine family: degF converts through an offset, not
+  // a factor, so it is handled explicitly in `toCanonical` rather than here.
+  temp_c: { "": 1, c: 1, degc: 1, "°c": 1, celsius: 1 },
 };
 
 type UnitFamily = keyof typeof UNIT_FACTORS;
+
+/** Fahrenheit → Celsius is affine, so it cannot live in the factor table. */
+const FAHRENHEIT_UNITS = new Set(["f", "degf", "°f", "fahrenheit"]);
 
 export type HealthAggregationKind = "cumulative" | "latest" | "average" | "sample_range" | "sleep";
 
@@ -142,6 +171,61 @@ export const HEALTH_METRIC_RULES: Record<string, HealthMetricRule> = {
   blood_pressure: { kind: "latest", canonicalUnit: "mmHg", family: "mmhg", additiveAcrossDays: false },
   mood: { kind: "latest", canonicalUnit: "/5", family: "score5", additiveAcrossDays: false },
   energy: { kind: "latest", canonicalUnit: "/5", family: "score5", additiveAcrossDays: false },
+
+  // --- activity ---------------------------------------------------------------
+  flights_climbed: { kind: "cumulative", canonicalUnit: "", family: "count", additiveAcrossDays: true },
+  exercise_minutes: { kind: "cumulative", canonicalUnit: "min", family: "duration_min", additiveAcrossDays: true },
+  stand_hours: { kind: "cumulative", canonicalUnit: "h", family: "stand_h", additiveAcrossDays: true },
+  distance_cycling_km: { kind: "cumulative", canonicalUnit: "km", family: "distance_km", additiveAcrossDays: true },
+  distance_swimming_km: { kind: "cumulative", canonicalUnit: "km", family: "distance_km", additiveAcrossDays: true },
+
+  // --- body -------------------------------------------------------------------
+  height_cm: { kind: "latest", canonicalUnit: "cm", family: "length_cm", additiveAcrossDays: false },
+  bmi: { kind: "latest", canonicalUnit: "", family: "index", additiveAcrossDays: false },
+  lean_body_mass: { kind: "latest", canonicalUnit: "kg", family: "mass_kg", additiveAcrossDays: false },
+  waist_cm: { kind: "latest", canonicalUnit: "cm", family: "length_cm", additiveAcrossDays: false },
+
+  // --- heart ------------------------------------------------------------------
+  walking_hr: { kind: "average", canonicalUnit: "bpm", family: "bpm", additiveAcrossDays: false },
+  vo2_max: { kind: "latest", canonicalUnit: "ml/kg·min", family: "vo2", additiveAcrossDays: false },
+
+  // --- respiratory ------------------------------------------------------------
+  respiratory_rate: { kind: "average", canonicalUnit: "br/min", family: "bpm", additiveAcrossDays: false },
+  blood_oxygen: { kind: "average", canonicalUnit: "%", family: "percent", additiveAcrossDays: false },
+  peak_flow: { kind: "latest", canonicalUnit: "L/min", family: "flow_l_min", additiveAcrossDays: false },
+  forced_vital_capacity: { kind: "latest", canonicalUnit: "L", family: "volume_l", additiveAcrossDays: false },
+  fev1: { kind: "latest", canonicalUnit: "L", family: "volume_l", additiveAcrossDays: false },
+
+  // --- nutrition --------------------------------------------------------------
+  dietary_calories: { kind: "cumulative", canonicalUnit: "kcal", family: "energy_kcal", additiveAcrossDays: true },
+  protein_g: { kind: "cumulative", canonicalUnit: "g", family: "mass_g", additiveAcrossDays: true },
+  fat_g: { kind: "cumulative", canonicalUnit: "g", family: "mass_g", additiveAcrossDays: true },
+  saturated_fat_g: { kind: "cumulative", canonicalUnit: "g", family: "mass_g", additiveAcrossDays: true },
+  carbs_g: { kind: "cumulative", canonicalUnit: "g", family: "mass_g", additiveAcrossDays: true },
+  fiber_g: { kind: "cumulative", canonicalUnit: "g", family: "mass_g", additiveAcrossDays: true },
+  sugar_g: { kind: "cumulative", canonicalUnit: "g", family: "mass_g", additiveAcrossDays: true },
+  cholesterol_mg: { kind: "cumulative", canonicalUnit: "mg", family: "mass_mg", additiveAcrossDays: true },
+  sodium_mg: { kind: "cumulative", canonicalUnit: "mg", family: "mass_mg", additiveAcrossDays: true },
+  potassium_mg: { kind: "cumulative", canonicalUnit: "mg", family: "mass_mg", additiveAcrossDays: true },
+  calcium_mg: { kind: "cumulative", canonicalUnit: "mg", family: "mass_mg", additiveAcrossDays: true },
+  iron_mg: { kind: "cumulative", canonicalUnit: "mg", family: "mass_mg", additiveAcrossDays: true },
+  magnesium_mg: { kind: "cumulative", canonicalUnit: "mg", family: "mass_mg", additiveAcrossDays: true },
+  zinc_mg: { kind: "cumulative", canonicalUnit: "mg", family: "mass_mg", additiveAcrossDays: true },
+  caffeine_mg: { kind: "cumulative", canonicalUnit: "mg", family: "mass_mg", additiveAcrossDays: true },
+  vitamin_a_mcg: { kind: "cumulative", canonicalUnit: "µg", family: "mass_mcg", additiveAcrossDays: true },
+  vitamin_c_mg: { kind: "cumulative", canonicalUnit: "mg", family: "mass_mg", additiveAcrossDays: true },
+  vitamin_d_mcg: { kind: "cumulative", canonicalUnit: "µg", family: "mass_mcg", additiveAcrossDays: true },
+  vitamin_e_mg: { kind: "cumulative", canonicalUnit: "mg", family: "mass_mg", additiveAcrossDays: true },
+  vitamin_b6_mg: { kind: "cumulative", canonicalUnit: "mg", family: "mass_mg", additiveAcrossDays: true },
+  vitamin_b12_mcg: { kind: "cumulative", canonicalUnit: "µg", family: "mass_mcg", additiveAcrossDays: true },
+  folate_mcg: { kind: "cumulative", canonicalUnit: "µg", family: "mass_mcg", additiveAcrossDays: true },
+
+  // --- vitals -----------------------------------------------------------------
+  blood_glucose: { kind: "latest", canonicalUnit: "mg/dL", family: "glucose_mgdl", additiveAcrossDays: false },
+  body_temperature: { kind: "latest", canonicalUnit: "°C", family: "temp_c", additiveAcrossDays: false },
+
+  // --- mindfulness ------------------------------------------------------------
+  mindful_minutes: { kind: "cumulative", canonicalUnit: "min", family: "duration_min", additiveAcrossDays: true },
 };
 
 export function metricRule(type: string): HealthMetricRule | null {
@@ -156,14 +240,22 @@ export function metricRule(type: string): HealthMetricRule | null {
 export function toCanonical(type: string, value: number, unit: string): number | null {
   const rule = HEALTH_METRIC_RULES[type];
   if (!rule || !Number.isFinite(value)) return null;
-  const factor = UNIT_FACTORS[rule.family][normalizeUnit(unit)];
+  const normalized = normalizeUnit(unit);
+  // Temperature is affine, not proportional: 98.6 °F is 37 °C, not 98.6 × k.
+  if (rule.family === "temp_c" && FAHRENHEIT_UNITS.has(normalized)) {
+    return ((value - 32) * 5) / 9;
+  }
+  const factor = UNIT_FACTORS[rule.family][normalized];
   if (factor === undefined) return null;
   return value * factor;
 }
 
 export function isSupportedUnit(type: string, unit: string): boolean {
   const rule = HEALTH_METRIC_RULES[type];
-  return rule ? UNIT_FACTORS[rule.family][normalizeUnit(unit)] !== undefined : false;
+  if (!rule) return false;
+  const normalized = normalizeUnit(unit);
+  if (rule.family === "temp_c" && FAHRENHEIT_UNITS.has(normalized)) return true;
+  return UNIT_FACTORS[rule.family][normalized] !== undefined;
 }
 
 function normalizeUnit(unit: string): string {
@@ -171,9 +263,21 @@ function normalizeUnit(unit: string): string {
 }
 
 /**
- * Convert a canonical value into the user's display unit. Only weight and
- * distance actually differ between unit systems.
+ * Convert a canonical value into the user's display unit.
+ *
+ * Only mass, distance, length and temperature differ between the two systems;
+ * everything else (bpm, %, mg, kcal) reads the same either way and is returned
+ * in its canonical unit. The imperial table is keyed by unit *family* rather
+ * than by metric so a metric added to a family it already covers — another
+ * body measurement in centimetres, say — converts without a second edit.
  */
+const IMPERIAL_DISPLAY: Partial<Record<UnitFamily, { unit: string; convert: (value: number) => number }>> = {
+  mass_kg: { unit: "lb", convert: (value) => value / 0.453_592_37 },
+  distance_km: { unit: "mi", convert: (value) => value / 1.609_344 },
+  length_cm: { unit: "in", convert: (value) => value / 2.54 },
+  temp_c: { unit: "°F", convert: (value) => (value * 9) / 5 + 32 },
+};
+
 export function toDisplay(
   type: string,
   canonicalValue: number,
@@ -182,10 +286,19 @@ export function toDisplay(
   const rule = HEALTH_METRIC_RULES[type];
   if (!rule) return { value: canonicalValue, unit: "" };
   if (unitSystem !== "metric") {
-    if (type === "body_weight") return { value: canonicalValue / 0.453_592_37, unit: "lb" };
-    if (type === "distance_km") return { value: canonicalValue / 1.609_344, unit: "mi" };
+    const imperial = IMPERIAL_DISPLAY[rule.family];
+    if (imperial) return { value: imperial.convert(canonicalValue), unit: imperial.unit };
   }
   return { value: canonicalValue, unit: rule.canonicalUnit };
+}
+
+/**
+ * The unit a value is shown in — and therefore the unit a manual entry is
+ * typed in. The entry form labels the field with this and the server converts
+ * from it, so the two can never disagree about what "175" meant.
+ */
+export function displayUnitFor(type: string, unitSystem: string): string {
+  return toDisplay(type, 0, unitSystem).unit;
 }
 
 // --- intervals --------------------------------------------------------------

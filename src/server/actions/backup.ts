@@ -46,6 +46,7 @@ export async function exportBackup(): Promise<ActionResult<BackupFile>> {
     workoutTemplates,
     healthImportBatches,
     healthMetrics,
+    healthRecords,
     goals,
     goalEntries,
     scheduleRules,
@@ -104,6 +105,7 @@ export async function exportBackup(): Promise<ActionResult<BackupFile>> {
     prisma.workoutTemplate.findMany({ where: { userId: user.id } }),
     prisma.healthImportBatch.findMany({ where: { userId: user.id } }),
     prisma.healthMetric.findMany({ where: { userId: user.id } }),
+    prisma.healthRecord.findMany({ where: { userId: user.id } }),
     prisma.goal.findMany({ where: { userId: user.id } }),
     prisma.goalEntry.findMany({ where: { userId: user.id } }),
     // The scheduling tables are what make a goal or habit mean anything. A
@@ -171,8 +173,15 @@ export async function exportBackup(): Promise<ActionResult<BackupFile>> {
     workouts,
     workoutSets,
     workoutTemplates,
-    healthImportBatches,
+    // `xmlBytes` is a BigInt column (an unzipped export can exceed 2 GB, which
+    // an Int cannot hold). JSON has no BigInt, so it travels as a number —
+    // exact well past any real file size, and the restore accepts either.
+    healthImportBatches: healthImportBatches.map((batch) => ({
+      ...batch,
+      xmlBytes: batch.xmlBytes === null ? null : Number(batch.xmlBytes),
+    })),
     healthMetrics,
+    healthRecords,
     goals,
     goalEntries,
     scheduleRules,

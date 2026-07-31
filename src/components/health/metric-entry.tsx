@@ -15,7 +15,8 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
-import { HEALTH_METRIC_META, HEALTH_METRIC_TYPES, type HealthMetricType } from "@/lib/enums";
+import { HEALTH_METRIC_META, MANUAL_ENTRY_METRICS, type HealthMetricType } from "@/lib/enums";
+import { displayUnitFor } from "@/lib/logic/health";
 import { logHealthMetric } from "@/server/actions/health";
 
 /**
@@ -43,16 +44,9 @@ export function MetricEntry({
   const [pending, startTransition] = React.useTransition();
 
   const meta = HEALTH_METRIC_META[type];
-  const unitLabel =
-    type === "body_weight"
-      ? unitSystem === "metric"
-        ? "kg"
-        : "lb"
-      : type === "distance_km"
-        ? unitSystem === "metric"
-          ? "km"
-          : "mi"
-        : meta.unit;
+  // The same table the server converts through, so the label and the stored
+  // value can never disagree about which unit was typed.
+  const unitLabel = displayUnitFor(type, unitSystem);
 
   function submit() {
     const numeric = Number(value);
@@ -95,7 +89,7 @@ export function MetricEntry({
               <SelectValue />
             </SelectTrigger>
             <SelectContent>
-              {HEALTH_METRIC_TYPES.filter((key) => key !== "mood" && key !== "energy").map((key) => (
+              {MANUAL_ENTRY_METRICS.map((key) => (
                 <SelectItem key={key} value={key}>
                   {HEALTH_METRIC_META[key].label}
                 </SelectItem>

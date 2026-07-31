@@ -7,6 +7,7 @@ import {
   aggregateDayAll,
   aggregateSeries,
   ASLEEP_STAGES,
+  displayUnitFor,
   HEALTH_METRIC_RULES,
   HEALTH_SOURCE_META,
   intervalHours,
@@ -18,7 +19,12 @@ import {
   type HealthRowLike,
 } from "@/lib/logic/health";
 import { healthMetricSchema } from "@/lib/validation";
-import { HEALTH_METRIC_TYPES } from "@/lib/enums";
+import {
+  HEALTH_METRIC_GROUPS,
+  HEALTH_METRIC_META,
+  HEALTH_METRIC_TYPES,
+  metricsInGroup,
+} from "@/lib/enums";
 
 const row = (partial: Partial<HealthRowLike> & { type: string; value: number }): HealthRowLike => ({
   unit: HEALTH_METRIC_RULES[partial.type]?.canonicalUnit ?? "",
@@ -38,6 +44,46 @@ describe("metric registry", () => {
     for (const [type, rule] of Object.entries(HEALTH_METRIC_RULES)) {
       expect(["cumulative", "latest", "average", "sample_range", "sleep"]).toContain(rule.kind);
       expect(typeof rule.canonicalUnit, type).toBe("string");
+    }
+  });
+
+  it("gives every metric type a label, a unit and a group", () => {
+    for (const type of HEALTH_METRIC_TYPES) {
+      const meta = HEALTH_METRIC_META[type];
+      expect(meta, `missing meta for ${type}`).toBeTruthy();
+      expect(meta.label.length, type).toBeGreaterThan(0);
+      expect(HEALTH_METRIC_GROUPS).toContain(meta.group);
+      expect(["up", "down", "neutral"]).toContain(meta.goodDirection);
+    }
+  });
+
+  it("can convert every metric's own canonical unit", () => {
+    // Rows are stored in the canonical unit and read back through
+    // `toCanonical`, so a canonical unit its family cannot convert would make
+    // every row of that metric unreadable — silently, and only in production.
+    for (const [type, rule] of Object.entries(HEALTH_METRIC_RULES)) {
+      expect(isSupportedUnit(type, rule.canonicalUnit), `${type} cannot read its own unit "${rule.canonicalUnit}"`).toBe(true);
+      expect(toCanonical(type, 42, rule.canonicalUnit), type).toBeCloseTo(42, 6);
+    }
+  });
+
+  it("round-trips every metric through the user's display unit", () => {
+    // The manual-entry form labels its field with the display unit and the
+    // server converts back from it; if those disagree, a typed number is
+    // stored as a different quantity.
+    for (const system of ["metric", "imperial"]) {
+      for (const type of HEALTH_METRIC_TYPES) {
+        const unit = displayUnitFor(type, system);
+        const canonical = toCanonical(type, 50, unit);
+        expect(canonical, `${type} in ${system} cannot read its display unit "${unit}"`).not.toBeNull();
+        expect(toDisplay(type, canonical as number, system).value, `${type} in ${system}`).toBeCloseTo(50, 6);
+      }
+    }
+  });
+
+  it("assigns every metric group at least one metric", () => {
+    for (const group of HEALTH_METRIC_GROUPS) {
+      expect(metricsInGroup(group).length, `${group} has no metrics`).toBeGreaterThan(0);
     }
   });
 });
@@ -303,10 +349,11 @@ describe("privacy — health data goes nowhere", () => {
       path.join(__dirname, "../src/lib/logic/health-import"),
       path.join(__dirname, "../src/server/health.ts"),
       path.join(__dirname, "../src/server/health-import.ts"),
-      path.join(__dirname, "../src/server/health-import-session.ts"),
+      path.join(__dirname, "../src/server/health-module.ts"),
+      path.join(__dirname, "../src/server/apple-health"),
       path.join(__dirname, "../src/server/actions/health.ts"),
       path.join(__dirname, "../src/server/actions/health-import.ts"),
-      path.join(__dirname, "../src/components/health/import-worker.ts"),
+      path.join(__dirname, "../src/app/api/health/import/route.ts"),
     ];
     const files: string[] = [];
     for (const root of roots) {

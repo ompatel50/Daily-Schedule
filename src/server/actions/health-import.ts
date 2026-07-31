@@ -7,62 +7,42 @@ import { fail, succeed, type ActionResult } from "@/lib/validation";
 import {
   confirmHealthImport,
   discardStaged,
-  finalizeStagedPreview,
+  getStagedPreview,
   listImportBatches,
   previewBatchRemoval,
   removeImportBatch,
   type BatchRemovalPreview,
+  type BatchRemovalReport,
+  type ImportBatchSummary,
   type ImportOutcome,
   type ImportPreviewResult,
 } from "@/server/health-import";
-import { appendChunk, createSession } from "@/server/health-import-session";
 
 /**
  * Server actions for the staged health import.
  *
- * The raw export file NEVER travels through these: the browser parses it in a
- * Web Worker and uploads only normalised rows, chunk by bounded chunk, into a
- * session created here — tied to the authenticated user, impossible to point
- * at anyone else. Every row is re-validated server-side at finalize, every
- * fingerprint recomputed. Preview writes no health records; only confirm
- * does. Cancel (and expiry) removes the staged rows.
+ * The file itself never travels through an action — it is streamed to
+ * `/api/health/import`, parsed there on the server, and staged. These actions
+ * cover everything after that: fetching a staged preview, confirming it,
+ * cancelling it, listing the history, and undoing an import.
+ *
+ * Every one of them resolves the user from the session and passes that id
+ * down; no action accepts a user id, so a token or batch id belonging to
+ * another account simply does not resolve.
  */
 
 function revalidateAll() {
   revalidatePath("/", "layout");
 }
 
-export async function createHealthImportSessionAction(
-  meta: unknown,
-): Promise<ActionResult<{ sessionId: string }>> {
-  const user = await getCurrentUser();
-  const result = await createSession(user.id, meta);
-  if (!result.ok) return fail(result.error);
-  return succeed({ sessionId: result.sessionId });
-}
-
-export async function uploadHealthImportChunkAction(input: {
-  sessionId: string;
-  seq: number;
-  payload: string;
-}): Promise<ActionResult<null>> {
-  const user = await getCurrentUser();
-  if (typeof input?.sessionId !== "string" || typeof input?.payload !== "string") {
-    return fail("Invalid upload.");
-  }
-  const result = await appendChunk(user.id, input.sessionId, input.seq, input.payload);
-  if (!result.ok) return fail(result.error);
-  return succeed(null);
-}
-
-export async function finalizeHealthImportAction(
-  sessionId: string,
+export async function getHealthImportPreviewAction(
+  token: string,
 ): Promise<ActionResult<ImportPreviewResult>> {
   const user = await getCurrentUser();
-  if (typeof sessionId !== "string") return fail("Invalid import session.");
-  const result = await finalizeStagedPreview(user.id, sessionId);
-  if (!result.ok) return fail(result.error);
-  return succeed(result.preview);
+  if (typeof token !== "string") return fail("Invalid import session.");
+  const preview = await getStagedPreview(user.id, token);
+  if (!preview) return fail("This import session has expired. Upload the file again.");
+  return succeed(preview);
 }
 
 export async function confirmHealthImportAction(input: {
@@ -88,9 +68,7 @@ export async function cancelHealthImportAction(token: string): Promise<ActionRes
   return succeed(null);
 }
 
-export async function getImportBatchesAction(): Promise<
-  ActionResult<Awaited<ReturnType<typeof listImportBatches>>>
-> {
+export async function getImportBatchesAction(): Promise<ActionResult<ImportBatchSummary[]>> {
   const user = await getCurrentUser();
   return succeed(await listImportBatches(user.id));
 }
@@ -99,18 +77,20 @@ export async function previewBatchRemovalAction(
   batchId: string,
 ): Promise<ActionResult<BatchRemovalPreview>> {
   const user = await getCurrentUser();
+  if (typeof batchId !== "string") return fail("Invalid import batch.");
   const preview = await previewBatchRemoval(user.id, batchId);
-  if (!preview) return fail("Import batch not found or already removed.");
+  if (!preview) return fail("Import batch not found or already undone.");
   return succeed(preview);
 }
 
 export async function removeImportBatchAction(
   batchId: string,
-): Promise<ActionResult<{ removedMetrics: number; removedWorkouts: number }>> {
+): Promise<ActionResult<BatchRemovalReport>> {
   const user = await getCurrentUser();
+  if (typeof batchId !== "string") return fail("Invalid import batch.");
   const result = await removeImportBatch(user.id, batchId);
   if (!result.ok) return fail(result.error);
 
   revalidateAll();
-  return succeed({ removedMetrics: result.removedMetrics, removedWorkouts: result.removedWorkouts });
+  return succeed(result.report);
 }

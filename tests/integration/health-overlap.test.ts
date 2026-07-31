@@ -1,5 +1,5 @@
 /**
- * Overlapping health imports through the real import-session actions: a later
+ * Overlapping health imports through the real staging pipeline: a later
  * Apple Health export that re-covers a day with a FULLER value (same
  * fingerprint identity, more samples) updates that row in place, new days are
  * added, nothing is duplicated — and a manually-entered metric is never
@@ -12,15 +12,14 @@ import { beforeEach, describe, expect, it } from "vitest";
 import { prisma } from "@/lib/prisma";
 import {
   confirmHealthImportAction,
-  createHealthImportSessionAction,
-  finalizeHealthImportAction,
   removeImportBatchAction,
-  uploadHealthImportChunkAction,
 } from "@/server/actions/health-import";
 import { fingerprintFor, manualDailyFingerprint } from "@/lib/logic/health-import/rollup";
+import { stageImport } from "@/server/health-import";
 import { actAs, resetDatabase, twoUsers } from "./helpers";
 
 import type { HealthMetric } from "@prisma/client";
+import type { ImportPlan, NormalizedHealthRow } from "@/lib/logic/health-import/types";
 import type { User } from "./helpers";
 
 let alice: User;
@@ -58,36 +57,60 @@ function appleStepsRow(date: string, value: number, sampleCount: number) {
   return { ...content, fingerprint: fingerprintFor(content) };
 }
 
-const META = {
-  source: "apple_health" as const,
-  fileType: "xml" as const,
-  fileName: "synthetic-export.xml",
-  fileSize: 5000,
-  totalChunks: 1,
-  examined: 100,
-  invalid: 0,
-  unsupported: [],
-  warnings: [],
-};
+/**
+ * The plan an Apple export of these rows would produce. Built directly rather
+ * than round-tripped through XML: this suite is about what the *write* step
+ * does with overlapping identities, and the parser has its own suite.
+ */
+function stepsPlan(rows: NormalizedHealthRow[]): ImportPlan {
+  const dates = rows.map((row) => row.date).sort();
+  return {
+    kind: "apple_health",
+    rows,
+    workouts: [],
+    records: [],
+    categories: [
+      {
+        key: "steps",
+        label: "Steps",
+        records: rows.reduce((sum, row) => sum + row.sampleCount, 0),
+        rows: rows.length,
+        dateFrom: dates[0],
+        dateTo: dates[dates.length - 1],
+      },
+    ],
+    dateFrom: dates[0],
+    dateTo: dates[dates.length - 1],
+    examined: 100,
+    invalid: 0,
+    unsupported: {},
+    errors: [],
+    warnings: [],
+    truncated: false,
+  };
+}
 
 async function importSteps(rows: ReturnType<typeof appleStepsRow>[]) {
-  const created = await createHealthImportSessionAction(META);
-  expect(created.ok).toBe(true);
-  if (!created.ok) throw new Error("unreachable");
-  const sessionId = created.data.sessionId;
-  const uploaded = await uploadHealthImportChunkAction({
-    sessionId,
-    seq: 0,
-    payload: JSON.stringify({ rows, workouts: [] }),
+  const staged = await stageImport(alice.id, {
+    kind: "apple_health",
+    fileType: "xml",
+    fileName: "synthetic-export.xml",
+    fileSize: 5000,
+    plan: stepsPlan(rows),
+    parseMs: 5,
+    xmlBytes: 5000,
+    ignoredFiles: [],
+    errors: [],
   });
-  expect(uploaded.ok).toBe(true);
-  const finalized = await finalizeHealthImportAction(sessionId);
-  expect(finalized.ok).toBe(true);
-  if (!finalized.ok) throw new Error("unreachable");
-  const confirmed = await confirmHealthImportAction({ token: sessionId, categories: ["steps"] });
+  expect(staged.ok).toBe(true);
+  if (!staged.ok) throw new Error(staged.error);
+  const confirmed = await confirmHealthImportAction({
+    token: staged.preview.token,
+    categories: ["steps"],
+  });
   expect(confirmed.ok).toBe(true);
   if (!confirmed.ok) throw new Error("unreachable");
-  return { preview: finalized.data, outcome: confirmed.data };
+  return { preview: staged.preview, outcome: confirmed.data };
 }
 
 async function manualRow(): Promise<HealthMetric> {

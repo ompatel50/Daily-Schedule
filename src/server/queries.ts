@@ -9,9 +9,15 @@ import {
   today,
   weekRange,
 } from "@/lib/date";
-import { MEAL_TYPE_META, type MealType } from "@/lib/enums";
+import {
+  HEALTH_GROUP_META,
+  HEALTH_METRIC_META,
+  HEALTH_METRIC_TYPES,
+  MEAL_TYPE_META,
+  type MealType,
+} from "@/lib/enums";
 import { describeGoalTarget } from "@/lib/logic/goals";
-import { aggregateDayAll } from "@/lib/logic/health";
+import { aggregateDay, aggregateDayAll, toDisplay, type HealthRowLike } from "@/lib/logic/health";
 import { emptySearchRows, type SearchRows } from "@/lib/logic/search";
 import {
   describeSchedule,
@@ -644,6 +650,8 @@ export async function searchEverything(query: string, limit = 8): Promise<Search
     savingsGoals,
     documents,
     tags,
+    healthMetrics,
+    healthRecords,
   ] = await Promise.all([
       prisma.scheduleItem.findMany({
         where: { userId: user.id, title: { contains: term, mode: "insensitive" } },
@@ -763,6 +771,23 @@ export async function searchEverything(query: string, limit = 8): Promise<Search
         orderBy: { name: "asc" },
         take: limit,
       }),
+      // Health metrics match on their *name*, which is a fixed vocabulary — so
+      // the candidate types are found in memory and the database is asked one
+      // grouped question about them, rather than scanning a decade of rows.
+      matchingHealthMetrics(user.id, user.unitSystem, term, limit),
+      prisma.healthRecord.findMany({
+        where: {
+          userId: user.id,
+          OR: [
+            { title: { contains: term, mode: "insensitive" } },
+            { subtitle: { contains: term, mode: "insensitive" } },
+            { kind: { contains: term, mode: "insensitive" } },
+          ],
+        },
+        orderBy: { date: "desc" },
+        take: limit,
+        select: { id: true, kind: true, title: true, subtitle: true, date: true },
+      }),
     ]);
 
   return {
@@ -790,6 +815,8 @@ export async function searchEverything(query: string, limit = 8): Promise<Search
     budgets,
     savingsGoals,
     documents,
+    healthMetrics,
+    healthRecords: healthRecords.map((record) => ({ ...record, date: record.date as DayKey })),
     tags: tags.map((tag) => ({
       id: tag.id,
       name: tag.name,
@@ -797,6 +824,94 @@ export async function searchEverything(query: string, limit = 8): Promise<Search
       plannerCount: tag._count.scheduleItems,
     })),
   };
+}
+
+/**
+ * Health metrics that match a search term.
+ *
+ * The set of metric names is a fixed vocabulary, so the matching happens in
+ * memory and the database is only asked "which of these does this account have
+ * readings for, how many, and when was the last one" — one grouped query,
+ * bounded by the number of matched types, whatever the size of the table.
+ */
+async function matchingHealthMetrics(
+  userId: string,
+  unitSystem: string,
+  term: string,
+  limit: number,
+): Promise<SearchRows["healthMetrics"]> {
+  const needle = term.toLowerCase();
+  const matched = HEALTH_METRIC_TYPES.filter((type) => {
+    const meta = HEALTH_METRIC_META[type];
+    return (
+      meta.label.toLowerCase().includes(needle) ||
+      type.includes(needle) ||
+      HEALTH_GROUP_META[meta.group].label.toLowerCase().includes(needle)
+    );
+  });
+  if (matched.length === 0) return [];
+
+  const groups = await prisma.healthMetric.groupBy({
+    by: ["type"],
+    where: { userId, type: { in: matched } },
+    _count: { _all: true },
+    _max: { date: true },
+  });
+  if (groups.length === 0) return [];
+
+  // The latest reading's value, aggregated through the one health module so a
+  // multi-device day reports the same number the charts do.
+  const byType = new Map(groups.map((group) => [group.type, group]));
+  const latestRows = await prisma.healthMetric.findMany({
+    where: {
+      userId,
+      OR: groups
+        .filter((group) => group._max.date !== null)
+        .map((group) => ({ type: group.type, date: group._max.date as string })),
+    },
+    select: {
+      date: true,
+      type: true,
+      subtype: true,
+      value: true,
+      unit: true,
+      secondaryValue: true,
+      minValue: true,
+      maxValue: true,
+      source: true,
+      sourceApp: true,
+      recordedAt: true,
+      startAt: true,
+      endAt: true,
+      createdAt: true,
+    },
+  });
+  const rowsByType = new Map<string, HealthRowLike[]>();
+  for (const row of latestRows as HealthRowLike[]) {
+    const bucket = rowsByType.get(row.type);
+    if (bucket) bucket.push(row);
+    else rowsByType.set(row.type, [row]);
+  }
+
+  return matched
+    .filter((type) => byType.has(type))
+    .slice(0, limit)
+    .map((type) => {
+      const meta = HEALTH_METRIC_META[type];
+      const group = byType.get(type);
+      const aggregated = aggregateDay(type, rowsByType.get(type) ?? []);
+      const display = aggregated ? toDisplay(type, aggregated.value, unitSystem) : null;
+      return {
+        type,
+        label: meta.label,
+        unit: display?.unit ?? meta.unit,
+        group: HEALTH_GROUP_META[meta.group].slug,
+        count: group?._count._all ?? 0,
+        latestDate: (group?._max.date as DayKey | null) ?? null,
+        latestValue:
+          display === null ? null : Math.round(display.value * 10 ** meta.decimals) / 10 ** meta.decimals,
+      };
+    });
 }
 
 /** Totals over a window, used by Insights and the weekly review. */

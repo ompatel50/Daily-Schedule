@@ -17,68 +17,30 @@ import {
   DialogTitle,
 } from "@/components/ui/dialog";
 import { Label } from "@/components/ui/label";
-import { formatNumber } from "@/lib/utils";
+import { formatBytes, formatNumber } from "@/lib/utils";
 import {
   cancelHealthImportAction,
   confirmHealthImportAction,
-  createHealthImportSessionAction,
-  finalizeHealthImportAction,
-  uploadHealthImportChunkAction,
 } from "@/server/actions/health-import";
 import type { ImportOutcome, ImportPreviewResult } from "@/server/health-import";
-import type { ImportPlan } from "@/lib/logic/health-import/types";
-import type { ParseResponse } from "./import-worker";
-
-/** Bounded upload chunks — must stay inside the server's per-chunk limits. */
-const ROWS_PER_CHUNK = 2000;
-const MAX_CHUNK_JSON = 800 * 1024;
 
 /**
- * Slice the plan's rows and workouts into sequence-numbered chunks, each
- * bounded in row count and serialised size.
+ * The staged import: pick a file → it uploads and is parsed **on the server**
+ * → a server-checked preview (nothing written) → choose what to bring in →
+ * confirm → results. Cancelling discards the staged rows; the health tables
+ * are only ever touched by the confirm step.
+ *
+ * The upload goes to `/api/health/import` rather than through a server action
+ * because an action buffers its whole body in memory and caps it at a few
+ * megabytes — an Apple Health export is routinely far larger, and the route
+ * streams it to disk instead.
  */
-function buildChunks(plan: ImportPlan): string[] {
-  const chunks: string[] = [];
-  const push = (rows: ImportPlan["rows"], workouts: ImportPlan["workouts"]) => {
-    const json = JSON.stringify({ rows, workouts });
-    if (json.length > MAX_CHUNK_JSON && rows.length > 1) {
-      const half = Math.ceil(rows.length / 2);
-      push(rows.slice(0, half), []);
-      push(rows.slice(half), workouts);
-      return;
-    }
-    chunks.push(json);
-  };
-
-  for (let index = 0; index < plan.rows.length; index += ROWS_PER_CHUNK) {
-    push(plan.rows.slice(index, index + ROWS_PER_CHUNK), []);
-  }
-  for (let index = 0; index < plan.workouts.length; index += ROWS_PER_CHUNK) {
-    push([], plan.workouts.slice(index, index + ROWS_PER_CHUNK));
-  }
-  if (chunks.length === 0) chunks.push(JSON.stringify({ rows: [], workouts: [] }));
-  return chunks;
-}
-
-type Stage =
-  | { step: "idle" }
-  | { step: "parsing" }
-  | { step: "uploading"; done: number; total: number }
-  | { step: "finalizing" };
-
-/**
- * The staged import flow, hosted edition: pick a file → parse it ON THIS
- * DEVICE in a Web Worker (the raw export is never uploaded) → send only the
- * normalised rows in bounded chunks → server-checked preview (nothing
- * written) → choose categories → confirm → results. Cancelling discards the
- * staged rows; the health tables are only touched by the confirm step.
- */
-export function ImportWizard() {
+export function ImportWizard({ compact = false }: { compact?: boolean }) {
   const router = useRouter();
   const fileRef = React.useRef<HTMLInputElement>(null);
   const [open, setOpen] = React.useState(false);
   const [busy, setBusy] = React.useState(false);
-  const [stage, setStage] = React.useState<Stage>({ step: "idle" });
+  const [progress, setProgress] = React.useState<string | null>(null);
   const [preview, setPreview] = React.useState<ImportPreviewResult | null>(null);
   const [outcome, setOutcome] = React.useState<ImportOutcome | null>(null);
   const [selected, setSelected] = React.useState<Set<string>>(new Set());
@@ -90,82 +52,36 @@ export function ImportWizard() {
 
     setBusy(true);
     setOutcome(null);
-    let sessionId: string | null = null;
+    setProgress(`Uploading ${formatBytes(file.size)}…`);
     try {
-      // 1. Parse on-device, off the main thread.
-      setStage({ step: "parsing" });
-      const buffer = await file.arrayBuffer();
-      const worker = new Worker(new URL("./import-worker", import.meta.url));
-      const parsed = await new Promise<ParseResponse>((resolve, reject) => {
-        worker.onmessage = (message: MessageEvent<ParseResponse>) => resolve(message.data);
-        worker.onerror = () => reject(new Error("The file could not be parsed."));
-        worker.postMessage({ buffer, fileName: file.name }, [buffer]);
-      }).finally(() => worker.terminate());
-
-      if (!parsed.ok) {
-        toast.error(parsed.error);
-        return;
-      }
-      const { plan, fileType } = parsed;
-      if (plan.rows.length === 0 && plan.workouts.length === 0) {
-        toast.error("Nothing importable was found in the file.");
-        return;
-      }
-
-      // 2. Upload normalised rows in bounded, sequence-numbered chunks.
-      const chunks = buildChunks(plan);
-      setStage({ step: "uploading", done: 0, total: chunks.length });
-
-      const created = await createHealthImportSessionAction({
-        source: plan.kind,
-        fileType,
-        fileName: file.name,
-        fileSize: file.size,
-        totalChunks: chunks.length,
-        examined: plan.examined,
-        invalid: plan.invalid,
-        unsupported: Object.entries(plan.unsupported)
-          .map(([type, count]) => ({ type, count }))
-          .slice(0, 200),
-        warnings: plan.warnings.slice(0, 40),
+      const response = await fetch("/api/health/import", {
+        method: "POST",
+        body: file,
+        headers: {
+          "content-type": "application/octet-stream",
+          // Percent-encoded so a name with non-ASCII characters survives as
+          // a header; the server takes the base name and nothing else.
+          "x-file-name": encodeURIComponent(file.name),
+        },
       });
-      if (!created.ok) {
-        toast.error(created.error);
+      setProgress("Reading the export on the server…");
+
+      const payload = (await response.json()) as
+        | { ok: true; preview: ImportPreviewResult }
+        | { ok: false; error: string };
+
+      if (!payload.ok) {
+        toast.error(payload.error);
         return;
       }
-      sessionId = created.data.sessionId;
-
-      for (let seq = 0; seq < chunks.length; seq += 1) {
-        const uploaded = await uploadHealthImportChunkAction({
-          sessionId,
-          seq,
-          payload: chunks[seq],
-        });
-        if (!uploaded.ok) {
-          toast.error(uploaded.error);
-          await cancelHealthImportAction(sessionId);
-          return;
-        }
-        setStage({ step: "uploading", done: seq + 1, total: chunks.length });
-      }
-
-      // 3. Server-side revalidation + duplicate detection → the preview.
-      setStage({ step: "finalizing" });
-      const result = await finalizeHealthImportAction(sessionId);
-      if (!result.ok) {
-        toast.error(result.error);
-        await cancelHealthImportAction(sessionId);
-        return;
-      }
-      setPreview(result.data);
-      setSelected(new Set(result.data.categories.map((category) => category.key)));
+      setPreview(payload.preview);
+      setSelected(new Set(payload.preview.categories.map((category) => category.key)));
       setOpen(true);
     } catch {
-      toast.error("The file could not be read. Nothing was imported.");
-      if (sessionId) await cancelHealthImportAction(sessionId).catch(() => undefined);
+      toast.error("The upload did not complete. Nothing was imported.");
     } finally {
       setBusy(false);
-      setStage({ step: "idle" });
+      setProgress(null);
     }
   }
 
@@ -226,22 +142,26 @@ export function ImportWizard() {
           onChange={onFile}
           aria-label="Choose a health export file"
         />
-        <a className="text-xs text-muted-foreground underline underline-offset-2" href="/health-template.csv" download>
+        <a
+          className="text-xs text-muted-foreground underline underline-offset-2"
+          href="/health-template.csv"
+          download
+        >
           Download the CSV template
         </a>
-        {stage.step !== "idle" && (
+        {progress && (
           <span className="text-xs text-muted-foreground" role="status">
-            {stage.step === "parsing" && "Reading the file on this device…"}
-            {stage.step === "uploading" && `Uploading summary rows ${stage.done}/${stage.total}…`}
-            {stage.step === "finalizing" && "Checking against your existing records…"}
+            {progress}
           </span>
         )}
       </div>
-      <p className="mt-2 text-xs text-muted-foreground">
-        Apple Health export.zip, export.xml or a CSV. The raw file is parsed on your device and
-        never uploaded — only the summarised rows you preview and confirm are saved to your
-        account.
-      </p>
+      {!compact && (
+        <p className="mt-2 text-xs text-muted-foreground">
+          Apple Health <code>export.zip</code>, <code>export.xml</code> or a CSV. The file is read
+          on the server, in your account only, and is deleted the moment the preview is ready —
+          nothing is saved to your health records until you confirm.
+        </p>
+      )}
 
       <Dialog open={open} onOpenChange={(next) => (!next ? void cancel() : setOpen(true))}>
         <DialogContent className="max-h-[85vh] max-w-2xl overflow-y-auto">
@@ -261,6 +181,7 @@ export function ImportWizard() {
                 <OutcomeStat label="Already present" value={outcome.duplicates} />
                 <OutcomeStat label="Workouts added" value={outcome.workoutsImported} />
                 <OutcomeStat label="Workouts skipped" value={outcome.workoutsSkipped} />
+                <OutcomeStat label="Health records" value={outcome.recordsImported} />
                 <OutcomeStat label="Days recalculated" value={outcome.recomputedDays} />
               </div>
               <DialogFooter>
@@ -275,21 +196,22 @@ export function ImportWizard() {
                 </DialogTitle>
                 <DialogDescription>
                   {preview.fileName} · {formatBytes(preview.fileSize)} ·{" "}
-                  {formatNumber(preview.examined)} records examined
+                  {formatNumber(preview.examined)} records examined in{" "}
+                  {(preview.parseMs / 1000).toFixed(1)}s
                   {preview.dateFrom && preview.dateTo
                     ? ` · ${preview.dateFrom} to ${preview.dateTo}`
                     : ""}
                 </DialogDescription>
               </DialogHeader>
 
-              {preview.warnings.length > 0 && (
+              {(preview.warnings.length > 0 || preview.errors.length > 0) && (
                 <div className="rounded-lg border border-amber-500/30 bg-amber-500/5 p-3 text-xs">
                   <p className="mb-1 flex items-center gap-1.5 font-medium">
                     <AlertTriangle className="h-3.5 w-3.5 text-amber-500" /> Worth knowing
                   </p>
                   <ul className="list-disc space-y-1 pl-4">
-                    {preview.warnings.slice(0, 8).map((warning, index) => (
-                      <li key={index}>{warning}</li>
+                    {[...preview.errors, ...preview.warnings].slice(0, 8).map((note, index) => (
+                      <li key={index}>{note}</li>
                     ))}
                   </ul>
                 </div>
@@ -355,8 +277,8 @@ export function ImportWizard() {
               {preview.unsupported.length > 0 && (
                 <details className="text-xs text-muted-foreground">
                   <summary className="cursor-pointer">
-                    {preview.unsupported.reduce((sum, entry) => sum + entry.count, 0)} records of{" "}
-                    {preview.unsupported.length} unsupported types were skipped
+                    {formatNumber(preview.unsupported.reduce((sum, entry) => sum + entry.count, 0))}{" "}
+                    records of {preview.unsupported.length} unsupported types were skipped
                   </summary>
                   <ul className="mt-1 space-y-0.5 pl-4">
                     {preview.unsupported.slice(0, 10).map((entry) => (
@@ -397,10 +319,4 @@ function OutcomeStat({ label, value }: { label: string; value: number }) {
       <p className="mt-1 text-[10px] uppercase tracking-wide text-muted-foreground">{label}</p>
     </div>
   );
-}
-
-function formatBytes(bytes: number): string {
-  if (bytes < 1024) return `${bytes} B`;
-  if (bytes < 1024 * 1024) return `${Math.round(bytes / 1024)} KB`;
-  return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
 }

@@ -735,7 +735,7 @@ describe("backup round-trip for the new records", () => {
     const exported = await exportBackup();
     expect(exported.ok).toBe(true);
     if (!exported.ok) return;
-    expect(exported.data.version).toBe(6);
+    expect(exported.data.version).toBe(7);
     expect(exported.data.data.documents).toHaveLength(1);
     expect(exported.data.data.taskTags).toHaveLength(2);
 

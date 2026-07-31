@@ -1,14 +1,18 @@
 import type { DayKey } from "@/lib/date";
 import type { SleepStage } from "@/lib/logic/health";
+import type { RawHealthRecord } from "./apple-stream";
 
 /**
- * Shared shapes for the health import pipeline:
+ * Shared shapes for the health import pipeline.
  *
- *   file → parse (apple-xml / csv) → ParsedFile → rollup → ImportPlan → write
+ * Two front ends converge on one plan:
+ *
+ *   export.zip / export.xml → streaming scan + rollup → ImportPlan → write
+ *   health.csv             → strict row parse → rollup → ImportPlan → write
  *
  * Everything up to ImportPlan is pure and fully testable; only the write step
  * touches the database. Nothing in this pipeline ever performs a network
- * request — health exports are parsed locally and go nowhere else.
+ * request, and no record content is ever logged.
  */
 
 export type ImportKind = "apple_health" | "csv";
@@ -42,6 +46,8 @@ export interface RawWorkout {
   durationMin: number;
   distanceKm: number | null;
   caloriesBurned: number | null;
+  /** From the export's `<WorkoutStatistics>` heart-rate summary, when present. */
+  avgHeartRate: number | null;
   sourceApp: string | null;
   externalId: string;
 }
@@ -84,6 +90,11 @@ export interface NormalizedHealthRow {
   unit: string;
   minValue: number | null;
   maxValue: number | null;
+  /**
+   * The second half of a paired reading — diastolic for blood pressure. Null
+   * for every metric that is a single number, which is all but one of them.
+   */
+  secondaryValue?: number | null;
   date: DayKey;
   startAt: string | null;
   endAt: string | null;
@@ -113,6 +124,8 @@ export interface ImportPlan {
   kind: ImportKind;
   rows: NormalizedHealthRow[];
   workouts: RawWorkout[];
+  /** ECGs, medications, clinical records, workout-route metadata. */
+  records: RawHealthRecord[];
   categories: ImportCategory[];
   dateFrom: DayKey | null;
   dateTo: DayKey | null;
@@ -121,4 +134,10 @@ export interface ImportPlan {
   unsupported: Record<string, number>;
   errors: string[];
   warnings: string[];
+  /** True when a parser cap was hit and some data was deliberately not kept. */
+  truncated: boolean;
 }
+
+/** The special category keys that sit alongside the metric types. */
+export const WORKOUTS_CATEGORY = "workouts";
+export const RECORDS_CATEGORY = "records";

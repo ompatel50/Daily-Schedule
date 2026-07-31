@@ -1,22 +1,46 @@
-import { deflateRawSync } from "node:zlib";
 import { describe, expect, it } from "vitest";
 
-import { parseAppleHealthXml, parseAppleDate, APPLE_TYPE_MAP } from "@/lib/logic/health-import/apple-xml";
+import { AppleHealthAccumulator, parseAppleDate } from "@/lib/logic/health-import/apple-stream";
+import { APPLE_TYPE_MAP } from "@/lib/logic/health-import/apple-types";
 import { parseCsvRows, parseHealthCsv } from "@/lib/logic/health-import/csv";
 import {
+  buildApplePlan,
   buildImportPlan,
   fingerprintFor,
   manualDailyFingerprint,
   WORKOUTS_CATEGORY,
 } from "@/lib/logic/health-import/rollup";
 import { isLikelyDuplicateWorkout } from "@/lib/logic/health-import/workout-dup";
-import { extractAppleHealthXml, listZipEntries } from "@/lib/logic/health-import/zip-browser";
 import { detectHealthFileType } from "@/lib/logic/health-import/detect";
 import {
   APPLE_EXPORT_XML,
   APPLE_EXPORT_XML_OVERLAPPING,
   VALID_CSV,
 } from "./fixtures/apple-health";
+
+/**
+ * Parse an export the way the server does — through the streaming
+ * accumulator. `chunkSize` splits the text so a test can prove that a tag,
+ * an attribute or a multi-byte character straddling a read boundary changes
+ * nothing about the result.
+ */
+export function parseApple(xml: string, chunkSize = 0) {
+  const accumulator = new AppleHealthAccumulator();
+  if (chunkSize > 0) {
+    for (let at = 0; at < xml.length; at += chunkSize) {
+      accumulator.write(xml.slice(at, at + chunkSize));
+    }
+  } else {
+    accumulator.write(xml);
+  }
+  accumulator.end();
+  return { result: accumulator.result(), looksLikeExport: accumulator.looksLikeAppleExport };
+}
+
+/** The plan an Apple export produces, which is what the importer stages. */
+function applePlan(xml: string) {
+  return buildApplePlan(parseApple(xml).result);
+}
 
 describe("Apple Health identifier mapping", () => {
   it("maps every supported HealthKit identifier onto a Personal OS metric", () => {
@@ -40,64 +64,80 @@ describe("Apple Health identifier mapping", () => {
   });
 });
 
-describe("Apple Health XML parsing", () => {
-  const parsed = parseAppleHealthXml(APPLE_EXPORT_XML);
+describe("Apple Health streaming parse", () => {
+  const { result, looksLikeExport } = parseApple(APPLE_EXPORT_XML);
+  const plan = buildApplePlan(result);
 
-  it("refuses a file that is not a health export, with a readable error", () => {
-    const result = parseAppleHealthXml("<html><body>nope</body></html>");
-    expect(result.errors[0]).toContain("Apple Health export");
+  it("recognises a real export by its root element", () => {
+    expect(looksLikeExport).toBe(true);
+    expect(parseApple("<html><body>nope</body></html>").looksLikeExport).toBe(false);
   });
 
-  it("reads quantity records with sources, devices and escaped entities", () => {
-    const steps = parsed.samples.filter((sample) => sample.type === "steps");
-    expect(steps).toHaveLength(4);
-    expect(steps[0].sourceApp).toBe("Watch");
-    expect(steps[0].sourceDevice).toBe("Apple Watch");
-    const weight = parsed.samples.filter((sample) => sample.type === "body_weight");
+  it("reads sources, devices and escaped entities", () => {
+    const steps = plan.rows.filter((row) => row.type === "steps");
+    expect(steps).toHaveLength(3); // Watch 03-14, Phone 03-14, Watch 03-15
+    const watch = steps.find((row) => row.sourceApp === "Watch" && row.date === "2026-03-14");
+    expect(watch?.sourceDevice).toBe("Apple Watch");
+    const weight = plan.rows.filter((row) => row.type === "body_weight");
     expect(weight[0].sourceApp).toBe("Scale & Co");
   });
 
   it("counts unsupported record types instead of failing the import", () => {
-    expect(parsed.unsupported.HKQuantityTypeIdentifierEnvironmentalAudioExposure).toBe(2);
-    expect(parsed.errors).toHaveLength(0);
+    expect(result.unsupported.HKQuantityTypeIdentifierEnvironmentalAudioExposure).toBe(2);
+    expect(plan.errors).toHaveLength(0);
   });
 
   it("counts invalid records and keeps going", () => {
-    expect(parsed.invalid).toBe(1); // the value="not-a-number" step record
-    expect(parsed.warnings.length).toBeGreaterThan(0);
+    expect(result.invalid).toBe(1); // the value="not-a-number" step record
+    expect(result.warnings.length).toBeGreaterThan(0);
   });
 
   it("converts body-fat fractions to percentages", () => {
-    const fat = parsed.samples.find((sample) => sample.type === "body_fat");
+    const fat = plan.rows.find((row) => row.type === "body_fat");
     expect(fat?.value).toBeCloseTo(18.2, 5);
   });
 
   it("survives records with metadata children", () => {
-    const hrv = parsed.samples.find((sample) => sample.type === "hrv");
+    const hrv = plan.rows.find((row) => row.type === "hrv");
     expect(hrv?.value).toBe(48);
   });
 
   it("assigns a sleep interval that crosses midnight to the day it ends", () => {
-    const stages = parsed.samples.filter((sample) => sample.type === "sleep_hours");
-    expect(stages.length).toBe(6);
+    const stages = plan.rows.filter((row) => row.type === "sleep_hours");
+    expect(stages.length).toBe(5); // in_bed, core (merged), deep, rem, awake
     for (const stage of stages) expect(stage.date).toBe("2026-03-14");
-    const core = stages.find((stage) => stage.subtype === "core");
-    expect(core?.startAt).toBe("2026-03-13T23:15:00-04:00");
   });
 
   it("reads workouts from tag attributes and from WorkoutStatistics children", () => {
-    expect(parsed.workouts).toHaveLength(2);
-    const run = parsed.workouts[0];
+    expect(plan.workouts).toHaveLength(2);
+    const run = plan.workouts[0];
     expect(run.type).toBe("running");
     expect(run.durationMin).toBe(32);
     expect(run.distanceKm).toBeCloseTo(5.1, 6);
     expect(run.caloriesBurned).toBe(342);
     expect(run.time).toBe("17:00");
 
-    const strength = parsed.workouts[1];
+    const strength = plan.workouts[1];
     expect(strength.type).toBe("strength");
     expect(strength.name).toBe("Traditional Strength Training");
     expect(strength.caloriesBurned).toBe(285); // from the statistics child
+  });
+
+  it("produces an identical result however the bytes are chunked", () => {
+    for (const size of [1, 7, 64, 997]) {
+      const split = buildApplePlan(parseApple(APPLE_EXPORT_XML, size).result);
+      expect(split.rows, `chunk size ${size}`).toEqual(plan.rows);
+      expect(split.workouts, `chunk size ${size}`).toEqual(plan.workouts);
+      expect(split.records, `chunk size ${size}`).toEqual(plan.records);
+    }
+  });
+
+  it("parses an empty but well-formed export without error", () => {
+    const empty = parseApple('<?xml version="1.0"?><HealthData locale="en_GB"></HealthData>');
+    expect(empty.looksLikeExport).toBe(true);
+    expect(empty.result.rows).toHaveLength(0);
+    expect(empty.result.workouts).toHaveLength(0);
+    expect(empty.result.invalid).toBe(0);
   });
 });
 
@@ -176,7 +216,7 @@ describe("CSV parsing", () => {
 });
 
 describe("rollup and fingerprints", () => {
-  const plan = buildImportPlan(parseAppleHealthXml(APPLE_EXPORT_XML));
+  const plan = applePlan(APPLE_EXPORT_XML);
 
   it("folds samples into one row per day per device for cumulative metrics", () => {
     const steps = plan.rows.filter((row) => row.type === "steps");
@@ -217,14 +257,14 @@ describe("rollup and fingerprints", () => {
   });
 
   it("re-importing the same file produces identical fingerprints (a no-op)", () => {
-    const again = buildImportPlan(parseAppleHealthXml(APPLE_EXPORT_XML));
+    const again = applePlan(APPLE_EXPORT_XML);
     expect(new Set(again.rows.map((row) => row.fingerprint))).toEqual(
       new Set(plan.rows.map((row) => row.fingerprint)),
     );
   });
 
   it("an overlapping later export keeps old fingerprints and adds only new days", () => {
-    const later = buildImportPlan(parseAppleHealthXml(APPLE_EXPORT_XML_OVERLAPPING));
+    const later = applePlan(APPLE_EXPORT_XML_OVERLAPPING);
     const before = new Set(plan.rows.map((row) => row.fingerprint));
     const after = new Set(later.rows.map((row) => row.fingerprint));
     for (const fingerprint of before) expect(after.has(fingerprint)).toBe(true);
@@ -332,73 +372,6 @@ describe("workout duplicate detection", () => {
     expect(
       isLikelyDuplicateWorkout({ time: null, durationMin: 30 }, { time: "17:00", durationMin: 31 }),
     ).toBe(true);
-  });
-});
-
-describe("ZIP extraction", () => {
-  function buildZip(entries: Array<{ name: string; content: string; store?: boolean }>): Buffer {
-    const parts: Buffer[] = [];
-    const central: Buffer[] = [];
-    let offset = 0;
-    for (const entry of entries) {
-      const name = Buffer.from(entry.name, "utf8");
-      const raw = Buffer.from(entry.content, "utf8");
-      const data = entry.store ? raw : deflateRawSync(raw);
-      const method = entry.store ? 0 : 8;
-      const local = Buffer.alloc(30);
-      local.writeUInt32LE(0x04034b50, 0);
-      local.writeUInt16LE(method, 8);
-      local.writeUInt32LE(data.length, 18);
-      local.writeUInt32LE(raw.length, 22);
-      local.writeUInt16LE(name.length, 26);
-      parts.push(local, name, data);
-
-      const dir = Buffer.alloc(46);
-      dir.writeUInt32LE(0x02014b50, 0);
-      dir.writeUInt16LE(method, 10);
-      dir.writeUInt32LE(data.length, 20);
-      dir.writeUInt32LE(raw.length, 24);
-      dir.writeUInt16LE(name.length, 28);
-      dir.writeUInt32LE(offset, 42);
-      central.push(dir, name);
-      offset += 30 + name.length + data.length;
-    }
-    const centralStart = offset;
-    const centralBuffer = Buffer.concat(central);
-    const eocd = Buffer.alloc(22);
-    eocd.writeUInt32LE(0x06054b50, 0);
-    eocd.writeUInt16LE(entries.length, 8);
-    eocd.writeUInt16LE(entries.length, 10);
-    eocd.writeUInt32LE(centralBuffer.length, 12);
-    eocd.writeUInt32LE(centralStart, 16);
-    return Buffer.concat([...parts, centralBuffer, eocd]);
-  }
-
-  it("extracts export.xml from a deflated Apple-layout archive", async () => {
-    const zip = buildZip([
-      { name: "apple_health_export/export_cda.xml", content: "<cda/>" },
-      { name: "apple_health_export/export.xml", content: APPLE_EXPORT_XML },
-    ]);
-    expect(listZipEntries(zip)).toHaveLength(2);
-    const xml = await extractAppleHealthXml(zip);
-    expect(xml).toContain("<HealthData");
-    expect(parseAppleHealthXml(xml).workouts).toHaveLength(2);
-  });
-
-  it("reads stored (uncompressed) entries too", async () => {
-    const zip = buildZip([
-      { name: "apple_health_export/export.xml", content: "<HealthData></HealthData>", store: true },
-    ]);
-    expect(await extractAppleHealthXml(zip)).toBe("<HealthData></HealthData>");
-  });
-
-  it("explains itself when the archive has no export.xml", async () => {
-    const zip = buildZip([{ name: "notes.txt", content: "hello" }]);
-    await expect(extractAppleHealthXml(zip)).rejects.toThrow(/export\.xml/);
-  });
-
-  it("rejects a non-zip buffer with a readable error", async () => {
-    await expect(extractAppleHealthXml(Buffer.from("plain text"))).rejects.toThrow(/ZIP/);
   });
 });
 

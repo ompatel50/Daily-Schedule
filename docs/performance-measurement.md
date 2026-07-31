@@ -74,26 +74,57 @@ windowed; a per-series N+1 on planner open replaced with one grouped query;
 charts, the command palette and the quick-add dialog moved out of every
 route's first load.
 
-## Health import measurements (Phase 22)
+## Health import measurements (Phase A.1 — server-side streaming)
 
-Same method — production build, real browser, synthetic Apple Health exports
-generated at three sizes. First import into an empty account:
+Method: the real parser (`parseAppleHealthArchive`) against synthetic Apple
+Health archives generated at five sizes, on the same machine as the numbers
+above. Each archive is a genuine ZIP with a real `export.xml`, including the
+internal DTD subset a real export carries.
 
-| Export | File | Parse (on-device worker) | Upload | Server preview | Confirm (write + rebuild) | Days recomputed |
+| Export | Records | Archive | `export.xml` | Parse | Rows written | Heap growth |
 |---|---|---|---|---|---|---|
-| 1 month (~1.2 k records) | 0.2 MB | 0.1 s | 0.1 s | 0.1 s | 1.0 s | 42 |
-| 1 year (~15 k records) | 2.5 MB | 0.2 s | 0.2 s | 0.5 s | 1.9 s | 377 |
-| 3 years (~45 k records) | 7.5 MB | 0.4 s | 0.4 s | 0.6 s | 4.9 s | 1,107 |
+| 1 month | 1,238 | 0.03 MB | 0.3 MB | 0.03 s | 180 | ~0 MB |
+| 1 year | 15,057 | 0.1 MB | 2 MB | 0.10 s | 2,190 | 9 MB |
+| 3 years | 45,169 | 0.3 MB | 7 MB | 0.25 s | 6,570 | ~0 MB |
+| 10 years | 223,563 | 1.3 MB | 37 MB | 1.26 s | 21,900 | 19 MB |
+| 10 years, sample-heavy | **1,099,563** | 7.0 MB | **181 MB** | **5.45 s** | 21,900 | **22 MB** |
 
-A second import of the same files wrote **0 new rows** at every size — the
-deduplication holds end to end.
+The last two rows are the point. Between them the record count grows **5×**
+and the XML grows **5×**, while the rows written stay identical (same days,
+same metrics, same devices) and **heap growth stays flat at ~20 MB**. That is
+the streaming accumulator working as designed: memory is proportional to
+distinct days × metrics × devices, not to the size of the file. The obvious
+alternative — collect every sample, then roll up — would have needed hundreds
+of megabytes for the last row and would keep growing with the export.
 
-One number in that table is a lesson worth keeping: the 3-year parse
-originally took **95.3 seconds**. Measuring exposed an accidentally
-quadratic scan in the XML parser; fixing it brought the same parse to
-**0.4 seconds** with identical output. That is why this page exists — the
-numbers were only found because they were measured, and they stay honest only
-if they are re-measured the same way.
+Parse time is linear in records (~200 k records/second), so an export twice
+this size costs twice the seconds and the same memory.
+
+A second import of the same archive writes **0 new rows** at every size — the
+deduplication holds end to end, and the preview says so before anything is
+written.
+
+### What replaced the on-device parser, and why
+
+Phase 22 parsed exports in a browser Web Worker and measured 0.4 s for a
+3-year file. Those numbers were real, but the approach capped an import at
+what the user's device could hold in memory and required the server to trust
+rows a client had produced. Parsing now happens on the server against a
+streamed file. The measurable trade:
+
+* **Better:** a 181 MB `export.xml` is parsed in 22 MB of heap; the browser
+  version had to hold the decompressed file *and* every parsed sample.
+* **Same:** end-to-end wall clock for realistic exports — the parse was never
+  the slow part; the transactional write and the day-summary rebuild are.
+* **Worse:** the file crosses the network once. That is the cost of not
+  trusting the client and of supporting exports a phone cannot parse.
+
+One number from Phase 22 is a lesson worth keeping regardless: the 3-year
+parse originally took **95.3 seconds** because of an accidentally quadratic
+scan in the XML parser; measuring exposed it and the fix brought the same
+parse to well under a second with identical output. That is why this page
+exists — the numbers were only found because they were measured, and they stay
+honest only if they are re-measured the same way.
 
 ## Caveats, stated plainly
 

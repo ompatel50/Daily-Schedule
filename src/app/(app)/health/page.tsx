@@ -1,265 +1,404 @@
 import type { Metadata } from "next";
-import { format } from "date-fns";
+import Link from "next/link";
 import {
   Activity,
-  Droplets,
+  Brain,
+  Dumbbell,
   Flame,
   HeartPulse,
   History,
   Moon,
   PencilLine,
   Scale,
+  Stethoscope,
   Upload,
+  Utensils,
 } from "lucide-react";
 
-import { ImportHistory } from "@/components/health/import-history";
-import { ImportWizard } from "@/components/health/import-wizard";
 import { MetricEntry } from "@/components/health/metric-entry";
-import { TrendAreaChart, TrendLineChart } from "@/components/shared/charts";
+import { ChangeBadge } from "@/components/health/metric-panel";
+import { EmptyState } from "@/components/shared/empty-state";
 import { PageHeader } from "@/components/shared/page-header";
 import { SectionCard } from "@/components/shared/section-card";
 import { StatCard } from "@/components/shared/stat-card";
 import { Badge } from "@/components/ui/badge";
-import { formatDay } from "@/lib/date";
+import { Button } from "@/components/ui/button";
+import { formatDay, relativeDayLabel } from "@/lib/date";
 import { SLEEP_STAGE_META, type SleepStage } from "@/lib/logic/health";
 import { formatNumber } from "@/lib/utils";
-import { getCurrentUser } from "@/lib/db";
-import { getHealthOverview, type MetricToday } from "@/server/health";
-import { listImportBatches } from "@/server/health-import";
+import { getHealthDashboard, type OverviewMetric } from "@/server/health-module";
 
 export const metadata: Metadata = { title: "Health" };
 export const dynamic = "force-dynamic";
 
-function formatDateTime(date: Date): string {
-  return format(date, "MMM d, yyyy · h:mm a");
+const GROUP_ICONS: Record<string, typeof Activity> = {
+  activity: Activity,
+  sleep: Moon,
+  heart: HeartPulse,
+  body: Scale,
+  respiratory: Activity,
+  nutrition: Utensils,
+  vitals: Stethoscope,
+  mind: Brain,
+};
+
+function statValue(metric: OverviewMetric | undefined): string {
+  if (!metric || metric.value === null) return "—";
+  return `${formatNumber(metric.value, metric.decimals)}${metric.unit ? ` ${metric.unit}` : ""}`;
+}
+
+function statHint(metric: OverviewMetric | undefined): string {
+  if (!metric) return "";
+  if (metric.value === null) {
+    return metric.average30 !== null
+      ? `30-day average ${formatNumber(metric.average30, metric.decimals)}`
+      : "nothing logged today";
+  }
+  return metric.sources.length > 0 ? metric.sources.join(" · ") : "logged today";
 }
 
 export default async function HealthPage() {
-  const user = await getCurrentUser();
-  const [overview, rawBatches] = await Promise.all([
-    getHealthOverview(),
-    listImportBatches(user.id),
-  ]);
-  // Timestamps are formatted here, on the server, so the client component
-  // renders a plain string and cannot hydrate differently.
-  const batches = rawBatches.map((batch) => ({
-    ...batch,
-    importedAtLabel: formatDateTime(batch.createdAt),
-  }));
+  const dashboard = await getHealthDashboard();
+  const headline = new Map(dashboard.headline.map((metric) => [metric.type, metric]));
 
-  const byType = new Map(overview.today.map((metric) => [metric.type, metric]));
-  const trendByType = new Map(overview.trends.map((trend) => [trend.type, trend]));
-
-  const chartData = (type: string, key: string) =>
-    (trendByType.get(type as never)?.days30 ?? []).map((point) => ({
-      label: formatDay(point.date, "M/d"),
-      [key]: point.value,
-    }));
-
-  const sleepHrData = (trendByType.get("sleep_hours")?.days30 ?? []).map((point, index) => ({
-    label: formatDay(point.date, "M/d"),
-    sleep: point.value,
-    hr: trendByType.get("resting_hr")?.days30[index]?.value ?? null,
-  }));
-
-  const weightTrend = trendByType.get("body_weight");
-  const sleep = byType.get("sleep_hours");
-
-  const statValue = (metric: MetricToday | undefined) =>
-    metric?.value !== null && metric?.value !== undefined
-      ? `${formatNumber(metric.value, metric.decimals)}${metric.unit ? ` ${metric.unit}` : ""}`
-      : "—";
-  const statHint = (metric: MetricToday | undefined) =>
-    metric && metric.sources.length > 0 ? metric.sources.join(" · ") : "nothing logged today";
+  if (!dashboard.hasAnyData) {
+    return (
+      <>
+        <PageHeader
+          title="Health"
+          description="Activity, sleep, heart, body, nutrition and vitals — private to your account."
+        />
+        <div className="grid gap-6 lg:grid-cols-3">
+          <EmptyState
+            className="lg:col-span-2"
+            icon={HeartPulse}
+            title="No health data yet"
+            description="Import an Apple Health export to fill in years of history in one go, or log a value by hand to start today."
+            action={
+              <div className="flex flex-wrap justify-center gap-2">
+                <Button asChild>
+                  <Link href="/health/import">Import Apple Health export</Link>
+                </Button>
+                <Button asChild variant="outline">
+                  <Link href="/settings">Load sample data</Link>
+                </Button>
+              </div>
+            }
+          />
+          {/* Deliberately offered even with nothing logged: an empty account
+              still needs somewhere to start, and hiding the form behind an
+              import would make the first entry the hardest one. */}
+          <SectionCard title="Log health data" icon={PencilLine} accent="text-domain-health">
+            <MetricEntry date={dashboard.date} unitSystem={dashboard.unitSystem} withDetails />
+          </SectionCard>
+        </div>
+      </>
+    );
+  }
 
   return (
-    <div className="mx-auto max-w-7xl">
+    <>
       <PageHeader
         title="Health"
-        description="Today's metrics, trends, manual entry and imports — everything stays on this machine."
+        description={`${formatDay(dashboard.date, "EEEE, MMMM d")} · ${formatNumber(dashboard.totalMetrics)} readings across ${dashboard.importCount} ${dashboard.importCount === 1 ? "import" : "imports"}`}
+        actions={
+          <Button asChild size="sm">
+            <Link href="/health/import">
+              <Upload /> Import
+            </Link>
+          </Button>
+        }
       />
 
       <div className="stat-grid mb-6">
         <StatCard
           label="Steps today"
-          value={statValue(byType.get("steps"))}
-          hint={statHint(byType.get("steps"))}
+          value={statValue(headline.get("steps"))}
+          hint={statHint(headline.get("steps"))}
           icon={Activity}
           accent="text-domain-habit"
+          href="/health/activity"
         />
         <StatCard
           label="Active calories"
-          value={statValue(byType.get("active_calories"))}
-          hint={statHint(byType.get("active_calories"))}
+          value={statValue(headline.get("active_calories"))}
+          hint={statHint(headline.get("active_calories"))}
           icon={Flame}
           accent="text-domain-workout"
+          href="/health/activity"
         />
         <StatCard
           label="Sleep"
-          value={statValue(sleep)}
-          hint={statHint(sleep)}
+          value={statValue(headline.get("sleep_hours"))}
+          hint={statHint(headline.get("sleep_hours"))}
           icon={Moon}
           accent="text-domain-planner"
+          href="/health/sleep"
         />
         <StatCard
           label="Resting HR"
-          value={statValue(byType.get("resting_hr"))}
-          hint={statHint(byType.get("resting_hr"))}
+          value={statValue(headline.get("resting_hr"))}
+          hint={statHint(headline.get("resting_hr"))}
           icon={HeartPulse}
           accent="text-domain-health"
+          href="/health/heart"
         />
       </div>
 
       <div className="grid gap-6 lg:grid-cols-3">
         <div className="space-y-6 lg:col-span-2">
-          <SectionCard
-            title="Today"
-            icon={Activity}
-            accent="text-domain-health"
-            description={`${formatDay(overview.date, "EEEE, MMMM d")} — each value says where it came from`}
-          >
-            {overview.today.every((metric) => metric.value === null) ? (
-              <p className="rounded-lg border border-dashed px-4 py-6 text-center text-sm text-muted-foreground">
-                Nothing logged today yet. Log a value below, or import a health export to fill the
-                last months in one go.
-              </p>
-            ) : (
-              <div className="grid gap-2 sm:grid-cols-2">
-                {overview.today
-                  .filter((metric) => metric.value !== null)
-                  .map((metric) => (
-                    <div key={metric.type} className="rounded-lg border p-3">
-                      <div className="flex items-baseline justify-between gap-2">
-                        <p className="text-sm text-muted-foreground">{metric.label}</p>
-                        <p className="tabular text-base font-semibold">
-                          {formatNumber(metric.value!, metric.decimals)}
-                          {metric.unit && (
-                            <span className="ml-1 text-xs font-normal text-muted-foreground">
-                              {metric.unit}
-                            </span>
-                          )}
-                        </p>
-                      </div>
-                      {metric.type === "heart_rate" && metric.min !== null && metric.max !== null && (
-                        <p className="mt-0.5 text-xs text-muted-foreground">
-                          range {metric.min}–{metric.max} bpm
-                        </p>
-                      )}
-                      {metric.stages && (
-                        <div className="mt-1.5 flex flex-wrap gap-1">
-                          {metric.stages.map((entry) => (
-                            <Badge key={entry.stage} variant="muted" className="text-[10px]">
-                              {SLEEP_STAGE_META[entry.stage as SleepStage]?.label ?? entry.stage}{" "}
-                              {formatNumber(entry.hours, 1)}h
-                            </Badge>
-                          ))}
+          <div className="grid gap-4 sm:grid-cols-2">
+            {dashboard.groups.map((group) => {
+              const Icon = GROUP_ICONS[group.group] ?? Activity;
+              const withValues = group.metrics.filter(
+                (metric) => metric.value !== null || metric.average30 !== null,
+              );
+              return (
+                <SectionCard
+                  key={group.group}
+                  title={group.label}
+                  icon={Icon}
+                  accent="text-domain-health"
+                  action={
+                    <Link
+                      href={`/health/${group.slug}`}
+                      className="text-xs text-muted-foreground underline underline-offset-2 hover:text-foreground"
+                    >
+                      Open
+                    </Link>
+                  }
+                >
+                  {withValues.length === 0 ? (
+                    <p className="rounded-lg border border-dashed px-3 py-4 text-center text-xs text-muted-foreground">
+                      Nothing recorded yet.
+                    </p>
+                  ) : (
+                    <dl className="space-y-1.5">
+                      {withValues.map((metric) => (
+                        <div
+                          key={metric.type}
+                          className="flex items-baseline justify-between gap-3 border-b pb-1.5 text-sm last:border-0 last:pb-0"
+                        >
+                          <dt className="truncate text-muted-foreground">{metric.label}</dt>
+                          <dd className="tabular shrink-0 text-right">
+                            {metric.value !== null
+                              ? formatNumber(metric.value, metric.decimals)
+                              : formatNumber(metric.average30 ?? 0, metric.decimals)}
+                            {metric.unit && (
+                              <span className="ml-1 text-xs text-muted-foreground">
+                                {metric.unit}
+                              </span>
+                            )}
+                            {metric.value === null && (
+                              <span className="ml-1 text-[10px] text-muted-foreground">avg</span>
+                            )}
+                          </dd>
                         </div>
-                      )}
-                      <div className="mt-1.5 flex flex-wrap gap-1">
-                        {metric.sources.map((source) => (
-                          <Badge key={source} variant="outline" className="text-[10px]">
-                            {source}
-                          </Badge>
-                        ))}
-                      </div>
-                    </div>
-                  ))}
-              </div>
-            )}
-          </SectionCard>
-
-          <SectionCard title="Steps" icon={Activity} accent="text-domain-habit" description="Last 30 days">
-            <TrendAreaChart
-              data={chartData("steps", "steps")}
-              dataKey="steps"
-              color="hsl(var(--domain-habit))"
-              height={170}
-            />
-          </SectionCard>
-
-          <div className="grid gap-6 md:grid-cols-2">
-            <SectionCard title="Sleep & resting HR" icon={Moon} accent="text-domain-planner" description="Last 30 days">
-              <TrendLineChart
-                data={sleepHrData}
-                height={170}
-                lines={[
-                  { dataKey: "sleep", name: "Sleep (h)", color: "hsl(var(--domain-planner))" },
-                  { dataKey: "hr", name: "Resting HR", color: "hsl(var(--destructive))" },
-                ]}
-              />
-            </SectionCard>
-
-            <SectionCard
-              title="Body weight"
-              icon={Scale}
-              accent="text-domain-health"
-              description={`Last 30 days (${weightTrend?.unit ?? "kg"})`}
-            >
-              <TrendLineChart
-                data={chartData("body_weight", "weight")}
-                height={170}
-                lines={[
-                  { dataKey: "weight", name: "Weight", color: "hsl(var(--domain-health))" },
-                ]}
-              />
-            </SectionCard>
+                      ))}
+                    </dl>
+                  )}
+                </SectionCard>
+              );
+            })}
           </div>
 
           <SectionCard
-            title="7 vs 30 days"
-            icon={Droplets}
+            title="Last night"
+            icon={Moon}
             accent="text-domain-planner"
-            description="Daily averages — a quick read on which way things are moving"
+            description="Derived from the sleep stages your device recorded"
+            action={
+              <Link
+                href="/health/sleep"
+                className="text-xs text-muted-foreground underline underline-offset-2 hover:text-foreground"
+              >
+                All nights
+              </Link>
+            }
           >
-            <div className="grid gap-1.5 sm:grid-cols-2">
-              {overview.trends
-                .filter((trend) => trend.average30 !== null)
-                .map((trend) => (
-                  <div key={trend.type} className="flex items-center justify-between gap-3 border-b pb-1.5 text-sm last:border-0 sm:[&:nth-last-child(2)]:border-0">
-                    <span className="text-muted-foreground">{trend.label}</span>
-                    <span className="tabular">
-                      {trend.average7 !== null ? formatNumber(trend.average7, trend.decimals) : "—"}
-                      <span className="mx-1 text-xs text-muted-foreground">vs</span>
-                      {formatNumber(trend.average30!, trend.decimals)}
-                      {trend.unit && (
-                        <span className="ml-1 text-xs text-muted-foreground">{trend.unit}</span>
-                      )}
-                    </span>
+            {dashboard.sleep ? (
+              <div>
+                <div className="flex flex-wrap items-baseline justify-between gap-2">
+                  <p className="tabular text-2xl font-semibold leading-none">
+                    {formatNumber(dashboard.sleep.asleepHours, 1)}
+                    <span className="ml-1 text-sm font-normal text-muted-foreground">h asleep</span>
+                  </p>
+                  <p className="text-xs text-muted-foreground">
+                    {relativeDayLabel(dashboard.sleep.date, dashboard.date)}
+                    {dashboard.sleep.inBedHours !== null &&
+                      ` · ${formatNumber(dashboard.sleep.inBedHours, 1)}h in bed`}
+                    {` · ${dashboard.sleep.source}`}
+                  </p>
+                </div>
+                {dashboard.sleep.stages.length > 0 && (
+                  <div className="mt-2 flex flex-wrap gap-1">
+                    {dashboard.sleep.stages.map((entry) => (
+                      <Badge key={entry.stage} variant="muted" className="text-[10px]">
+                        {SLEEP_STAGE_META[entry.stage as SleepStage]?.label ?? entry.stage}{" "}
+                        {formatNumber(entry.hours, 1)}h
+                      </Badge>
+                    ))}
                   </div>
-                ))}
-            </div>
-            {overview.trends.every((trend) => trend.average30 === null) && (
-              <p className="rounded-lg border border-dashed px-4 py-6 text-center text-sm text-muted-foreground">
-                Trends appear after a few days of data.
+                )}
+              </div>
+            ) : (
+              <p className="rounded-lg border border-dashed px-3 py-5 text-center text-xs text-muted-foreground">
+                No sleep recorded in the last 30 days.
               </p>
+            )}
+          </SectionCard>
+
+          <SectionCard
+            title="Recent workouts"
+            icon={Dumbbell}
+            accent="text-domain-workout"
+            action={
+              <Link
+                href="/health/workouts"
+                className="text-xs text-muted-foreground underline underline-offset-2 hover:text-foreground"
+              >
+                All workouts
+              </Link>
+            }
+          >
+            {dashboard.workouts.length === 0 ? (
+              <p className="rounded-lg border border-dashed px-3 py-5 text-center text-xs text-muted-foreground">
+                No workouts in the last 90 days.
+              </p>
+            ) : (
+              <ul className="space-y-1.5">
+                {dashboard.workouts.map((workout) => (
+                  <li
+                    key={workout.id}
+                    className="flex items-baseline justify-between gap-3 border-b pb-1.5 text-sm last:border-0 last:pb-0"
+                  >
+                    <span className="min-w-0 truncate">
+                      {workout.name}
+                      <span className="ml-2 text-xs text-muted-foreground">
+                        {relativeDayLabel(workout.date, dashboard.date)}
+                      </span>
+                    </span>
+                    <span className="tabular shrink-0 text-xs text-muted-foreground">
+                      {workout.durationMin} min
+                      {workout.distanceKm !== null && ` · ${formatNumber(workout.distanceKm, 1)} km`}
+                      {workout.caloriesBurned !== null && ` · ${workout.caloriesBurned} kcal`}
+                    </span>
+                  </li>
+                ))}
+              </ul>
             )}
           </SectionCard>
         </div>
 
         <div className="space-y-6">
-          <SectionCard title="Log health data" icon={PencilLine} accent="text-domain-health">
-            <MetricEntry date={overview.date} unitSystem={overview.unitSystem} withDetails />
-          </SectionCard>
-
           <SectionCard
-            title="Import"
-            icon={Upload}
-            accent="text-domain-planner"
-            description="Apple Health export or CSV — previewed before anything is saved"
+            title="Latest trends"
+            icon={Activity}
+            accent="text-domain-health"
+            description="Last 15 days vs the 15 before them"
+            action={
+              <Link
+                href="/health/trends"
+                className="text-xs text-muted-foreground underline underline-offset-2 hover:text-foreground"
+              >
+                All trends
+              </Link>
+            }
           >
-            <ImportWizard />
+            {dashboard.headline.every((metric) => metric.changePercent === null) ? (
+              <p className="rounded-lg border border-dashed px-3 py-5 text-center text-xs text-muted-foreground">
+                Trends appear after a few days of data.
+              </p>
+            ) : (
+              <ul className="space-y-1.5">
+                {dashboard.headline
+                  .filter((metric) => metric.changePercent !== null)
+                  .map((metric) => (
+                    <li
+                      key={metric.type}
+                      className="flex items-center justify-between gap-3 border-b pb-1.5 text-sm last:border-0 last:pb-0"
+                    >
+                      <span className="truncate text-muted-foreground">{metric.label}</span>
+                      <ChangeBadge
+                        change={metric.changePercent}
+                        goodDirection={metric.goodDirection}
+                        compact
+                      />
+                    </li>
+                  ))}
+              </ul>
+            )}
+          </SectionCard>
+
+          {dashboard.recordCounts.length > 0 && (
+            <SectionCard
+              title="Health records"
+              icon={Stethoscope}
+              accent="text-domain-health"
+              description="ECGs, medications, clinical records and routes"
+              action={
+                <Link
+                  href="/health/vitals"
+                  className="text-xs text-muted-foreground underline underline-offset-2 hover:text-foreground"
+                >
+                  Open
+                </Link>
+              }
+            >
+              <ul className="space-y-1.5 text-sm">
+                {dashboard.recordCounts.map((entry) => (
+                  <li key={entry.kind} className="flex justify-between gap-3">
+                    <span className="text-muted-foreground">{entry.label}</span>
+                    <span className="tabular">{formatNumber(entry.count)}</span>
+                  </li>
+                ))}
+              </ul>
+            </SectionCard>
+          )}
+
+          <SectionCard title="Log health data" icon={PencilLine} accent="text-domain-health">
+            <MetricEntry date={dashboard.date} unitSystem={dashboard.unitSystem} withDetails />
           </SectionCard>
 
           <SectionCard
-            title="Import history"
+            title="Imports"
             icon={History}
             accent="text-muted-foreground"
-            description="Each import can be removed again as a unit"
+            description="Every import can be undone as a unit"
+            action={
+              <Link
+                href="/health/imports"
+                className="text-xs text-muted-foreground underline underline-offset-2 hover:text-foreground"
+              >
+                History
+              </Link>
+            }
           >
-            <ImportHistory batches={batches} />
+            {dashboard.lastImport ? (
+              <div className="text-sm">
+                <p className="truncate font-medium">{dashboard.lastImport.fileName}</p>
+                <p className="mt-0.5 text-xs text-muted-foreground">
+                  {formatDay(dashboard.lastImport.createdAt.toISOString().slice(0, 10), "MMM d, yyyy")}{" "}
+                  · {formatNumber(dashboard.lastImport.imported)} new ·{" "}
+                  {formatNumber(dashboard.lastImport.duplicates)} already present
+                </p>
+                <Button asChild size="sm" variant="outline" className="mt-3">
+                  <Link href="/health/import">Import another export</Link>
+                </Button>
+              </div>
+            ) : (
+              <div className="text-sm">
+                <p className="text-xs text-muted-foreground">
+                  Nothing imported yet. An Apple Health export fills in years of history in one go.
+                </p>
+                <Button asChild size="sm" className="mt-3">
+                  <Link href="/health/import">Import health data</Link>
+                </Button>
+              </div>
+            )}
           </SectionCard>
         </div>
       </div>
-    </div>
+    </>
   );
 }
