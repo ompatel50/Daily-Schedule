@@ -89,8 +89,13 @@ that touches the database re-checks on its own, every time.
   file structurally cannot address another account's rows
   ([`migrating-from-local.md`](migrating-from-local.md) explains the
   mechanism).
-* Health-import staging sessions are owner-checked at every step
-  ([`health-import-privacy.md`](health-import-privacy.md)).
+* Health imports are owner-checked at every step — upload, staging, preview,
+  confirm, cancel and undo — and the uploaded export is deleted as soon as it
+  has been parsed. The parser refuses XML entity declarations and external
+  DTDs outright, and bounds decompression, element size and nesting depth, so
+  a crafted archive fails the import rather than the host
+  ([`health-import-privacy.md`](health-import-privacy.md),
+  [`health-module.md`](health-module.md)).
 * The one deliberately shared table is the **provider food cache**
   (nutrition facts fetched from USDA / Open Food Facts — public data, owned
   by no account). Only the server writes into it from real provider

@@ -3442,3 +3442,312 @@ archive view), tag rename/merge with a preview of what else it touches,
 per-item reminder times on the due-date foundation, budget rollover, and a
 "needs attention" digest that folds overdue bills, expiring documents,
 over-budget categories and low balances into one dashboard block.
+
+---
+
+## Phase A.1 — Apple Health integration & the Health hub
+
+The Health page became a Health **section**, and the importer became a real
+server-side pipeline for the official Apple Health archive. Everything rides
+the established patterns (user-scoped Prisma models, pure logic under
+`lib/logic`, `ActionResult` actions, bounded read models, one aggregation
+module, backup versioning); nothing from the foundation or from Phases 31–33
+was recreated or undone.
+
+### The one architectural change, and why
+
+**Parsing moved from the browser to the server.** Phase 22 parsed exports in a
+Web Worker and uploaded only the resulting rows. That was a real privacy win
+and it is what the previous docs described — but it had two costs that this
+phase could not carry:
+
+* the server had to **trust numbers a client produced** (it re-validated them,
+  but it could not re-derive them), and
+* an export was capped at what the user's device could hold in memory, which
+  is exactly wrong for the multi-gigabyte exports this phase exists to support.
+
+So the file is now streamed to the server, parsed there in bounded memory, and
+deleted. The user-facing flow is unchanged and better: same preview-before-write
+philosophy, same batch history, plus a real undo. `docs/health-import-privacy.md`
+was rewritten to describe the new model honestly rather than left describing the
+old one.
+
+The Web Worker, the browser ZIP reader and the browser XML parser were removed
+with it; the chunk-staging table they filled is now filled by the *server* with
+the parsed plan, so staging, expiry and ownership all kept their tested
+semantics.
+
+### Schema (migration `20260731061657_health_module_apple_import` — additive only)
+
+One new table and eleven new columns. No drops, no rewrites:
+
+* `HealthRecord` — the non-numeric side of an export: `kind`
+  (`ecg | medication | clinical | workout_route`), day, instants, title,
+  subtitle, an optional single value + unit, and a bounded display-only
+  `detail` JSON. Unique `(userId, fingerprint)`, indexed on
+  `(userId, kind, date)`, `(userId, date)` and `(batchId)`. One table rather
+  than four keeps ownership, backup, undo and search identical for every kind
+  — the same reasoning that keeps enum-like columns TEXT everywhere else.
+  Sleep and mindfulness sessions are deliberately **not** here: they are
+  already intervals in `HealthMetric`, and storing the same night twice would
+  be two sources of truth.
+* `HealthImportBatch` gained `errors`, `recordsImported`, `recordsDuplicate`,
+  `startedAt`, `finishedAt`, `durationMs`, `xmlBytes` (BigInt — an unzipped
+  export exceeds what an Int holds), `ignoredFiles`, and the undo stamp
+  `undoneAt` / `undoneCount` / `keptCount` — the same shape finance import
+  batches already carry. Plus an index on `(userId, status)`.
+
+`prisma migrate diff` reports no drift; the migration applies from zero on the
+disposable test database on every integration run.
+
+### 1) The metric vocabulary: 14 → 55
+
+`HEALTH_METRIC_TYPES` grew to cover activity (flights, exercise minutes, stand
+hours, cycling and swimming distance), body (height, BMI, lean mass, waist),
+heart (walking HR, VO₂ max), respiratory (rate, blood oxygen, peak flow, FVC,
+FEV1), nutrition (energy, seven macros, six minerals, seven vitamins, caffeine),
+vitals (glucose, temperature) and mindfulness. The original fourteen keep their
+keys, so every existing row, backup and goal `sourceRef` still resolves.
+
+Each type carries a **group** (`activity | sleep | heart | body | respiratory |
+nutrition | vitals | mind`), which is what drives the sub-pages, the import
+preview's grouping and the search router — a metric added to the list appears
+everywhere without a second edit.
+
+New unit families came with them: length, gram/milligram/microgram, litre,
+flow, glucose, VO₂ and temperature. **Temperature is the one affine
+conversion** — °F is `(v − 32) × 5⁄9`, not a multiplier — and is handled
+explicitly rather than bolted into the factor table. Two committed tests now
+assert that every metric can read *its own* canonical unit and that every
+metric round-trips through the display unit its entry form labels — the class
+of bug where a stored row becomes silently unreadable, or "175" is stored as a
+different quantity than it was typed as.
+
+### 2) The parser: streaming, and hardened
+
+`src/lib/logic/health-import/` gained three modules and lost two:
+
+* **`xml-scanner.ts`** — an incremental, bounded XML scanner. Not a DOM parser
+  (which would materialise the document) and not a general SAX parser (whose
+  entity, namespace and DTD machinery is precisely what makes XML parsers
+  dangerous). It has no entity table beyond the five predefined ones, cannot
+  be told to fetch anything, and caps element size, prologue size, nesting
+  depth and attribute count. An entity declaration or an external DTD is a hard
+  refusal — the file is not read at all — while the several-kilobyte internal
+  DTD subset that **every real export carries** is skipped normally. That
+  distinction was found by testing against a real-shaped prologue; refusing all
+  internal subsets would have refused every genuine Apple export.
+* **`apple-stream.ts`** — the accumulator. The rollup happens *during* the
+  scan: each record folds straight into a bucket keyed by (metric, day, source
+  app), so memory is proportional to **distinct days × metrics × devices**, not
+  to the number of samples. Collecting samples first and rolling up after —
+  the obvious pipeline, and the one the browser version used — needs memory
+  proportional to the file, which for a ten-year export is a crash.
+* **`apple-members.ts`** — the archive's other files. An ECG's header is read
+  and the scan stops at the blank line before the voltages; a route's distance
+  is accumulated from consecutive points *while streaming* and the coordinates
+  are discarded.
+* `apple-xml.ts` and `zip-browser.ts` (browser-only) were removed.
+
+Server-side, `src/server/apple-health/` adds a streaming ZIP reader (central
+directory, ZIP64 sizes, stored + deflate, per-entry byte budgets, encrypted
+entries refused, traversal-shaped names refused) and the orchestration that
+pushes `export.xml` through the scanner a megabyte at a time with a
+`StringDecoder`, so multi-byte characters straddling read boundaries survive.
+
+Also handled, because a real export contains them: `<Correlation>` wrappers
+(blood pressure, paired by instant — a half-recorded reading is dropped and
+counted rather than reported as half), `<ActivitySummary>` ring totals
+(attributed to their own source group so they can never be summed with the
+watch's own records for the same day), `<WorkoutStatistics>` children,
+`<WorkoutRoute>`, `<ClinicalRecord>`, and category records whose value is a
+state rather than a number (stand hours count only hours recorded as *stood*).
+
+### 3) The import pipeline
+
+Upload is a **route handler**, not a server action: an action buffers its whole
+body and caps it at a few megabytes. The request body streams to a scratch path
+with the size counted as it arrives (`Content-Length` is a claim, not a fact),
+the type is decided from the bytes rather than the name, and the temp directory
+is removed in a `finally` on every path.
+
+Staging writes the parsed plan into the session's chunk rows in bounded batches
+and keeps only the summary on the session row, so a decade-long export stages
+without a 60 MB blob in a column. Preview → confirm → history is unchanged in
+shape. Confirm writes in one transaction, batched 500 rows per statement, and
+recomputes exactly the days that changed.
+
+Duplicate detection uses **one bounded range scan** for an Apple import — every
+Apple fingerprint embeds the row's own date, so a single query finds every
+possible collision however large the plan — and per-fingerprint lookups for
+CSV, where the row count is small and a row's date may have changed since last
+time.
+
+One behaviour was corrected during testing: confirming a category whose every
+row is already present used to fail with "Nothing was selected". That is what a
+safe re-import looks like, so it now succeeds and records a zero-write batch;
+only a genuinely empty selection is refused.
+
+### 4) Undo, on the finance philosophy
+
+`src/lib/logic/health-import/undo.ts` is pure and decides one thing: what an
+undo does with each row the batch created.
+
+* **remove** — untouched since the import wrote it.
+* **keep_edited** — written to after the import finished. Nothing else in the
+  app touches an imported health row (summary rebuilds write to summaries), so
+  a later `updatedAt` means the user. A one-second grace stops an import
+  classifying its own writes as edits.
+* **keep_linked** — an imported workout that now has sets, or that a planner
+  block points at. Deleting it would take that work with it.
+
+The preview shows all three counts before anything is deleted. Deletes are
+keyed on batch id **and** user id; a row a later import refreshed already moved
+to that later batch; manual entries never had a batch id; and the batch is
+stamped `undoneAt` so a second undo is a no-op rather than a way to reach rows
+a later import wrote onto the same fingerprints.
+
+### 5) The section
+
+Eleven routes under one layout — Overview, Activity, Sleep, Heart, Body,
+Nutrition, Workouts, Vitals, Trends, Import, History — each taking
+`?range=7d|30d|90d|1y|all`, resolved server-side, so a view is shareable and
+bookmarkable. "All time" asks for the account's earliest health day rather than
+guessing, capped at ten years.
+
+Every group page is one component, so six pages cannot drift apart in layout,
+empty-state wording or how a range is applied. A day with no reading is a
+**gap, never a zero** — averages skip empty days and charts leave them blank.
+Sleep gets a per-night table with its stages; Vitals carries the non-numeric
+records; Nutrition says in as many words that it is the *imported* figures and
+that meals logged in `/nutrition` are deliberately kept separate.
+
+### 6) Search, backup, demo data
+
+* **Search.** A health metric hit is one entry per metric you actually have
+  readings for — "Body weight · 412 readings · 178.4 lb yesterday" → the chart
+  — not one hit per row; a decade of steps is one useful result, not ten
+  thousand identical ones. Matching happens in memory against the fixed
+  vocabulary and the database is asked one grouped question. Health records
+  (ECGs, medications, clinical records) match by title, subtitle and kind.
+* **Backup v7** carries `healthRecords`, ordered after `healthImportBatches` so
+  a record keeps its batch link. `sanitizeRow` learned `BigInt` (JSON has none,
+  so `xmlBytes` travels as a number) — without it a v7 batch row would have
+  been silently dropped on restore.
+* **Demo data** now writes an Apple-Health-shaped import: 70 days of
+  device-attributed rows across activity, heart, respiratory, nutrition and
+  staged sleep, five imported workouts, ECG/medication/clinical/route records,
+  and a batch that can be undone. Fingerprints are built with the real
+  `fingerprintFor`, so re-seeding is idempotent for the same reason a re-import
+  is, and the demo exercises the real undo path against real-shaped rows.
+
+### A real bug this phase found and fixed
+
+Clicking a Health tab did nothing, about **40 % of the time** (measured: 7 of
+15 trials on a fresh load). The click fired, Next's `<Link>` called
+`preventDefault`, and then no `pushState` happened at all — no error, no
+navigation, and clicking again did not help.
+
+The cause: `(app)/loading.tsx` is a Suspense boundary for segments *below the
+app shell*, which is why the sidebar was unaffected (0 of 16 trials). Health
+tabs change a segment one level deeper, below `health/layout.tsx`, which that
+boundary does not wrap — so React had to finish rendering the destination
+before it could commit the transition, and a slow render lost the navigation
+outright. Adding `src/app/(app)/health/loading.tsx` took it to **0 of 30**, and
+tab switches now commit instantly behind a skeleton, which is the behaviour the
+shell already documented for its primary tabs.
+
+Worth recording because the first three hypotheses were all wrong (prefetch
+storms, an overflow scroll container, a hydration race) and each was disproved
+by measurement rather than argument.
+
+### Testing
+
+| Suite | Before | After |
+| --- | --- | --- |
+| Unit (`npm test`) | 903 | **968** |
+| Integration (`npm run test:integration`) | 228 | **244** |
+| Browser (`npm run test:e2e`) | 35 | **45** |
+
+New coverage: the XML scanner's structure and its hostile-input refusals
+(entity declarations, external DTDs, mismatched tags, oversized elements,
+depth); the whole Apple vocabulary including affine temperature, fractional
+percentages, blood-pressure pairing and ring totals; ECG and route parsing
+asserting **no voltage and no coordinate survives**; the ZIP reader against
+malformed directories, encrypted entries, traversal names and a decompression
+bomb; a 60,000-record export asserting it folds to 400 rows in bounded heap;
+the undo classification; and, database-backed, the whole path — stage, confirm,
+re-import, incremental import, workout duplicate skipping, ownership from four
+angles, expiry, undo with kept rows, and history.
+
+The browser suite gained a full import round trip that **builds its own export
+archive**, so it runs against any database including CI's empty one and cleans
+up after itself by undoing what it created, plus the malformed-archive,
+malformed-XML and entity-declaration refusals.
+
+### Browser verification
+
+Signed in against the production build with a synthetic 30-day export
+(~700 records, 9 metric types, workouts with routes, blood-pressure
+correlations, a medication and an ECG): import page → upload → preview showing
+every expected category → confirm → the data present on Overview, Activity,
+Sleep, Heart, Body, Nutrition, Workouts, Vitals and Trends → all five ranges →
+universal search finding both "Body weight" and the medication by name →
+re-import reporting everything already present and writing nothing → undo
+preview → undo → the medication gone and the batch marked Undone. All 26 steps
+pass, and the Health nav click-through is stable across repeated runs.
+
+The only console noise is the pre-existing `/_vercel/insights/script.js` 404
+that occurs whenever the app runs outside the Vercel platform.
+
+### Performance notes
+
+* Parsing is proportional to distinct days, not to samples: 60,000 records fold
+  to 400 rows with heap growth in the low tens of megabytes (committed test).
+* Everything a stranger controls is bounded: 2 GB upload (declared *and*
+  actual), 6 GB decompressed XML enforced as bytes are produced, 256 KB per
+  element, 64 KB prologue, depth 64, 256 attributes, 500 k accumulators,
+  250 k point readings, 100 k workouts and records, 5 000 ECG/route files,
+  32 MB per member, 64 MB per CSV. Hitting a cap is reported, never silent.
+* Writes batch 500 rows per statement inside one transaction; the confirm for a
+  multi-year import is a handful of round trips, not one per row.
+* Duplicate detection for an Apple import is one range scan regardless of plan
+  size.
+* Reads are bounded by an explicit day window and metric list, over
+  `(userId, type, date)`, `(userId, date)` and `(batchId)` indexes. A group page
+  is one query for all of its metrics.
+* Search adds one grouped query plus one bounded record query per keystroke
+  batch, and matches metric names in memory against the fixed vocabulary.
+
+### Deliberately not implemented (recorded so nothing reads as forgotten)
+
+* **ECG waveforms, GPS routes on a map, raw clinical documents.** Read for
+  their summary and dropped. Drawing an ECG or mapping a run is a different
+  product, and holding that data is the highest-risk, lowest-value part of an
+  export.
+* **Live HealthKit sync.** A browser cannot subscribe to HealthKit. The export
+  file is what actually works, and the app says so rather than implying
+  otherwise.
+* **Merging imported nutrition with logged meals.** They are two records of the
+  same days; merging would double-count every meal. Kept on separate pages with
+  the reason stated in the UI.
+* **Basal body temperature**, and any other identifier whose meaning differs
+  from the metric it would be folded into. Unmapped types are counted and
+  listed, never guessed at.
+* **Per-row undo** and **undo of an undo.** Undo is batch-shaped; the way back
+  from an undo is re-importing the file, which the freed fingerprints allow.
+* **Health goals on the new metrics.** The goal system already reads any metric
+  through `getLatestMetricValues`; surfacing the new ones in the goal picker is
+  a UI change, not a data one.
+* **Clinical-record detail views.** The summary is listed; there is nothing
+  further stored to show.
+
+### Exact next step
+
+Candidates in rough order of user value: health goals over the new metrics
+(VO₂ max, blood oxygen, exercise minutes) using the existing goal engine; a
+correlations view over the trend series the module already computes (sleep vs
+resting HR, exercise vs HRV); nutrition reconciliation that *shows* imported
+and logged figures side by side without merging them; per-metric detail pages
+with the raw reading list and per-source breakdown; and folding health signals
+into the "needs attention" digest Phase 33 left open.

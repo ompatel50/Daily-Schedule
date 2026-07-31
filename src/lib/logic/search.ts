@@ -3,8 +3,10 @@ import {
   ACCOUNT_TYPE_META,
   BILL_KINDS,
   FINANCE_CATEGORY_META,
+  HEALTH_RECORD_KIND_META,
   type AccountType,
   type FinanceCategory,
+  type HealthRecordKind,
 } from "@/lib/enums";
 import { describeExpiryDistance, documentKindLabel } from "@/lib/logic/documents";
 import { formatMoney } from "@/lib/logic/finance";
@@ -33,6 +35,8 @@ export const SEARCH_GROUPS = [
   "Budgets",
   "Savings goals",
   "Workouts",
+  "Health",
+  "Health records",
   "Templates",
   "Foods",
   "Meal templates",
@@ -78,6 +82,28 @@ export interface SearchRows {
     amount: number;
     currency: string;
   }>;
+  /**
+   * One entry per health metric the account actually has readings for and
+   * whose name matches — not one per reading. A decade of steps is one hit
+   * that takes you to the chart, which is what someone typing "steps" wants;
+   * ten thousand identical rows is not.
+   */
+  healthMetrics: Array<{
+    type: string;
+    label: string;
+    unit: string;
+    group: string;
+    count: number;
+    latestDate: DayKey | null;
+    latestValue: number | null;
+  }>;
+  healthRecords: Array<{
+    id: string;
+    kind: string;
+    title: string;
+    subtitle: string | null;
+    date: DayKey;
+  }>;
   bills: Array<{ id: string; name: string; kind: string; amount: number; nextDueDate: DayKey }>;
   budgets: Array<{ id: string; category: string; amount: number; period: string }>;
   savingsGoals: Array<{ id: string; name: string; targetAmount: number; currentAmount: number }>;
@@ -99,6 +125,8 @@ export function emptySearchRows(): SearchRows {
     tags: [],
     inboxItems: [],
     documents: [],
+    healthMetrics: [],
+    healthRecords: [],
     accounts: [],
     transactions: [],
     bills: [],
@@ -282,6 +310,30 @@ export function buildSearchHits(rows: SearchRows, referenceDay: DayKey): SearchH
       title: workout.name,
       subtitle: `${relativeDayLabel(workout.date, referenceDay)} · ${workout.durationMin} min`,
       href: `/workouts?date=${workout.date}`,
+    });
+  }
+
+  for (const metric of rows.healthMetrics) {
+    const latest =
+      metric.latestValue !== null && metric.latestDate !== null
+        ? `${formatTarget(metric.latestValue)}${metric.unit ? ` ${metric.unit}` : ""} on ${relativeDayLabel(metric.latestDate, referenceDay)}`
+        : "no readings yet";
+    hits.push({
+      id: `health-${metric.type}`,
+      group: "Health",
+      title: metric.label,
+      subtitle: `${metric.count} reading${metric.count === 1 ? "" : "s"} · ${latest}`,
+      href: `/health/${metric.group}`,
+    });
+  }
+
+  for (const record of rows.healthRecords) {
+    hits.push({
+      id: `hrec-${record.id}`,
+      group: "Health records",
+      title: record.title,
+      subtitle: `${HEALTH_RECORD_KIND_META[record.kind as HealthRecordKind]?.label ?? record.kind} · ${relativeDayLabel(record.date, referenceDay)}${record.subtitle ? ` · ${record.subtitle}` : ""}`,
+      href: "/health/vitals",
     });
   }
 

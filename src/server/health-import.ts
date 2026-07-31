@@ -1,55 +1,93 @@
+import "server-only";
+
 import { prisma } from "@/lib/db";
-import type { DayKey } from "@/lib/date";
-import { HEALTH_METRIC_META, type HealthMetricType } from "@/lib/enums";
-import { WORKOUTS_CATEGORY } from "@/lib/logic/health-import/rollup";
-import { isLikelyDuplicateWorkout } from "@/lib/logic/health-import/workout-dup";
+import { type DayKey, shiftDay } from "@/lib/date";
+import {
+  HEALTH_METRIC_META,
+  HEALTH_RECORD_KIND_META,
+  type HealthMetricType,
+  type HealthRecordKind,
+} from "@/lib/enums";
+import type { RawHealthRecord } from "@/lib/logic/health-import/apple-stream";
+import { RECORDS_CATEGORY, WORKOUTS_CATEGORY } from "@/lib/logic/health-import/rollup";
 import type {
   ImportKind,
   ImportPlan,
   NormalizedHealthRow,
   RawWorkout,
 } from "@/lib/logic/health-import/types";
-import { assembleValidatedPlan } from "@/server/health-import-session";
+import { isLikelyDuplicateWorkout } from "@/lib/logic/health-import/workout-dup";
+import { classifyHealthUndoRow, planHealthUndo } from "@/lib/logic/health-import/undo";
 import { logRedactedError } from "@/server/safe-error";
 import { rebuildSummariesForDates } from "@/server/summaries";
 
 /**
- * The staged import workflow — hosted edition.
+ * The staged health import.
  *
- *   parse:    happens in the BROWSER (a Web Worker); the raw export never
- *             leaves the user's device. Normalised rows arrive in bounded,
- *             sequence-numbered chunks (src/server/health-import-session.ts).
- *   preview:  `finalizeStagedPreview` revalidates every uploaded row,
- *             recomputes fingerprints, compares against what is already
- *             stored, and stages the validated plan on the session row.
- *             NOTHING is written to the health tables, so cancelling is free.
- *   confirm:  load the staged plan, filter to the chosen categories, write in
- *             one transaction, record the batch, delete the session,
- *             recompute the affected days.
- *   cancel:   delete the session (and its staged data) — owner-checked.
+ *   upload:  the file is streamed to a temporary path by the route handler and
+ *            parsed HERE, on the server (src/server/apple-health). Nothing the
+ *            browser says about the file's contents is trusted, because the
+ *            browser never reads it.
+ *   stage:   the parsed plan is written into the session's chunk rows in
+ *            bounded batches, so a decade-long export is staged without ever
+ *            holding a 60 MB JSON blob in a column or in memory. The session
+ *            row keeps only the summary the preview renders.
+ *   preview: counts, categories, date span, and what is already present —
+ *            NOTHING is written to the health tables, so cancelling is free.
+ *   confirm: replay the staged chunks, filter to the chosen categories, write
+ *            in one transaction, record the batch, delete the session,
+ *            recompute exactly the days that changed.
+ *   cancel:  delete the session (and its staged rows) — owner-checked.
+ *   undo:    remove what a batch wrote and still owns, keeping anything the
+ *            user has since edited or built on.
  *
- * Privacy: only normalised rows are ever staged, in the user's own database
- * rows, deleted on confirm/cancel and expired after two hours. No raw export
- * is retained anywhere server-side, nothing in this pipeline performs a
- * network request, and no row contents are logged.
+ * Ownership is structural: the session id is server-generated and every query
+ * in this module is scoped by `userId`, so no request can name another
+ * account's session or batch. Sessions expire after two hours and are swept
+ * on the next creation.
  */
 
-const CHUNK = 400;
+/** Rows per database round trip. */
+const CHUNK = 500;
+/** Rows per staged chunk row. */
+const STAGE_CHUNK = 2_000;
+export const SESSION_TTL_MS = 2 * 60 * 60 * 1000;
+/** Concurrent staged imports one account may hold. */
+const MAX_ACTIVE_SESSIONS = 3;
 
-interface StagedImport {
+// --- the staged summary -------------------------------------------------------
+
+/**
+ * What the session row holds between staging and confirming. Deliberately
+ * only counts and metadata: the rows themselves live in the chunk table.
+ */
+interface StagedSummary {
   userId: string;
+  kind: ImportKind;
   fileName: string;
   fileSize: number;
   fileType: "xml" | "zip" | "csv";
-  createdAt: string;
-  plan: ImportPlan;
+  startedAt: string;
+  parseMs: number;
+  xmlBytes: number;
+  ignoredFiles: string[];
+  errors: string[];
+  truncated: boolean;
+  categories: CategoryPreview[];
+  dateFrom: string | null;
+  dateTo: string | null;
+  examined: number;
+  invalid: number;
+  totalRows: number;
+  totalWorkouts: number;
+  totalRecords: number;
+  unsupported: Array<{ type: string; count: number }>;
+  warnings: string[];
   /** Apple workout externalIds that already exist — skipped on confirm. */
   exactWorkoutDupes: string[];
   /** externalIds that look like an existing manual workout — skipped + reported. */
   potentialWorkoutDupes: string[];
 }
-
-// --- preview ----------------------------------------------------------------
 
 export interface CategoryPreview {
   key: string;
@@ -82,13 +120,19 @@ export interface ImportPreviewResult {
   examined: number;
   invalid: number;
   totalRows: number;
+  parseMs: number;
+  xmlBytes: number;
+  truncated: boolean;
   unsupported: Array<{ type: string; count: number }>;
   warnings: string[];
+  errors: string[];
+  ignoredFiles: string[];
   categories: CategoryPreview[];
 }
 
 function categoryLabel(key: string): string {
   if (key === WORKOUTS_CATEGORY) return "Workouts";
+  if (key === RECORDS_CATEGORY) return "Health records";
   return HEALTH_METRIC_META[key as HealthMetricType]?.label ?? key;
 }
 
@@ -100,36 +144,59 @@ async function chunked<T, R>(items: T[], size: number, run: (chunk: T[]) => Prom
   return results;
 }
 
-/**
- * Turn a fully-uploaded session into a staged, previewable import. Runs the
- * server-side revalidation (see health-import-session.ts), the duplicate
- * detection against what is already stored, and persists the validated plan
- * on the session row — the chunks are deleted once folded in.
- */
-export async function finalizeStagedPreview(
-  userId: string,
-  sessionId: string,
-): Promise<{ ok: true; preview: ImportPreviewResult } | { ok: false; error: string }> {
-  const assembled = await assembleValidatedPlan(userId, sessionId);
-  if (!assembled.ok) return assembled;
+// --- staging ------------------------------------------------------------------
 
-  const { session, plan, rejected } = assembled;
-  if (plan.rows.length === 0 && plan.workouts.length === 0) {
-    await discardStaged(userId, sessionId);
+async function sweepExpiredSessions(): Promise<void> {
+  await prisma.healthImportSession
+    .deleteMany({ where: { expiresAt: { lt: new Date() } } })
+    .catch(() => {});
+}
+
+export interface StageInput {
+  kind: ImportKind;
+  fileType: "xml" | "zip" | "csv";
+  fileName: string;
+  fileSize: number;
+  plan: ImportPlan;
+  parseMs: number;
+  xmlBytes: number;
+  ignoredFiles: string[];
+  errors: string[];
+}
+
+/**
+ * Turn a freshly parsed plan into a staged, previewable import. Runs the
+ * duplicate detection against what is already stored and writes the rows into
+ * the session's chunks. Nothing reaches the health tables here.
+ */
+export async function stageImport(
+  userId: string,
+  input: StageInput,
+): Promise<{ ok: true; preview: ImportPreviewResult } | { ok: false; error: string }> {
+  const { plan } = input;
+  if (plan.rows.length === 0 && plan.workouts.length === 0 && plan.records.length === 0) {
     return { ok: false, error: "Nothing importable was found in the file." };
   }
 
-  // --- duplicate detection against what's already stored ---------------------
-  const fingerprints = plan.rows.map((row) => row.fingerprint);
-  const existing = await chunked(fingerprints, CHUNK, (chunk) =>
-    prisma.healthMetric.findMany({
-      where: { userId, fingerprint: { in: chunk } },
-      select: { fingerprint: true, value: true },
-    }),
-  );
-  const existingByFp = new Map(existing.map((row) => [row.fingerprint as string, row.value]));
+  await sweepExpiredSessions();
+  const active = await prisma.healthImportSession.count({
+    where: { userId, expiresAt: { gt: new Date() } },
+  });
+  if (active >= MAX_ACTIVE_SESSIONS) {
+    return {
+      ok: false,
+      error: "Too many imports are waiting to be confirmed — finish or cancel one first.",
+    };
+  }
 
-  const workoutDupes = await findWorkoutDuplicates(userId, plan.workouts);
+  // Base filename only — never a path from the user's machine.
+  const fileName = (input.fileName.split(/[\\/]/).pop() ?? "import").slice(0, 200);
+
+  const [existingByFp, workoutDupes, existingRecords] = await Promise.all([
+    findExistingFingerprints(userId, plan),
+    findWorkoutDuplicates(userId, plan.workouts),
+    findExistingRecordFingerprints(userId, plan.records),
+  ]);
 
   const categories: CategoryPreview[] = plan.categories.map((category) => {
     const rows = plan.rows.filter((row) => row.type === category.key);
@@ -143,11 +210,12 @@ export async function finalizeStagedPreview(
       else updatedRows += 1;
     }
     if (category.key === WORKOUTS_CATEGORY) {
-      newRows =
-        plan.workouts.length -
-        workoutDupes.exact.length -
-        workoutDupes.potential.length;
       unchangedRows = workoutDupes.exact.length + workoutDupes.potential.length;
+      newRows = plan.workouts.length - unchangedRows;
+    }
+    if (category.key === RECORDS_CATEGORY) {
+      unchangedRows = plan.records.filter((record) => existingRecords.has(record.fingerprint)).length;
+      newRows = plan.records.length - unchangedRows;
     }
     return {
       key: category.key,
@@ -159,21 +227,11 @@ export async function finalizeStagedPreview(
       newRows,
       updatedRows,
       unchangedRows,
-      sample: rows.slice(0, 5).map((row) => ({
-        date: row.date,
-        value: row.value,
-        unit: row.unit,
-        subtype: row.subtype,
-        source: row.source,
-        sourceApp: row.sourceApp,
-      })),
+      sample: sampleFor(category.key, plan, rows),
     };
   });
 
   const warnings = [...plan.warnings];
-  if (rejected > 0) {
-    warnings.push(`${rejected} row${rejected === 1 ? "" : "s"} failed server-side validation and will not be imported.`);
-  }
   if (workoutDupes.potential.length > 0) {
     warnings.push(
       `${workoutDupes.potential.length} imported workout${workoutDupes.potential.length === 1 ? "" : "s"} ` +
@@ -182,66 +240,200 @@ export async function finalizeStagedPreview(
     );
   }
 
-  const staged: StagedImport = {
+  const summary: StagedSummary = {
     userId,
-    fileName: session.fileName,
-    fileSize: session.fileSize ?? 0,
-    fileType: session.fileType as "xml" | "zip" | "csv",
-    createdAt: new Date().toISOString(),
-    plan,
+    kind: plan.kind,
+    fileName,
+    fileSize: input.fileSize,
+    fileType: input.fileType,
+    startedAt: new Date(Date.now() - input.parseMs).toISOString(),
+    parseMs: input.parseMs,
+    xmlBytes: input.xmlBytes,
+    ignoredFiles: input.ignoredFiles.slice(0, 20),
+    errors: input.errors.slice(0, 40),
+    truncated: plan.truncated,
+    categories,
+    dateFrom: plan.dateFrom,
+    dateTo: plan.dateTo,
+    examined: plan.examined,
+    invalid: plan.invalid,
+    totalRows: plan.rows.length,
+    totalWorkouts: plan.workouts.length,
+    totalRecords: plan.records.length,
+    unsupported: Object.entries(plan.unsupported)
+      .map(([type, count]) => ({ type, count }))
+      .sort((a, b) => b.count - a.count)
+      .slice(0, 200),
+    warnings: warnings.slice(0, 40),
     exactWorkoutDupes: workoutDupes.exact,
     potentialWorkoutDupes: workoutDupes.potential,
   };
 
-  await prisma.$transaction([
-    prisma.healthImportSession.update({
-      where: { id: sessionId },
-      data: { status: "staged", stagedPlan: JSON.stringify(staged) },
-    }),
-    // The chunks have been folded into the staged plan — free the space.
-    prisma.healthImportChunk.deleteMany({ where: { sessionId } }),
-  ]);
+  const session = await prisma.healthImportSession.create({
+    data: {
+      userId,
+      status: "staged",
+      source: plan.kind,
+      fileType: input.fileType,
+      fileName,
+      fileSize: input.fileSize,
+      examined: plan.examined,
+      invalid: plan.invalid,
+      unsupported: JSON.stringify(summary.unsupported),
+      warnings: JSON.stringify(summary.warnings),
+      stagedPlan: JSON.stringify(summary),
+      expiresAt: new Date(Date.now() + SESSION_TTL_MS),
+    },
+  });
+
+  try {
+    await writeStagedChunks(session.id, plan);
+  } catch (error) {
+    await prisma.healthImportSession.deleteMany({ where: { id: session.id, userId } });
+    throw error;
+  }
 
   return {
     ok: true,
     preview: {
-      token: sessionId,
+      token: session.id,
       kind: plan.kind,
-      fileName: session.fileName,
-      fileType: session.fileType as "xml" | "zip" | "csv",
-      fileSize: session.fileSize ?? 0,
+      fileName,
+      fileType: input.fileType,
+      fileSize: input.fileSize,
       dateFrom: plan.dateFrom,
       dateTo: plan.dateTo,
       examined: plan.examined,
       invalid: plan.invalid,
-      totalRows: plan.rows.length + plan.workouts.length,
-      unsupported: Object.entries(plan.unsupported)
-        .map(([type, count]) => ({ type, count }))
-        .sort((a, b) => b.count - a.count),
-      warnings,
+      totalRows: plan.rows.length + plan.workouts.length + plan.records.length,
+      parseMs: input.parseMs,
+      xmlBytes: input.xmlBytes,
+      truncated: plan.truncated,
+      unsupported: summary.unsupported,
+      warnings: summary.warnings,
+      errors: summary.errors,
+      ignoredFiles: summary.ignoredFiles,
       categories,
     },
   };
 }
 
-/** Delete a staged/uploading session — only the owner's, cancelling twice is fine. */
-export async function discardStaged(userId: string, token: string): Promise<void> {
-  await prisma.healthImportSession.deleteMany({ where: { id: token, userId } });
+function sampleFor(
+  key: string,
+  plan: ImportPlan,
+  rows: NormalizedHealthRow[],
+): CategoryPreview["sample"] {
+  if (key === WORKOUTS_CATEGORY) {
+    return plan.workouts.slice(0, 5).map((workout) => ({
+      date: workout.date,
+      value: workout.durationMin,
+      unit: "min",
+      subtype: workout.name,
+      source: "apple_health",
+      sourceApp: workout.sourceApp,
+    }));
+  }
+  if (key === RECORDS_CATEGORY) {
+    return plan.records.slice(0, 5).map((record) => ({
+      date: record.date,
+      value: record.value ?? 0,
+      unit: record.unit,
+      subtype: record.title,
+      source: "apple_health",
+      sourceApp: record.sourceApp,
+    }));
+  }
+  return rows.slice(0, 5).map((row) => ({
+    date: row.date,
+    value: row.value,
+    unit: row.unit,
+    subtype: row.subtype,
+    source: row.source,
+    sourceApp: row.sourceApp,
+  }));
 }
 
-/** Load the owner's staged plan, or null when it expired or is not theirs. */
-async function loadStaged(userId: string, token: string): Promise<StagedImport | null> {
-  const session = await prisma.healthImportSession.findFirst({
-    where: { id: token, userId, status: "staged", expiresAt: { gt: new Date() } },
-    select: { stagedPlan: true },
-  });
-  if (!session?.stagedPlan) return null;
-  try {
-    const staged = JSON.parse(session.stagedPlan) as StagedImport;
-    return staged.userId === userId ? staged : null;
-  } catch {
-    return null;
+/** Write the plan into the session's chunk rows, bounded per statement. */
+async function writeStagedChunks(sessionId: string, plan: ImportPlan): Promise<void> {
+  let seq = 0;
+  const flush = async (payload: object) => {
+    await prisma.healthImportChunk.create({
+      data: { sessionId, seq: seq++, payload: JSON.stringify(payload) },
+    });
+  };
+  for (let index = 0; index < plan.rows.length; index += STAGE_CHUNK) {
+    await flush({ rows: plan.rows.slice(index, index + STAGE_CHUNK) });
   }
+  for (let index = 0; index < plan.workouts.length; index += STAGE_CHUNK) {
+    await flush({ workouts: plan.workouts.slice(index, index + STAGE_CHUNK) });
+  }
+  for (let index = 0; index < plan.records.length; index += STAGE_CHUNK) {
+    await flush({ records: plan.records.slice(index, index + STAGE_CHUNK) });
+  }
+  await prisma.healthImportSession.update({
+    where: { id: sessionId },
+    data: { totalChunks: seq },
+  });
+}
+
+/**
+ * Which of the plan's fingerprints already exist, and at what value.
+ *
+ * Two strategies, because the two front ends have different shapes. Every
+ * Apple fingerprint embeds the row's own date, so one bounded range scan finds
+ * every possible collision and costs a single query however many rows the plan
+ * has. A CSV row keyed by its `externalId` carries no date in its key — its
+ * date may even have changed since the last import — so those are looked up by
+ * fingerprint directly, which is affordable because CSVs are small.
+ */
+async function findExistingFingerprints(
+  userId: string,
+  plan: ImportPlan,
+): Promise<Map<string, number>> {
+  if (plan.rows.length === 0) return new Map();
+
+  if (plan.kind === "apple_health" && plan.dateFrom && plan.dateTo) {
+    const rows = await prisma.healthMetric.findMany({
+      where: {
+        userId,
+        // Point-reading fingerprints embed an ISO instant whose day can sit one
+        // day either side of the reporting day in a distant timezone, so the
+        // window is widened by a day at each end rather than assumed exact.
+        date: { gte: shiftDay(plan.dateFrom as DayKey, -1), lte: shiftDay(plan.dateTo as DayKey, 1) },
+        fingerprint: { not: null },
+      },
+      select: { fingerprint: true, value: true },
+    });
+    return new Map(rows.map((row) => [row.fingerprint as string, row.value]));
+  }
+
+  const found = await chunked(
+    plan.rows.map((row) => row.fingerprint),
+    CHUNK,
+    (chunk) =>
+      prisma.healthMetric.findMany({
+        where: { userId, fingerprint: { in: chunk } },
+        select: { fingerprint: true, value: true },
+      }),
+  );
+  return new Map(found.map((row) => [row.fingerprint as string, row.value]));
+}
+
+async function findExistingRecordFingerprints(
+  userId: string,
+  records: RawHealthRecord[],
+): Promise<Set<string>> {
+  if (records.length === 0) return new Set();
+  const found = await chunked(
+    records.map((record) => record.fingerprint),
+    CHUNK,
+    (chunk) =>
+      prisma.healthRecord.findMany({
+        where: { userId, fingerprint: { in: chunk } },
+        select: { fingerprint: true },
+      }),
+  );
+  return new Set(found.map((row) => row.fingerprint as string));
 }
 
 /**
@@ -294,7 +486,75 @@ async function findWorkoutDuplicates(
   return { exact: [...exact], potential };
 }
 
-// --- confirm ----------------------------------------------------------------
+// --- loading a staged import --------------------------------------------------
+
+/** Delete a staged session — only the owner's; cancelling twice is fine. */
+export async function discardStaged(userId: string, token: string): Promise<void> {
+  await prisma.healthImportSession.deleteMany({ where: { id: token, userId } });
+}
+
+async function loadSummary(userId: string, token: string): Promise<StagedSummary | null> {
+  const session = await prisma.healthImportSession.findFirst({
+    where: { id: token, userId, status: "staged", expiresAt: { gt: new Date() } },
+    select: { stagedPlan: true },
+  });
+  if (!session?.stagedPlan) return null;
+  try {
+    const summary = JSON.parse(session.stagedPlan) as StagedSummary;
+    // Belt and braces: the row was found by userId already, but a summary that
+    // disagrees about its owner is a corrupt row, not something to write from.
+    return summary.userId === userId ? summary : null;
+  } catch {
+    return null;
+  }
+}
+
+interface StagedChunk {
+  rows?: NormalizedHealthRow[];
+  workouts?: RawWorkout[];
+  records?: RawHealthRecord[];
+}
+
+/** Replay the staged chunks in order. */
+async function readStagedChunks(sessionId: string): Promise<StagedChunk[]> {
+  const chunks = await prisma.healthImportChunk.findMany({
+    where: { sessionId },
+    orderBy: { seq: "asc" },
+    select: { payload: true },
+  });
+  return chunks.map((chunk) => JSON.parse(chunk.payload) as StagedChunk);
+}
+
+/** The preview again, for a session the user is returning to. */
+export async function getStagedPreview(
+  userId: string,
+  token: string,
+): Promise<ImportPreviewResult | null> {
+  const summary = await loadSummary(userId, token);
+  if (!summary) return null;
+  return {
+    token,
+    kind: summary.kind,
+    fileName: summary.fileName,
+    fileType: summary.fileType,
+    fileSize: summary.fileSize,
+    dateFrom: summary.dateFrom,
+    dateTo: summary.dateTo,
+    examined: summary.examined,
+    invalid: summary.invalid,
+    totalRows: summary.totalRows + summary.totalWorkouts + summary.totalRecords,
+    parseMs: summary.parseMs,
+    xmlBytes: summary.xmlBytes,
+    truncated: summary.truncated,
+    unsupported: summary.unsupported,
+    warnings: summary.warnings,
+    errors: summary.errors,
+    ignoredFiles: summary.ignoredFiles,
+    categories: summary.categories,
+  };
+}
+
+// --- confirm ------------------------------------------------------------------
 
 export interface ImportOutcome {
   batchId: string;
@@ -305,9 +565,12 @@ export interface ImportOutcome {
   skippedTypes: number;
   workoutsImported: number;
   workoutsSkipped: number;
+  recordsImported: number;
+  recordsDuplicate: number;
   dateFrom: string | null;
   dateTo: string | null;
   recomputedDays: number;
+  durationMs: number;
 }
 
 export async function confirmHealthImport(
@@ -315,33 +578,50 @@ export async function confirmHealthImport(
   token: string,
   selectedCategories: string[],
 ): Promise<{ ok: true; outcome: ImportOutcome } | { ok: false; error: string }> {
-  const staged = await loadStaged(userId, token);
-  if (!staged) {
+  const summary = await loadSummary(userId, token);
+  if (!summary) {
     return {
       ok: false,
       error: "This import session has expired — nothing was written. Upload the file again.",
     };
   }
 
+  const staged = await readStagedChunks(token);
   const selected = new Set(selectedCategories);
-  const rows = staged.plan.rows.filter((row) => selected.has(row.type));
-  const includeWorkouts = selected.has(WORKOUTS_CATEGORY);
-  const skipIds = new Set([...staged.exactWorkoutDupes, ...staged.potentialWorkoutDupes]);
-  const workouts = includeWorkouts
-    ? staged.plan.workouts.filter((workout) => !skipIds.has(workout.externalId))
-    : [];
+  const rows: NormalizedHealthRow[] = [];
+  const allWorkouts: RawWorkout[] = [];
+  const allRecords: RawHealthRecord[] = [];
+  for (const chunk of staged) {
+    if (chunk.rows) rows.push(...chunk.rows.filter((row) => selected.has(row.type)));
+    if (chunk.workouts) allWorkouts.push(...chunk.workouts);
+    if (chunk.records) allRecords.push(...chunk.records);
+  }
 
-  if (rows.length === 0 && workouts.length === 0) {
+  const skipIds = new Set([...summary.exactWorkoutDupes, ...summary.potentialWorkoutDupes]);
+  const workouts = selected.has(WORKOUTS_CATEGORY)
+    ? allWorkouts.filter((workout) => !skipIds.has(workout.externalId))
+    : [];
+  const records = selected.has(RECORDS_CATEGORY) ? allRecords : [];
+
+  // Choosing nothing is a mistake worth reporting. Choosing something that
+  // turns out to be entirely already-present is NOT: that is what a safe
+  // re-import looks like, and it still deserves a batch in the history saying
+  // so rather than an error implying the user did something wrong.
+  if (selected.size === 0) {
     await discardStaged(userId, token);
     return { ok: false, error: "Nothing was selected, so nothing was imported." };
   }
 
-  const dates = [...rows.map((row) => row.date), ...workouts.map((workout) => workout.date)].sort();
+  const dates = [
+    ...rows.map((row) => row.date),
+    ...workouts.map((workout) => workout.date),
+  ].sort();
   const dateFrom = (dates[0] as DayKey) ?? null;
   const dateTo = (dates[dates.length - 1] as DayKey) ?? null;
 
-  const warningsJson = JSON.stringify(staged.plan.warnings.slice(0, 40));
-  const skippedTypes = Object.values(staged.plan.unsupported).reduce((sum, count) => sum + count, 0);
+  const warningsJson = JSON.stringify(summary.warnings.slice(0, 40));
+  const skippedTypes = summary.unsupported.reduce((sum, entry) => sum + entry.count, 0);
+  const startedAt = new Date();
 
   let outcome: ImportOutcome;
   try {
@@ -350,18 +630,22 @@ export async function confirmHealthImport(
         const batch = await tx.healthImportBatch.create({
           data: {
             userId,
-            source: staged.plan.kind,
-            fileType: staged.fileType,
-            fileName: staged.fileName,
-            fileSize: staged.fileSize,
+            source: summary.kind,
+            fileType: summary.fileType,
+            fileName: summary.fileName,
+            fileSize: summary.fileSize,
             status: "completed",
             dateFrom,
             dateTo,
             categories: JSON.stringify([...selected].sort()),
-            examined: staged.plan.examined,
+            examined: summary.examined,
             skipped: skippedTypes,
-            invalid: staged.plan.invalid,
+            invalid: summary.invalid,
             warnings: warningsJson,
+            errors: JSON.stringify(summary.errors.slice(0, 40)),
+            ignoredFiles: JSON.stringify(summary.ignoredFiles),
+            xmlBytes: summary.xmlBytes > 0 ? BigInt(summary.xmlBytes) : null,
+            startedAt,
           },
         });
 
@@ -395,6 +679,7 @@ export async function confirmHealthImport(
               subtype: row.subtype,
               value: row.value,
               unit: row.unit,
+              secondaryValue: row.secondaryValue ?? null,
               minValue: row.minValue,
               maxValue: row.maxValue,
               date: row.date,
@@ -414,12 +699,15 @@ export async function confirmHealthImport(
 
         // A re-import found a fuller value for a row it wrote before (a later
         // Apple export contains the rest of the day). The fingerprint is the
-        // identity; the value moves to the newer, more complete number.
+        // identity; the value moves to the newer, more complete number, and the
+        // row's batch moves with it so undoing the OLD batch cannot delete data
+        // the NEW one is now responsible for.
         for (const { id, row } of toUpdate) {
           await tx.healthMetric.update({
             where: { id },
             data: {
               value: row.value,
+              secondaryValue: row.secondaryValue ?? null,
               minValue: row.minValue,
               maxValue: row.maxValue,
               startAt: row.startAt ? new Date(row.startAt) : null,
@@ -431,9 +719,9 @@ export async function confirmHealthImport(
         }
 
         let workoutsImported = 0;
-        for (const workout of workouts) {
-          await tx.workout.create({
-            data: {
+        for (let index = 0; index < workouts.length; index += CHUNK) {
+          const result = await tx.workout.createMany({
+            data: workouts.slice(index, index + CHUNK).map((workout) => ({
               userId,
               date: workout.date,
               time: workout.time,
@@ -442,21 +730,48 @@ export async function confirmHealthImport(
               durationMin: workout.durationMin,
               distanceKm: workout.distanceKm,
               caloriesBurned: workout.caloriesBurned,
+              avgHeartRate: workout.avgHeartRate,
               status: "completed",
               startedAt: new Date(workout.startAt),
               completedAt: new Date(workout.endAt),
               source: "apple_health",
               externalId: workout.externalId,
               importBatchId: batch.id,
-            },
+            })),
+            // Two exports overlapping on the same workout must not collide on
+            // the (userId, source, externalId) unique index mid-transaction.
+            skipDuplicates: true,
           });
-          workoutsImported += 1;
+          workoutsImported += result.count;
         }
 
-        const workoutsSkipped = includeWorkouts
-          ? staged.plan.workouts.length - workoutsImported
-          : 0;
+        let recordsImported = 0;
+        for (let index = 0; index < records.length; index += CHUNK) {
+          const result = await tx.healthRecord.createMany({
+            data: records.slice(index, index + CHUNK).map((record) => ({
+              userId,
+              batchId: batch.id,
+              kind: record.kind,
+              date: record.date,
+              recordedAt: record.recordedAt ? new Date(record.recordedAt) : null,
+              startAt: record.startAt ? new Date(record.startAt) : null,
+              endAt: record.endAt ? new Date(record.endAt) : null,
+              title: record.title.slice(0, 200),
+              subtitle: record.subtitle?.slice(0, 200) ?? null,
+              value: record.value,
+              unit: record.unit,
+              detail: JSON.stringify(record.detail).slice(0, 2000),
+              source: "apple_health",
+              sourceApp: record.sourceApp,
+              externalId: record.externalId,
+              fingerprint: record.fingerprint,
+            })),
+            skipDuplicates: true,
+          });
+          recordsImported += result.count;
+        }
 
+        const finishedAt = new Date();
         await tx.healthImportBatch.update({
           where: { id: batch.id },
           data: {
@@ -464,7 +779,13 @@ export async function confirmHealthImport(
             updated: toUpdate.length,
             duplicates,
             workoutsImported,
-            workoutsSkipped,
+            workoutsSkipped: selected.has(WORKOUTS_CATEGORY)
+              ? summary.totalWorkouts - workoutsImported
+              : 0,
+            recordsImported,
+            recordsDuplicate: records.length - recordsImported,
+            finishedAt,
+            durationMs: finishedAt.getTime() - startedAt.getTime(),
           },
         });
 
@@ -473,38 +794,45 @@ export async function confirmHealthImport(
           imported: toCreate.length,
           updated: toUpdate.length,
           duplicates,
-          invalid: staged.plan.invalid,
+          invalid: summary.invalid,
           skippedTypes,
           workoutsImported,
-          workoutsSkipped,
+          workoutsSkipped: selected.has(WORKOUTS_CATEGORY)
+            ? summary.totalWorkouts - workoutsImported
+            : 0,
+          recordsImported,
+          recordsDuplicate: records.length - recordsImported,
           dateFrom,
           dateTo,
           recomputedDays: 0,
+          durationMs: finishedAt.getTime() - startedAt.getTime(),
         };
       },
-      { timeout: 120_000 },
+      { timeout: 600_000, maxWait: 30_000 },
     );
   } catch (error) {
-    // The transaction rolled back: no metric, workout or batch row survives.
-    // Record the failure as its own batch so the history shows what happened.
+    // The transaction rolled back: no metric, workout, record or batch row
+    // survives. Record the failure as its own batch so the history shows it.
     await prisma.healthImportBatch
       .create({
         data: {
           userId,
-          source: staged.plan.kind,
-          fileType: staged.fileType,
-          fileName: staged.fileName,
-          fileSize: staged.fileSize,
+          source: summary.kind,
+          fileType: summary.fileType,
+          fileName: summary.fileName,
+          fileSize: summary.fileSize,
           status: "failed",
           error: `Import failed (reference ${logRedactedError("health-import", error)})`,
           dateFrom,
           dateTo,
           categories: JSON.stringify([...selected].sort()),
-          examined: staged.plan.examined,
+          examined: summary.examined,
+          startedAt,
+          finishedAt: new Date(),
         },
       })
       .catch(() => {});
-    // The staged file is kept so the user can retry without re-uploading.
+    // The staged import is kept so the user can retry without re-uploading.
     return {
       ok: false,
       error:
@@ -519,28 +847,35 @@ export async function confirmHealthImport(
   // not the whole first-to-last span — the difference between seconds and
   // minutes on a sparse multi-year import.
   const touched = new Set<DayKey>([
-    ...rows.map((row) => row.date),
-    ...workouts.map((workout) => workout.date),
+    ...rows.map((row) => row.date as DayKey),
+    ...workouts.map((workout) => workout.date as DayKey),
   ]);
   outcome.recomputedDays = await rebuildSummariesForDates(userId, touched);
 
   return { ok: true, outcome };
 }
 
-// --- batch history & removal ------------------------------------------------
+// --- batch history ------------------------------------------------------------
 
-export async function listImportBatches(userId: string) {
+export async function listImportBatches(userId: string, take = 50) {
   const batches = await prisma.healthImportBatch.findMany({
     where: { userId },
     orderBy: { createdAt: "desc" },
-    take: 50,
+    take,
   });
   return batches.map((batch) => ({
     ...batch,
+    // BigInt does not survive the server→client boundary; the byte count is
+    // only ever displayed, so it crosses as a number.
+    xmlBytes: batch.xmlBytes === null ? null : Number(batch.xmlBytes),
     categoriesList: safeJsonArray(batch.categories),
     warningsList: safeJsonArray(batch.warnings),
+    errorsList: safeJsonArray(batch.errors),
+    ignoredFilesList: safeJsonArray(batch.ignoredFiles),
   }));
 }
+
+export type ImportBatchSummary = Awaited<ReturnType<typeof listImportBatches>>[number];
 
 function safeJsonArray(raw: string): string[] {
   try {
@@ -551,85 +886,260 @@ function safeJsonArray(raw: string): string[] {
   }
 }
 
+// --- undo ----------------------------------------------------------------------
+
 export interface BatchRemovalPreview {
   batchId: string;
   fileName: string;
+  /** Rows the batch created that it still owns — what undo would delete. */
   metricCount: number;
   workoutCount: number;
-  categories: Array<{ type: string; count: number }>;
+  recordCount: number;
+  /** Rows the batch created that undo will KEEP, and why. */
+  keptEdited: number;
+  keptLinked: number;
+  categories: Array<{ type: string; label: string; count: number }>;
+  recordKinds: Array<{ kind: string; label: string; count: number }>;
   dateFrom: string | null;
   dateTo: string | null;
+  undoneAt: string | null;
 }
 
-/** What removal would delete — shown before the confirmation. */
+async function loadBatch(userId: string, batchId: string) {
+  return prisma.healthImportBatch.findFirst({ where: { id: batchId, userId } });
+}
+
+/** The instant after which a change to a row is the user's, not the import's. */
+function importFinishedAt(batch: { finishedAt: Date | null; createdAt: Date }): Date {
+  return batch.finishedAt ?? batch.createdAt;
+}
+
+/**
+ * What an undo would do. Reads only, writes nothing — the preview the
+ * confirmation dialog shows before anything is deleted.
+ */
 export async function previewBatchRemoval(
   userId: string,
   batchId: string,
 ): Promise<BatchRemovalPreview | null> {
-  const batch = await prisma.healthImportBatch.findFirst({ where: { id: batchId, userId } });
+  const batch = await loadBatch(userId, batchId);
   if (!batch || batch.status === "removed") return null;
 
-  const [byType, workoutCount] = await Promise.all([
-    prisma.healthMetric.groupBy({
-      by: ["type"],
-      where: { batchId },
-      _count: { _all: true },
+  const boundary = importFinishedAt(batch);
+  const [metrics, workouts, records] = await Promise.all([
+    prisma.healthMetric.findMany({
+      where: { batchId, userId },
+      select: { id: true, type: true, updatedAt: true },
     }),
-    prisma.workout.count({ where: { importBatchId: batchId } }),
+    prisma.workout.findMany({
+      where: { importBatchId: batchId, userId },
+      select: {
+        id: true,
+        updatedAt: true,
+        scheduleItem: { select: { id: true } },
+        _count: { select: { sets: true } },
+      },
+    }),
+    prisma.healthRecord.findMany({
+      where: { batchId, userId },
+      select: { id: true, kind: true, updatedAt: true },
+    }),
   ]);
+
+  const metricPlan = planHealthUndo(
+    metrics.map((row) => ({ id: row.id, updatedAt: row.updatedAt, linked: false })),
+    boundary,
+  );
+  const workoutPlan = planHealthUndo(
+    workouts.map((row) => ({
+      id: row.id,
+      updatedAt: row.updatedAt,
+      // A workout that now has sets, or that a planner block points at, has
+      // become part of something the user built. Deleting it would take that
+      // with it, so the undo keeps it.
+      linked: row._count.sets > 0 || row.scheduleItem !== null,
+    })),
+    boundary,
+  );
+  const recordPlan = planHealthUndo(
+    records.map((row) => ({ id: row.id, updatedAt: row.updatedAt, linked: false })),
+    boundary,
+  );
+
+  const removableMetrics = new Set(metricPlan.removeIds);
+  const byType = new Map<string, number>();
+  for (const row of metrics) {
+    if (!removableMetrics.has(row.id)) continue;
+    byType.set(row.type, (byType.get(row.type) ?? 0) + 1);
+  }
+  const removableRecords = new Set(recordPlan.removeIds);
+  const byKind = new Map<string, number>();
+  for (const row of records) {
+    if (!removableRecords.has(row.id)) continue;
+    byKind.set(row.kind, (byKind.get(row.kind) ?? 0) + 1);
+  }
 
   return {
     batchId,
     fileName: batch.fileName,
-    metricCount: byType.reduce((sum, group) => sum + group._count._all, 0),
-    workoutCount,
-    categories: byType
-      .map((group) => ({ type: group.type, count: group._count._all }))
+    metricCount: metricPlan.removeCount,
+    workoutCount: workoutPlan.removeCount,
+    recordCount: recordPlan.removeCount,
+    keptEdited: metricPlan.keptEdited + workoutPlan.keptEdited + recordPlan.keptEdited,
+    keptLinked: metricPlan.keptLinked + workoutPlan.keptLinked + recordPlan.keptLinked,
+    categories: [...byType.entries()]
+      .map(([type, count]) => ({
+        type,
+        label: HEALTH_METRIC_META[type as HealthMetricType]?.label ?? type,
+        count,
+      }))
+      .sort((a, b) => b.count - a.count),
+    recordKinds: [...byKind.entries()]
+      .map(([kind, count]) => ({
+        kind,
+        label: HEALTH_RECORD_KIND_META[kind as HealthRecordKind]?.plural ?? kind,
+        count,
+      }))
       .sort((a, b) => b.count - a.count),
     dateFrom: batch.dateFrom,
     dateTo: batch.dateTo,
+    undoneAt: batch.undoneAt?.toISOString() ?? null,
   };
 }
 
+export interface BatchRemovalReport {
+  removedMetrics: number;
+  removedWorkouts: number;
+  removedRecords: number;
+  keptCount: number;
+  recomputedDays: number;
+}
+
 /**
- * Remove one batch's records — and only that batch's. Manual entries and other
- * batches are untouched by construction (the delete is keyed on batchId), and
- * every derived number is recomputed afterwards through the same central path
- * every other write uses.
+ * Undo one import — and only that import.
+ *
+ * Three guarantees, in order of importance:
+ *
+ *  1. **It can only ever reach this batch's rows.** Every delete is keyed on
+ *     `batchId` *and* `userId`. Manual entries were never given a batch;
+ *     another import's rows carry that import's id; a row a later import
+ *     refreshed had its `batchId` moved to that later batch at the moment it
+ *     was refreshed. So there is no path from here to anyone else's data, or
+ *     to data this run did not write.
+ *  2. **It keeps what you have since made your own.** A row edited after the
+ *     import finished, a workout that now has sets or a planner block, are
+ *     kept and reported rather than deleted — the same rule finance undo uses.
+ *  3. **It happens once.** The batch is stamped `undoneAt`; a second undo is a
+ *     no-op instead of a way to reach rows a later import wrote.
+ *
+ * Every derived number for the affected days is recomputed afterwards through
+ * the same central path every other write uses.
  */
 export async function removeImportBatch(
   userId: string,
   batchId: string,
-): Promise<{ ok: true; removedMetrics: number; removedWorkouts: number } | { ok: false; error: string }> {
-  const batch = await prisma.healthImportBatch.findFirst({ where: { id: batchId, userId } });
+): Promise<{ ok: true; report: BatchRemovalReport } | { ok: false; error: string }> {
+  const batch = await loadBatch(userId, batchId);
   if (!batch) return { ok: false, error: "Import batch not found." };
-  if (batch.status === "removed") return { ok: false, error: "This batch was already removed." };
+  if (batch.undoneAt || batch.status === "removed") {
+    return { ok: false, error: "This import has already been undone." };
+  }
 
-  // Collect the exact days the removal will change before deleting.
-  const touchedDates = new Set<DayKey>([
-    ...(await prisma.healthMetric.findMany({
+  const boundary = importFinishedAt(batch);
+  const [metrics, workouts, records] = await Promise.all([
+    prisma.healthMetric.findMany({
       where: { batchId, userId },
-      select: { date: true },
-      distinct: ["date"],
-    })).map((row) => row.date as DayKey),
-    ...(await prisma.workout.findMany({
+      select: { id: true, date: true, updatedAt: true },
+    }),
+    prisma.workout.findMany({
       where: { importBatchId: batchId, userId },
-      select: { date: true },
-      distinct: ["date"],
-    })).map((row) => row.date as DayKey),
+      select: {
+        id: true,
+        date: true,
+        updatedAt: true,
+        scheduleItem: { select: { id: true } },
+        _count: { select: { sets: true } },
+      },
+    }),
+    prisma.healthRecord.findMany({
+      where: { batchId, userId },
+      select: { id: true, updatedAt: true },
+    }),
   ]);
 
-  const [removedMetrics, removedWorkouts] = await prisma.$transaction(async (tx) => {
-    const metrics = await tx.healthMetric.deleteMany({ where: { batchId, userId } });
-    const workouts = await tx.workout.deleteMany({ where: { importBatchId: batchId, userId } });
-    await tx.healthImportBatch.update({
-      where: { id: batchId },
-      data: { status: "removed", removedAt: new Date() },
-    });
-    return [metrics.count, workouts.count];
-  });
+  const metricPlan = planHealthUndo(
+    metrics.map((row) => ({ id: row.id, updatedAt: row.updatedAt, linked: false })),
+    boundary,
+  );
+  const workoutPlan = planHealthUndo(
+    workouts.map((row) => ({
+      id: row.id,
+      updatedAt: row.updatedAt,
+      linked: row._count.sets > 0 || row.scheduleItem !== null,
+    })),
+    boundary,
+  );
+  const recordPlan = planHealthUndo(
+    records.map((row) => ({ id: row.id, updatedAt: row.updatedAt, linked: false })),
+    boundary,
+  );
 
-  await rebuildSummariesForDates(userId, touchedDates);
+  // The days a removal changes, collected before anything is deleted.
+  const removableMetrics = new Set(metricPlan.removeIds);
+  const removableWorkouts = new Set(workoutPlan.removeIds);
+  const touchedDates = new Set<DayKey>([
+    ...metrics.filter((row) => removableMetrics.has(row.id)).map((row) => row.date as DayKey),
+    ...workouts.filter((row) => removableWorkouts.has(row.id)).map((row) => row.date as DayKey),
+  ]);
 
-  return { ok: true, removedMetrics, removedWorkouts };
+  const keptCount = metricPlan.keptCount + workoutPlan.keptCount + recordPlan.keptCount;
+
+  const report = await prisma.$transaction(
+    async (tx) => {
+      let removedMetrics = 0;
+      for (let index = 0; index < metricPlan.removeIds.length; index += CHUNK) {
+        const result = await tx.healthMetric.deleteMany({
+          where: { userId, batchId, id: { in: metricPlan.removeIds.slice(index, index + CHUNK) } },
+        });
+        removedMetrics += result.count;
+      }
+      let removedWorkouts = 0;
+      for (let index = 0; index < workoutPlan.removeIds.length; index += CHUNK) {
+        const result = await tx.workout.deleteMany({
+          where: {
+            userId,
+            importBatchId: batchId,
+            id: { in: workoutPlan.removeIds.slice(index, index + CHUNK) },
+          },
+        });
+        removedWorkouts += result.count;
+      }
+      let removedRecords = 0;
+      for (let index = 0; index < recordPlan.removeIds.length; index += CHUNK) {
+        const result = await tx.healthRecord.deleteMany({
+          where: { userId, batchId, id: { in: recordPlan.removeIds.slice(index, index + CHUNK) } },
+        });
+        removedRecords += result.count;
+      }
+
+      await tx.healthImportBatch.update({
+        where: { id: batchId },
+        data: {
+          status: "removed",
+          removedAt: new Date(),
+          undoneAt: new Date(),
+          undoneCount: removedMetrics + removedWorkouts + removedRecords,
+          keptCount,
+        },
+      });
+
+      return { removedMetrics, removedWorkouts, removedRecords, keptCount, recomputedDays: 0 };
+    },
+    { timeout: 600_000, maxWait: 30_000 },
+  );
+
+  report.recomputedDays = await rebuildSummariesForDates(userId, touchedDates);
+  return { ok: true, report };
 }
+
+export { classifyHealthUndoRow };

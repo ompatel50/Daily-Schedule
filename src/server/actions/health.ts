@@ -3,7 +3,7 @@
 import { revalidatePath } from "next/cache";
 
 import { getCurrentUser, prisma } from "@/lib/db";
-import { HEALTH_METRIC_RULES, toCanonical } from "@/lib/logic/health";
+import { displayUnitFor, HEALTH_METRIC_RULES, toCanonical } from "@/lib/logic/health";
 import { manualDailyFingerprint } from "@/lib/logic/health-import/rollup";
 import {
   fail,
@@ -38,14 +38,10 @@ export async function logHealthMetric(input: unknown): Promise<ActionResult<{ id
   const rule = HEALTH_METRIC_RULES[type];
   if (!rule) return fail("Unknown metric type");
 
-  // The entry arrives in the user's display unit for that metric.
-  const enteredUnit =
-    type === "body_weight" && user.unitSystem !== "metric"
-      ? "lb"
-      : type === "distance_km" && user.unitSystem !== "metric"
-        ? "mi"
-        : rule.canonicalUnit;
-  const canonical = toCanonical(type, value, enteredUnit);
+  // The entry arrives in the user's display unit for that metric — the same
+  // unit the form labelled the field with, resolved through the one table in
+  // the aggregation module rather than re-listed here.
+  const canonical = toCanonical(type, value, displayUnitFor(type, user.unitSystem));
   if (canonical === null) return fail("That value cannot be stored for this metric");
 
   const fingerprint = manualDailyFingerprint(type, date);

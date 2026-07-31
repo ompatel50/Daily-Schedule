@@ -32,6 +32,15 @@ export function formatStat(value: number, unit?: string, digits = 0): string {
   return unit ? `${formatNumber(value, digits)} ${unit}` : formatNumber(value, digits);
 }
 
+/** Human byte sizes, used wherever a file's size is shown. */
+export function formatBytes(bytes: number): string {
+  if (!Number.isFinite(bytes) || bytes < 0) return "—";
+  if (bytes < 1024) return `${Math.round(bytes)} B`;
+  if (bytes < 1024 * 1024) return `${Math.round(bytes / 1024)} KB`;
+  if (bytes < 1024 * 1024 * 1024) return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
+  return `${(bytes / (1024 * 1024 * 1024)).toFixed(2)} GB`;
+}
+
 export function titleCase(input: string): string {
   return input
     .replace(/[_-]+/g, " ")

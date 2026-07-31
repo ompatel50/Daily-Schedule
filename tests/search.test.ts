@@ -58,6 +58,26 @@ describe("global search hits", () => {
         bills: [{ id: "bl", name: "Rent", kind: "bill", amount: 1800, nextDueDate: "2026-08-01" }],
         budgets: [{ id: "bu", category: "dining", amount: 250, period: "monthly" }],
         savingsGoals: [{ id: "sg", name: "Emergency fund", targetAmount: 10000, currentAmount: 2500 }],
+        healthMetrics: [
+          {
+            type: "body_weight",
+            label: "Body weight",
+            unit: "lb",
+            group: "body",
+            count: 412,
+            latestDate: "2026-07-29",
+            latestValue: 178.4,
+          },
+        ],
+        healthRecords: [
+          {
+            id: "hr",
+            kind: "medication",
+            title: "Metformin 500 mg",
+            subtitle: "Riverside Clinic",
+            date: "2026-07-20",
+          },
+        ],
       }),
       REF,
     );
@@ -82,6 +102,11 @@ describe("global search hits", () => {
     expect(byGroup.get("Savings goals")?.href).toBe("/finance");
     expect(byGroup.get("Tags")?.href).toBe("/tasks?tag=admin");
     expect(byGroup.get("Documents")?.href).toBe("/inbox");
+    // A health metric hit is a route into the chart that owns it, not a row.
+    expect(byGroup.get("Health")?.href).toBe("/health/body");
+    expect(byGroup.get("Health")?.subtitle).toContain("412 readings");
+    expect(byGroup.get("Health records")?.href).toBe("/health/vitals");
+    expect(byGroup.get("Health records")?.subtitle).toContain("Medication");
     // every declared group appeared, and ids are namespaced uniquely
     expect(new Set(hits.map((hit) => hit.group)).size).toBe(SEARCH_GROUPS.length);
     expect(new Set(hits.map((hit) => hit.id)).size).toBe(hits.length);

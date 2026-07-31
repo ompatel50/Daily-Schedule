@@ -1,39 +1,46 @@
 import type { DayKey } from "@/lib/date";
+import { HEALTH_METRIC_META, type HealthMetricType } from "@/lib/enums";
+import { HEALTH_METRIC_RULES, toCanonical } from "@/lib/logic/health";
+import type { AppleParseResult } from "./apple-stream";
 import {
-  HEALTH_METRIC_RULES,
-  intervalHours,
-  mergeIntervals,
-  toCanonical,
-  type Interval,
-  type SleepStage,
-} from "@/lib/logic/health";
-import type {
-  ImportCategory,
-  ImportPlan,
-  NormalizedHealthRow,
-  ParsedFile,
-  RawSample,
+  RECORDS_CATEGORY,
+  WORKOUTS_CATEGORY,
+  type ImportCategory,
+  type ImportPlan,
+  type NormalizedHealthRow,
+  type ParsedFile,
+  type RawSample,
 } from "./types";
 
 /**
- * Rollup: raw samples → database-ready rows.
+ * Fingerprints and plan assembly.
  *
- * An Apple Health export carries every individual sensor reading — hundreds of
- * step samples and thousands of heart-rate samples per day. Storing them all
- * would swamp the database for no benefit the app can show, so the import
- * folds them into one row per (day, device[, stage]) here, deterministically:
+ * ## The fingerprint is the whole duplicate story
  *
- *  * cumulative metrics (steps, calories, water, distance): per-day sum
- *  * heart rate: per-day average with the min/max preserved
- *  * resting HR / HRV: per-day average
- *  * weight / body fat / blood pressure: individual readings kept
- *  * sleep: per-day-per-stage union of intervals (overlaps merged, never
- *    double-counted), the day being the one the interval *ends* on
+ * Every row carries a key derived from its content, unique per user. Importing
+ * the same export twice reproduces the same keys, so the second import writes
+ * nothing; importing a *later* export reproduces the keys of the days it
+ * shares and adds keys for the days it does not, which is what makes
+ * incremental import work without the app tracking "what did I import last
+ * time". Nothing about the identity depends on when the file was made or what
+ * it was called.
  *
- * CSV rows are already row-per-record and pass through unrolled.
+ * The key's shape depends on how the metric behaves:
  *
- * Because the rollup is deterministic, re-importing the same file reproduces
- * the same fingerprints, which is what makes re-import a no-op.
+ *  * **rolled-up metrics** (steps, calories, heart rate, nutrition — anything
+ *    summed or averaged over a day) → `ah|type|date|device`. One row per day
+ *    per device, so a fuller re-export of the same day *updates* that row
+ *    rather than adding a second one.
+ *  * **sleep** → `ah|sleep_hours|stage|date|device`, one row per stage.
+ *  * **point readings** (weight, blood pressure, VO₂ max…) → the instant and
+ *    the value, because two weigh-ins on one day are two facts, not one.
+ *  * **anything carrying its own stable id** (a CSV row's `externalId`) → that
+ *    id, which is always the most reliable key available.
+ *
+ * The device is part of the key on purpose: a phone and a watch that both
+ * counted the same walk are two independent measurements, and collapsing them
+ * into one row would throw one away. Keeping them separate is what lets the
+ * aggregation in `health.ts` take the fullest source instead of adding them up.
  */
 
 /** The dedup key. Stable across re-exports of the same data. */
@@ -81,134 +88,6 @@ const round = (value: number, places = 3): number => {
   return Math.round(value * factor) / factor;
 };
 
-/** Roll one metric type's Apple samples into rows. */
-function rollupAppleMetric(type: string, samples: RawSample[]): NormalizedHealthRow[] {
-  const rule = HEALTH_METRIC_RULES[type];
-  if (!rule) return [];
-  const rows: NormalizedHealthRow[] = [];
-
-  if (rule.kind === "latest") {
-    // Individual readings kept as-is (weight, body fat) — converted to canonical.
-    for (const sample of samples) {
-      const value = toCanonical(type, sample.value, sample.unit);
-      if (value === null) continue;
-      rows.push(
-        finalize({
-          type,
-          subtype: null,
-          value: round(value),
-          unit: rule.canonicalUnit,
-          minValue: null,
-          maxValue: null,
-          date: sample.date,
-          startAt: sample.startAt,
-          endAt: sample.endAt,
-          source: sample.source,
-          sourceApp: sample.sourceApp,
-          sourceDevice: sample.sourceDevice,
-          externalId: sample.externalId,
-          notes: sample.notes,
-          sampleCount: 1,
-        }),
-      );
-    }
-    return rows;
-  }
-
-  if (rule.kind === "sleep") {
-    // Group by (day, device, stage); union the intervals within each group.
-    const groups = new Map<string, RawSample[]>();
-    for (const sample of samples) {
-      const key = `${sample.date}|${sample.sourceApp ?? ""}|${sample.subtype ?? ""}`;
-      const group = groups.get(key);
-      if (group) group.push(sample);
-      else groups.set(key, [sample]);
-    }
-    for (const [, group] of groups) {
-      const first = group[0];
-      const intervals: Interval[] = group
-        .filter((s) => s.startAt && s.endAt)
-        .map((s) => ({ start: new Date(s.startAt!).getTime(), end: new Date(s.endAt!).getTime() }));
-      const merged = mergeIntervals(intervals);
-      const hours = merged.length > 0
-        ? intervalHours(merged)
-        : group.reduce((sum, s) => sum + (toCanonical(type, s.value, s.unit) ?? 0), 0);
-      if (!(hours > 0)) continue;
-      rows.push(
-        finalize({
-          type,
-          subtype: (first.subtype ?? null) as SleepStage | null,
-          value: round(hours),
-          unit: rule.canonicalUnit,
-          minValue: null,
-          maxValue: null,
-          date: first.date,
-          startAt: merged.length > 0 ? new Date(merged[0].start).toISOString() : first.startAt,
-          endAt:
-            merged.length > 0
-              ? new Date(merged[merged.length - 1].end).toISOString()
-              : first.endAt,
-          source: first.source,
-          sourceApp: first.sourceApp,
-          sourceDevice: first.sourceDevice,
-          externalId: null,
-          notes: null,
-          sampleCount: group.length,
-        }),
-      );
-    }
-    return rows;
-  }
-
-  // Cumulative and averaged metrics: one row per (day, device).
-  const groups = new Map<string, RawSample[]>();
-  for (const sample of samples) {
-    const key = `${sample.date}|${sample.sourceApp ?? ""}`;
-    const group = groups.get(key);
-    if (group) group.push(sample);
-    else groups.set(key, [sample]);
-  }
-
-  for (const [, group] of groups) {
-    const first = group[0];
-    const values = group
-      .map((s) => toCanonical(type, s.value, s.unit))
-      .filter((v): v is number => v !== null);
-    if (values.length === 0) continue;
-
-    const value =
-      rule.kind === "cumulative"
-        ? values.reduce((sum, v) => sum + v, 0)
-        : values.reduce((sum, v) => sum + v, 0) / values.length;
-
-    const stamps = group
-      .flatMap((s) => [s.startAt, s.endAt])
-      .filter((s): s is string => s !== null)
-      .sort();
-
-    rows.push(
-      finalize({
-        type,
-        subtype: null,
-        value: round(value),
-        unit: rule.canonicalUnit,
-        minValue: rule.kind === "sample_range" ? round(Math.min(...values)) : null,
-        maxValue: rule.kind === "sample_range" ? round(Math.max(...values)) : null,
-        date: first.date,
-        startAt: stamps[0] ?? null,
-        endAt: stamps[stamps.length - 1] ?? null,
-        source: first.source,
-        sourceApp: first.sourceApp,
-        sourceDevice: first.sourceDevice,
-        externalId: null,
-        notes: null,
-        sampleCount: group.length,
-      }),
-    );
-  }
-  return rows;
-}
-
 /** CSV rows pass through one-to-one, converted to canonical units. */
 function normalizeCsvSample(sample: RawSample): NormalizedHealthRow | null {
   const rule = HEALTH_METRIC_RULES[sample.type];
@@ -234,76 +113,158 @@ function normalizeCsvSample(sample: RawSample): NormalizedHealthRow | null {
   });
 }
 
-export const WORKOUTS_CATEGORY = "workouts";
+export { RECORDS_CATEGORY, WORKOUTS_CATEGORY };
 
-/** Build the staged plan the preview shows and the confirmation writes. */
-export function buildImportPlan(parsed: ParsedFile): ImportPlan {
-  const byType = new Map<string, RawSample[]>();
-  for (const sample of parsed.samples) {
-    const group = byType.get(sample.type);
-    if (group) group.push(sample);
-    else byType.set(sample.type, [sample]);
-  }
+function categoryLabelFor(key: string): string {
+  if (key === WORKOUTS_CATEGORY) return "Workouts";
+  if (key === RECORDS_CATEGORY) return "Health records";
+  return HEALTH_METRIC_META[key as HealthMetricType]?.label ?? key;
+}
 
-  const rows: NormalizedHealthRow[] = [];
-  const seen = new Set<string>();
-  for (const [type, samples] of byType) {
-    const typeRows =
-      parsed.kind === "apple_health"
-        ? rollupAppleMetric(type, samples)
-        : samples.map(normalizeCsvSample).filter((row): row is NormalizedHealthRow => row !== null);
-    // Within one file, identical fingerprints collapse (a truly duplicated CSV
-    // row imports once); the DB upsert handles collisions across files.
-    for (const row of typeRows) {
-      if (seen.has(row.fingerprint)) continue;
-      seen.add(row.fingerprint);
-      rows.push(row);
+/**
+ * Group finished rows into the categories the preview offers, so the user
+ * chooses per metric rather than all-or-nothing.
+ */
+function buildCategories(
+  rows: NormalizedHealthRow[],
+  recordsPerType: Map<string, number>,
+  workoutDates: DayKey[],
+  recordDates: DayKey[],
+): ImportCategory[] {
+  const byType = new Map<string, { rows: number; from: DayKey; to: DayKey }>();
+  for (const row of rows) {
+    const entry = byType.get(row.type);
+    if (!entry) {
+      byType.set(row.type, { rows: 1, from: row.date, to: row.date });
+      continue;
     }
+    entry.rows += 1;
+    if (row.date < entry.from) entry.from = row.date;
+    if (row.date > entry.to) entry.to = row.date;
   }
 
-  const categories: ImportCategory[] = [];
-  for (const [type, samples] of byType) {
-    const typeRows = rows.filter((row) => row.type === type);
-    if (typeRows.length === 0) continue;
-    const dates = typeRows.map((row) => row.date).sort();
-    categories.push({
-      key: type,
-      label: type,
-      records: samples.length,
-      rows: typeRows.length,
-      dateFrom: dates[0] ?? null,
-      dateTo: dates[dates.length - 1] ?? null,
-    });
-  }
-  if (parsed.workouts.length > 0) {
-    const dates = parsed.workouts.map((workout) => workout.date).sort();
+  const categories: ImportCategory[] = [...byType.entries()].map(([key, entry]) => ({
+    key,
+    label: categoryLabelFor(key),
+    records: recordsPerType.get(key) ?? entry.rows,
+    rows: entry.rows,
+    dateFrom: entry.from,
+    dateTo: entry.to,
+  }));
+
+  if (workoutDates.length > 0) {
+    const sorted = [...workoutDates].sort();
     categories.push({
       key: WORKOUTS_CATEGORY,
-      label: "Workouts",
-      records: parsed.workouts.length,
-      rows: parsed.workouts.length,
-      dateFrom: dates[0] ?? null,
-      dateTo: dates[dates.length - 1] ?? null,
+      label: categoryLabelFor(WORKOUTS_CATEGORY),
+      records: workoutDates.length,
+      rows: workoutDates.length,
+      dateFrom: sorted[0],
+      dateTo: sorted[sorted.length - 1],
     });
   }
-  categories.sort((a, b) => a.key.localeCompare(b.key));
+  if (recordDates.length > 0) {
+    const sorted = [...recordDates].sort();
+    categories.push({
+      key: RECORDS_CATEGORY,
+      label: categoryLabelFor(RECORDS_CATEGORY),
+      records: recordDates.length,
+      rows: recordDates.length,
+      dateFrom: sorted[0],
+      dateTo: sorted[sorted.length - 1],
+    });
+  }
 
-  const allDates = [
-    ...rows.map((row) => row.date),
-    ...parsed.workouts.map((workout) => workout.date),
-  ].sort();
+  categories.sort((a, b) => a.key.localeCompare(b.key));
+  return categories;
+}
+
+function spanOf(plan: Pick<ImportPlan, "rows" | "workouts" | "records">): {
+  dateFrom: DayKey | null;
+  dateTo: DayKey | null;
+} {
+  let from: DayKey | null = null;
+  let to: DayKey | null = null;
+  const consider = (date: DayKey) => {
+    if (from === null || date < from) from = date;
+    if (to === null || date > to) to = date;
+  };
+  for (const row of plan.rows) consider(row.date);
+  for (const workout of plan.workouts) consider(workout.date);
+  for (const record of plan.records) consider(record.date);
+  return { dateFrom: from, dateTo: to };
+}
+
+/** Build the plan a CSV import previews and writes from. */
+export function buildImportPlan(parsed: ParsedFile): ImportPlan {
+  const rows: NormalizedHealthRow[] = [];
+  const seen = new Set<string>();
+  const recordsPerType = new Map<string, number>();
+
+  for (const sample of parsed.samples) {
+    recordsPerType.set(sample.type, (recordsPerType.get(sample.type) ?? 0) + 1);
+    const row = normalizeCsvSample(sample);
+    if (!row) continue;
+    // Within one file, identical fingerprints collapse (a truly duplicated CSV
+    // row imports once); the DB upsert handles collisions across files.
+    if (seen.has(row.fingerprint)) continue;
+    seen.add(row.fingerprint);
+    rows.push(row);
+  }
+
+  const base = { rows, workouts: parsed.workouts, records: [] };
+  const { dateFrom, dateTo } = spanOf(base);
 
   return {
     kind: parsed.kind,
-    rows,
-    workouts: parsed.workouts,
-    categories,
-    dateFrom: (allDates[0] as DayKey) ?? null,
-    dateTo: (allDates[allDates.length - 1] as DayKey) ?? null,
+    ...base,
+    categories: buildCategories(
+      rows,
+      recordsPerType,
+      parsed.workouts.map((workout) => workout.date),
+      [],
+    ),
+    dateFrom,
+    dateTo,
     examined: parsed.examined,
     invalid: parsed.invalid,
     unsupported: parsed.unsupported,
     errors: parsed.errors,
     warnings: parsed.warnings,
+    truncated: false,
+  };
+}
+
+/**
+ * Build the plan an Apple Health import previews and writes from. The rollup
+ * already happened during the scan (see `apple-stream.ts`), so this only has
+ * to describe what the scan produced.
+ */
+export function buildApplePlan(parsed: AppleParseResult): ImportPlan {
+  const recordsPerType = new Map<string, number>();
+  for (const row of parsed.rows) {
+    recordsPerType.set(row.type, (recordsPerType.get(row.type) ?? 0) + row.sampleCount);
+  }
+
+  const base = { rows: parsed.rows, workouts: parsed.workouts, records: parsed.records };
+  const { dateFrom, dateTo } = spanOf(base);
+
+  return {
+    kind: "apple_health",
+    ...base,
+    categories: buildCategories(
+      parsed.rows,
+      recordsPerType,
+      parsed.workouts.map((workout) => workout.date),
+      parsed.records.map((record) => record.date),
+    ),
+    dateFrom,
+    dateTo,
+    examined: parsed.examined,
+    invalid: parsed.invalid,
+    unsupported: parsed.unsupported,
+    errors: [],
+    warnings: parsed.warnings,
+    truncated: parsed.truncated,
   };
 }

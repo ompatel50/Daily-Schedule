@@ -9,8 +9,10 @@ import { fileURLToPath } from "node:url";
  * and no analytics. `'unsafe-inline'` remains for scripts and styles because
  * Next.js hydration and Tailwind/styled-jsx inject inline code; a nonce-based
  * policy would require per-request middleware rewriting and is documented as
- * a possible hardening step. `blob:` covers the health-import Web Worker and
- * chart rendering; `data:` covers inline SVG/image data URIs.
+ * a possible hardening step. `blob:` covers chart rendering; `data:` covers
+ * inline SVG/image data URIs. `worker-src` stays permitted because Next's own
+ * build may emit workers, even though the health import no longer uses one —
+ * health exports are parsed on the server (see docs/health-import-privacy.md).
  */
 const contentSecurityPolicy = [
   "default-src 'self'",
@@ -62,11 +64,11 @@ const nextConfig = {
   eslint: { ignoreDuringBuilds: true },
   experimental: {
     // The largest server-action payload is a full JSON backup on import.
-    // Health exports never travel through an action any more — they are
-    // parsed in the browser and only bounded (<1 MB) chunks of normalised
-    // rows are uploaded. (Serverless platforms may impose a lower hard cap
-    // per request — Vercel's is ~4.5 MB — which bounds importable backup
-    // size there; chunks are unaffected.)
+    // Health exports deliberately do NOT travel through an action: an action
+    // buffers its whole body in memory, so they are streamed to the route
+    // handler at /api/health/import instead. (Serverless platforms may impose
+    // a lower hard cap per request — Vercel's is ~4.5 MB — which bounds
+    // importable backup size there; the health upload route is unaffected.)
     serverActions: { bodySizeLimit: "16mb" },
   },
 };

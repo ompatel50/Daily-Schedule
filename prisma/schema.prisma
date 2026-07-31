@@ -90,6 +90,7 @@ model User {
   workouts          Workout[]
   workoutTemplates  WorkoutTemplate[]
   healthMetrics     HealthMetric[]
+  healthRecords     HealthRecord[]
   goals             Goal[]
   daySummaries      CalendarDaySummary[]
   journalEntries    JournalEntry[]
@@ -1026,15 +1027,112 @@ model HealthImportBatch {
 
   /// JSON array of human-readable warnings shown at import time.
   warnings String @default("[]")
+  /// JSON array of non-fatal errors (a member file that would not parse, a
+  /// record that could not be read) — kept apart from warnings so the history
+  /// can show "it worked, but…" distinctly from "it did not work".
+  errors String @default("[]")
+
+  /// Non-metric records this run wrote (ECGs, medications, clinical records,
+  /// workout routes). Counted separately because they are not days of numbers.
+  recordsImported Int @default(0)
+  recordsDuplicate Int @default(0)
+
+  /// Wall-clock of the run itself, so the history can show how long a
+  /// multi-gigabyte export actually took rather than only when it finished.
+  startedAt  DateTime?
+  finishedAt DateTime?
+  durationMs Int?
+
+  /// Bytes of `export.xml` the streaming parser read. A useful, non-identifying
+  /// measure of how big the export really was once unzipped.
+  xmlBytes BigInt?
+  /// Member files the archive contained that this app does not read.
+  ignoredFiles String @default("[]")
 
   removedAt DateTime?
 
+  /// Undo stamp — the same shape finance import batches carry. Set once; a
+  /// second undo is a no-op rather than a way to reach rows a later import
+  /// wrote onto the same fingerprints.
+  undoneAt    DateTime?
+  undoneCount Int       @default(0)
+  keptCount   Int       @default(0)
+
   metrics HealthMetric[]
+  records HealthRecord[]
 
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
   @@index([userId, createdAt])
+  @@index([userId, status])
+}
+
+/// A health record that is not a number-per-day: an ECG's summary, a
+/// medication entry, a clinical record from a connected provider, or a
+/// workout's route metadata.
+///
+/// Sleep and mindfulness sessions are deliberately NOT here: they are already
+/// intervals in `HealthMetric` (with stages, bounds and a source), and the
+/// Sleep page derives its per-night sessions from those rows rather than
+/// storing the same night twice.
+///
+/// One table rather than five keeps the ownership rule, the backup, the undo
+/// and the search path identical for every kind — the same reason "enum-like"
+/// columns are TEXT everywhere else in this schema. `detail` holds the
+/// kind-specific fields as JSON; nothing in the app parses it into behaviour,
+/// it is only ever displayed.
+///
+/// Deliberately NOT stored: ECG voltage traces, GPS coordinates, and the raw
+/// clinical FHIR payload. Those are the parts of an export whose value to this
+/// app is nil and whose sensitivity is highest, so the importer reads their
+/// metadata and drops the body.
+model HealthRecord {
+  id     String @id @default(cuid())
+  userId String
+  user   User   @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  /// ecg | medication | clinical | workout_route | mindful_session | sleep_session
+  kind String
+
+  /// Reporting day, so a record sits on the timeline with everything else.
+  date String // YYYY-MM-DD
+  recordedAt DateTime?
+  startAt    DateTime?
+  endAt      DateTime?
+
+  /// What the record is, in one line — "Sinus rhythm", "Metformin 500 mg".
+  title String
+  /// Secondary line: the classification, the issuer, the provider.
+  subtitle String?
+  /// Optional single number the kind is measured by (ECG average bpm, route
+  /// distance in km, session minutes). Null when the kind has no such number.
+  value Float?
+  unit  String @default("")
+
+  /// JSON object of kind-specific fields, bounded at write time. Display only.
+  detail String @default("{}")
+
+  /// manual | apple_health | csv — same vocabulary as HealthMetric.source.
+  source     String  @default("apple_health")
+  sourceApp  String?
+  externalId String?
+
+  /// Stable deduplication key, same contract as HealthMetric.fingerprint:
+  /// re-importing the same export upserts onto the same row instead of
+  /// duplicating. Nullable, and NULLs are distinct.
+  fingerprint String?
+
+  batchId String?
+  batch   HealthImportBatch? @relation(fields: [batchId], references: [id], onDelete: SetNull)
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@unique([userId, fingerprint])
+  @@index([userId, kind, date])
+  @@index([userId, date])
+  @@index([batchId])
 }
 
 // ---------------------------------------------------------------------------

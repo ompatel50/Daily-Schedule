@@ -66,6 +66,7 @@ const MODEL_BY_TABLE: Record<BackupTable, string> = {
   mealTemplateItems: "MealTemplateItem",
   healthImportBatches: "HealthImportBatch",
   healthMetrics: "HealthMetric",
+  healthRecords: "HealthRecord",
   goals: "Goal",
   goalEntries: "GoalEntry",
   scheduleRules: "ScheduleRule",
@@ -160,6 +161,17 @@ function sanitizeRow(table: BackupTable, raw: unknown): Record<string, unknown> 
         const date = value instanceof Date ? value : new Date(String(value));
         if (Number.isNaN(date.getTime())) return null;
         value = date;
+        break;
+      }
+      case "BigInt": {
+        // JSON has no BigInt, so the export writes a number and an older or
+        // hand-edited file may carry a numeric string. Both convert; anything
+        // fractional, negative or unparseable makes the row unusable.
+        if (typeof value === "bigint") break;
+        const numeric =
+          typeof value === "number" ? value : typeof value === "string" ? Number(value) : NaN;
+        if (!Number.isFinite(numeric) || numeric < 0 || !Number.isInteger(numeric)) return null;
+        value = BigInt(numeric);
         break;
       }
       default:
@@ -503,6 +515,15 @@ export async function restoreBackupForUser(
     return own(mapped);
   });
 
+  prepare("healthRecords", (row) => {
+    const mapped = withId(row);
+    if (!mapped) return null;
+    // A record survives losing its batch (optional link); a foreign batch id
+    // must never survive into this account.
+    mapped.batchId = inFile("healthImportBatches", row.batchId) ? map(row.batchId) : null;
+    return own(mapped);
+  });
+
   prepare("goals", (row) => {
     const mapped = withId(row);
     if (!mapped) return null;
@@ -747,6 +768,7 @@ export async function restoreBackupForUser(
         await db.habitLog.deleteMany({ where: { userId } });
         await db.habit.deleteMany({ where: { userId } });
         await db.healthMetric.deleteMany({ where: { userId } });
+        await db.healthRecord.deleteMany({ where: { userId } });
         await db.healthImportBatch.deleteMany({ where: { userId } });
         await db.journalEntry.deleteMany({ where: { userId } });
         await db.reminder.deleteMany({ where: { userId } });
@@ -846,6 +868,7 @@ export async function restoreBackupForUser(
     mealTemplates: await prisma.mealTemplate.count({ where: { userId } }),
     healthImportBatches: await prisma.healthImportBatch.count({ where: { userId } }),
     healthMetrics: await prisma.healthMetric.count({ where: { userId } }),
+    healthRecords: await prisma.healthRecord.count({ where: { userId } }),
     goals: await prisma.goal.count({ where: { userId } }),
     goalEntries: await prisma.goalEntry.count({ where: { userId } }),
     scheduleRules: await prisma.scheduleRule.count({ where: { userId } }),

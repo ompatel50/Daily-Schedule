@@ -72,7 +72,6 @@ describe("backup validation", () => {
   });
 
   it("v6 carries documents and task tags, in an order the links survive", () => {
-    expect(BACKUP_VERSION).toBe(6);
     expect(BACKUP_TABLES).toContain("documents");
     expect(BACKUP_TABLES).toContain("taskTags");
     // A tag join needs BOTH ends already restored.
@@ -91,6 +90,37 @@ describe("backup validation", () => {
     expect(result.counts.documents).toBe(2);
     expect(result.counts.taskTags).toBe(1);
     expect(result.warnings.join(" ")).not.toContain("unrecognised");
+  });
+
+  it("v7 carries health records, after the batches they belong to", () => {
+    expect(BACKUP_VERSION).toBe(7);
+    expect(BACKUP_TABLES).toContain("healthRecords");
+    // A record's batch link only survives if the batch was restored first.
+    expect(BACKUP_TABLES.indexOf("healthImportBatches")).toBeLessThan(
+      BACKUP_TABLES.indexOf("healthRecords"),
+    );
+
+    const result = inspectBackup(
+      backup({
+        version: 7,
+        data: {
+          healthImportBatches: [{ id: "hb1" }],
+          healthRecords: [{ id: "hr1" }, { id: "hr2" }],
+        },
+      }),
+    );
+    expect(result.ok).toBe(true);
+    expect(result.counts.healthRecords).toBe(2);
+    expect(result.warnings.join(" ")).not.toContain("unrecognised");
+  });
+
+  it("a v6 file (no health records) still inspects cleanly", () => {
+    const result = inspectBackup(
+      backup({ version: 6, data: { documents: [{ id: "d1" }], healthMetrics: [{ id: "m1" }] } }),
+    );
+    expect(result.ok).toBe(true);
+    expect(result.counts.healthRecords).toBe(0);
+    expect(result.warnings.join(" ")).toContain("format v6");
   });
 
   it("a v5 file (no documents, no task tags) still inspects cleanly", () => {

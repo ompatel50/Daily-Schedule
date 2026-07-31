@@ -33,15 +33,22 @@
  *      the join onto the existing `tags` vocabulary); budgets now carry
  *      `period` (monthly | weekly) and `alertThresholdPercent`, and import
  *      batches the undo stamp (`undoneAt`, `undoneCount`, `keptCount`).
+ * v7 — adds the Health module's non-numeric records (`healthRecords`: ECGs,
+ *      medications, clinical records, workout-route metadata). Health import
+ *      batches now also carry their own undo stamp, run timings
+ *      (`startedAt`, `finishedAt`, `durationMs`), per-kind counts and the
+ *      parser's notes; health metric rows may carry any of the metric types
+ *      the Apple Health importer added.
  *
- * A v1–v5 file restores into a v6 app unchanged: the missing tables simply
- * have no rows, the new columns take their defaults (a v5 budget arrives as
- * the monthly, alert-free budget it was), `npm run db:migrate` backfills an
- * every-day schedule for anything that arrives without one, and metric rows
- * that arrive without a fingerprint get one from the same migration — which
- * is exactly how those records behaved when the older backup was taken.
+ * A v1–v6 file restores into a v7 app unchanged: the missing tables simply
+ * have no rows, the new columns take their defaults (a v6 health batch
+ * arrives un-undone and untimed, which is exactly what it was), `npm run
+ * db:migrate` backfills an every-day schedule for anything that arrives
+ * without one, and metric rows that arrive without a fingerprint get one from
+ * the same migration — which is how those records behaved when the older
+ * backup was taken.
  */
-export const BACKUP_VERSION = 6;
+export const BACKUP_VERSION = 7;
 
 export interface BackupMetadata {
   /** Schema version of the backup format itself. */
@@ -92,6 +99,7 @@ export const BACKUP_TABLES = [
   "mealTemplateItems",
   "healthImportBatches",
   "healthMetrics",
+  "healthRecords",
   "goals",
   "goalEntries",
   "scheduleRules",
