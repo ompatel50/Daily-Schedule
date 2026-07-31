@@ -70,6 +70,40 @@ works exactly once; if all are spent, generate a new batch from Settings
 while signed in, or fall back to the reset script above. The flow is rate
 limited — after several failed tries, wait an hour.
 
+## A deploy is rejected before it even builds ("invalid maxDuration")
+
+Vercel validates a route's `maxDuration` against the account's plan **at deploy
+time** and fails the whole deployment rather than clamping the value. A number
+that is fine on one plan (fluid compute allows far more) breaks the deploy on
+Hobby, whose ceiling is 60 seconds.
+
+Nothing in lint, types, tests or the production build sees this — which is why
+`tests/deploy-config.test.ts` now holds every route in the app to
+`MAX_FUNCTION_SECONDS` (60, the highest value every plan accepts) and checks
+`vercel.json`'s cron cadence at the same time. If you raise a route's
+`maxDuration`, that test fails first, in CI, instead of the deploy failing
+later.
+
+The value must be a **literal**: Next.js statically analyses route segment
+config and refuses to build if it is an imported constant.
+
+## A health export is refused as too large on a hosted deployment
+
+Vercel rejects a request body above about **4.5 MB** before the function runs.
+The app knows this: when `VERCEL` is set it advertises and enforces that number
+rather than its own 2 GB ceiling, so the import page states the real limit up
+front and the refusal says the platform is the reason.
+
+1. **Set the real limit if you know it.** `HEALTH_MAX_UPLOAD_MB` overrides the
+   default — a reverse proxy with its own `client_max_body_size`, or a plan
+   with a higher body cap. It can never raise the app's own 2 GB ceiling.
+2. **Self-host for a genuinely large export.** `npm start` behind your own
+   proxy has neither the body cap nor the execution-time cap, and a real
+   multi-gigabyte Apple Health export needs both lifted.
+
+Nothing partial is ever written: an upload the platform rejects never reaches
+the app, and one the app rejects is deleted with its temporary file.
+
 ## A deploy fails during the migration step
 
 The build log shows `prisma migrate deploy` failing.
@@ -105,6 +139,10 @@ request never reached the app.
    restore into a self-hosted instance (whose limit is the app's own 16 MB
    ceiling), or wait — chunked backup import is a known possible improvement,
    not a promise. The export side always works regardless of size.
+
+Note this is the *backup* import, which travels through a server action. The
+**health** import does not: it streams to `/api/health/import`, and its limit is
+described in the section above.
 
 ## Push reminders don't arrive
 

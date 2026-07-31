@@ -244,7 +244,9 @@ happened, so "beat target" and "target 5 × 110 kg" stay legible afterwards.
 
 A full Health **section**, not a page: an overview plus Activity, Sleep, Heart, Body,
 Nutrition, Workouts, Vitals, Trends, Import and Import history, each on its own route so a view
-is shareable and the back button means something. Its data comes from manual entry and from
+is shareable and the back button means something. The overview leads with today's headline
+numbers and their direction of travel, then one card per area, last night's sleep, recent
+workouts, the health records you hold and the state of your imports. Its data comes from manual entry and from
 **Apple Health exports**, which are parsed **on the server** and previewed before anything is
 saved. There is no pretend "live watch sync" — a browser cannot subscribe to HealthKit; what
 actually works is importing the export file, and that is what this is.
@@ -293,6 +295,10 @@ streamed to the server, parsed there, and the preview shows what was found (cate
 date range, what is already present) while your health tables are still untouched. You choose
 what to bring in, per category, and only confirmation writes anything.
 
+Self-hosted, the importer accepts up to 2 GB. On a hosting platform the platform's own request
+limit binds first and the app says so up front rather than promising a size it cannot accept —
+on Vercel that is 4.5 MB, overridable with `HEALTH_MAX_UPLOAD_MB` when you know your real limit.
+
 Raw sensor samples are rolled up to one row per day per device, workouts import as real
 workouts, and anything that looks like a workout you already logged by hand is **skipped and
 reported, never merged**. Unsupported record types (audiograms, headphone audio levels, …) are
@@ -305,6 +311,24 @@ updates in place, and moves to the newer batch). Each import is a **batch you ca
 a preview of exactly what would be deleted *and what would be kept* — leaving manual entries,
 other batches and anything you have edited since untouched. Every derived number (goals, day
 scores, calendar, insights) is recalculated afterwards.
+
+**A reading you have edited stays yours.** A fingerprint is an identity, not a claim of
+ownership: a re-import refreshes rows it wrote itself, and refuses to write over one you entered
+by hand or corrected afterwards. Every such row is *reported* — in the preview, on the result
+screen and on the batch in the history — because a skip you are not told about is
+indistinguishable from data loss. The preview shows added / merged / already present / kept as
+yours per category before anything is written, and the same code produces the preview and the
+write, so the preview is a promise rather than an estimate. Ownership is re-read at confirmation
+time, so a row edited while an import sat staged is still protected.
+
+**`/health/imports` is where the state of every import lives**: how long ago the last successful
+one ran, how many have run and how they ended, how many readings were written, merged and kept
+as yours, and a searchable, filterable history with each run's counts, duration, source, day
+span, warnings and errors. A batch also records which version of the importer wrote it, so the
+history can say when a run predates the merge rules above. Alongside it, a panel of read-only
+**integrity checks** looks for the quiet failures — a metric this app has no rules for, a unit
+nothing can read back, an impossible value, a reading dated in the future — all as bounded
+aggregates that cost the same for four hundred readings as for four million.
 
 **CSV format** (template at `/health-template.csv`): header row with `metricType,value,date`
 required; `unit,startTime,endTime,subtype,source,externalId,notes` optional. Dates must be
@@ -793,7 +817,7 @@ npm run test:integration   # database-backed, against the disposable test databa
 npm run test:e2e       # Playwright browser suite (against a running production build)
 ```
 
-Three suites, each doing the job the others can't. The **unit suite** (968 tests) covers the pure
+Three suites, each doing the job the others can't. The **unit suite** (1,011 tests) covers the pure
 logic that would be expensive to get wrong:
 
 * **Scheduling** — every mode, both week-start settings, DST, leap years, month and year
@@ -840,13 +864,28 @@ logic that would be expensive to get wrong:
   folds to 400 rows in bounded heap, which is the property the whole streaming design exists
   for.
 * **Health import undo** — untouched rows removed, edited rows kept, linked rows kept.
+* **Health smart merge** — the rule a re-import applies to a reading it has seen before: create,
+  merge, skip as unchanged, or protect. Including the two that matter most — a row edited after
+  the import finished is protected, and the grace period that stops an import classifying *its
+  own* writes as edits — plus an assertion that merge and undo share one boundary instant, since
+  a row protected from re-import but removable by undo would be a contradiction the user could
+  see.
+* **Health integrity rules** — each check against aggregate numbers, and the negative case that
+  matters: every bounded metric accepts an ordinary, healthy range (a 34 bpm resting heart rate
+  is an athlete, not a fault), because a check that flags real data teaches you to ignore the
+  panel.
+* **Deployment configuration** — every route's `maxDuration` held to the value every hosting plan
+  accepts, `vercel.json`'s cron cadence held to the free plan's, and the upload limit resolving to
+  what the deployment can actually keep. This suite exists because a `maxDuration` above the plan
+  ceiling fails the *whole deployment* at deploy time, where lint, types, tests and the build
+  never see it.
 * Plus nutrition serving maths, the natural-language quick-add parser, planner recurrence, and
   day-key/time handling including a DST boundary.
 
 The unit tests are pure — no database, no fixtures, no mocking — because all the logic they cover
 lives in `src/lib/logic`.
 
-The **integration suite** (244 tests) runs against a real PostgreSQL — always the disposable
+The **integration suite** (263 tests) runs against a real PostgreSQL — always the disposable
 `personal_os_test` database, reset and re-migrated from zero each run — and covers what pure tests
 cannot: unique constraints, transaction rollback, backup import isolation, the health import end to end
 (stage → preview → confirm → re-import → incremental import → undo, with ownership refused from
@@ -864,15 +903,33 @@ periods against real ledger rows, task tags (creation by typing, vocabulary reus
 edit, the per-task cap, tag deletion leaving tasks standing, two users' identical tag names
 staying separate), a v7 backup round-trip that lands documents and tag links in the *importing*
 account, and a demo-data pass that seeds every new module and then removes exactly what it
-seeded. The **e2e suite** (45 tests) drives the built app in a real
+seeded. It also covers the health smart merge against real rows — a re-import protecting a
+reading edited after the previous import, merging one nobody touched, re-reading ownership at
+confirmation time rather than trusting a stale preview — the import dashboard's aggregates and
+recency, and the integrity checks (including that one account never sees another's).
+
+The **e2e suite** (49 tests) drives the built app in a real
 browser: signed-out redirects, password sign-in, the identical generic refusal for an unknown
 email and for a wrong password (so failed attempts reveal nothing about which emails exist), the
 full sign-up → recovery-codes → dashboard → sign-out → password-reset journey, surface postures,
 dialogs, responsive overflow and reduced motion — plus a complete Apple Health import round trip
 that **builds its own export archive** (so it runs against an empty database too), imports it,
 checks the data across the section, re-imports it as a no-op, and undoes it again, alongside the
-refusals for a non-export, malformed XML and an entity-declaring file. Its browser-test accounts
-come from `npm run seed:e2e`. CI (`.github/workflows/ci.yml`) runs lint, typecheck, all three suites,
+refusals for a non-export, malformed XML and an entity-declaring file. Two guards keep it honest
+rather than merely green: the import flow asserts a **clean console** (uncaught errors and
+console errors alike, excluding only the Vercel analytics 404 that every non-Vercel deployment
+produces), and every page in the Health section is asserted to **hydrate cleanly**, for an empty
+account and for the seeded one — a hydration mismatch makes React discard the tree and re-render,
+which silently swallows clicks and is invisible to types, lint and every other test.
+
+Its browser-test accounts come from `npm run seed:e2e`, which also prunes the throwaway accounts
+the sign-up journey creates and resets the rate-limit counters in the disposable database — the
+protection itself is untouched and asserted directly by the integration suite, but the counters
+are per-client-per-hour and a local server behind no proxy resolved every run to the same bucket,
+so a fourth run within the hour used to fail. Each run now also presents itself as its own client,
+which is what separate runs genuinely are.
+
+CI (`.github/workflows/ci.yml`) runs lint, typecheck, all three suites,
 migration validation and the production build on every push and pull request.
 
 ---

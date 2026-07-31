@@ -16,13 +16,16 @@ import { buildApplePlan, buildImportPlan } from "@/lib/logic/health-import/rollu
 import { parseHealthCsv } from "@/lib/logic/health-import/csv";
 import { parseAppleHealthArchive } from "@/server/apple-health/parse-archive";
 import {
+  IMPORT_FORMAT_VERSION,
   confirmHealthImport,
+  getImportDashboard,
   getStagedPreview,
   listImportBatches,
   previewBatchRemoval,
   removeImportBatch,
   stageImport,
 } from "@/server/health-import";
+import { getHealthIntegrityReport } from "@/server/health-integrity";
 import {
   cancelHealthImportAction,
   confirmHealthImportAction,
@@ -596,5 +599,301 @@ describe("history", () => {
     const preview = await stageArchive(alice);
     await confirmHealthImport(alice.id, preview.token, ["steps"]);
     expect(await listImportBatches(bob.id)).toHaveLength(0);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Smart merge, the import dashboard, and the integrity checks.
+// ---------------------------------------------------------------------------
+
+/** The same day's flights, one flight fuller than the committed fixture. */
+const FULLER_FLIGHTS = APPLE_EXPORT_XML_RICH.replace(
+  "</HealthData>",
+  '  <Record type="HKQuantityTypeIdentifierFlightsClimbed" sourceName="Phone" unit="count" startDate="2026-03-14 20:00:00 -0400" endDate="2026-03-14 20:01:00 -0400" value="5"/>\n</HealthData>',
+);
+
+describe("smart merge", () => {
+  /** Import flights once and hand back the single row it wrote. */
+  async function importFlights(user: User = alice) {
+    const preview = await stageArchive(user);
+    const result = await confirmHealthImport(user.id, preview.token, ["flights_climbed"]);
+    if (!result.ok) throw new Error(result.error);
+    const row = await prisma.healthMetric.findFirstOrThrow({
+      where: { userId: user.id, type: "flights_climbed" },
+    });
+    return { row, outcome: result.outcome };
+  }
+
+  /** Edit a stored reading the way the user would — after the import finished. */
+  async function editRow(id: string, value: number) {
+    // Comfortably past the one-second grace, so this is unambiguously an edit
+    // and not the import's own write landing late.
+    await prisma.healthMetric.update({
+      where: { id },
+      data: { value, updatedAt: new Date(Date.now() + 60_000) },
+    });
+  }
+
+  it("does not write over a reading the user edited after importing it", async () => {
+    const { row } = await importFlights();
+    expect(row.value).toBe(11);
+    await editRow(row.id, 9);
+
+    const second = await stageArchive(alice, FULLER_FLIGHTS);
+    // The preview promises it before anything is written.
+    const flights = second.categories.find((category) => category.key === "flights_climbed");
+    expect(flights?.protectedRows).toBe(1);
+    expect(flights?.updatedRows).toBe(0);
+    expect(second.warnings.join(" ")).toContain("left exactly as");
+
+    const result = await confirmHealthImport(alice.id, second.token, ["flights_climbed"]);
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.outcome.protectedRows).toBe(1);
+    expect(result.outcome.updated).toBe(0);
+    expect(result.outcome.imported).toBe(0);
+
+    // The correction survived, unchanged, and still belongs to the old batch.
+    const after = await prisma.healthMetric.findUniqueOrThrow({ where: { id: row.id } });
+    expect(after.value).toBe(9);
+    expect(after.batchId).toBe(row.batchId);
+  });
+
+  it("still merges a reading the import itself owns and nobody has touched", async () => {
+    const { row } = await importFlights();
+    const second = await stageArchive(alice, FULLER_FLIGHTS);
+    const flights = second.categories.find((category) => category.key === "flights_climbed");
+    expect(flights?.updatedRows).toBe(1);
+    expect(flights?.protectedRows).toBe(0);
+
+    const result = await confirmHealthImport(alice.id, second.token, ["flights_climbed"]);
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.outcome.updated).toBe(1);
+    expect(result.outcome.protectedRows).toBe(0);
+    const after = await prisma.healthMetric.findUniqueOrThrow({ where: { id: row.id } });
+    expect(after.value).toBe(16);
+  });
+
+  it("re-reads ownership at confirm time, not from the stale preview", async () => {
+    const { row } = await importFlights();
+    // Staged while the row was still the import's…
+    const second = await stageArchive(alice, FULLER_FLIGHTS);
+    expect(
+      second.categories.find((category) => category.key === "flights_climbed")?.updatedRows,
+    ).toBe(1);
+
+    // …then edited before the user got round to confirming.
+    await editRow(row.id, 3);
+
+    const result = await confirmHealthImport(alice.id, second.token, ["flights_climbed"]);
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.outcome.protectedRows).toBe(1);
+    expect(result.outcome.updated).toBe(0);
+    expect((await prisma.healthMetric.findUniqueOrThrow({ where: { id: row.id } })).value).toBe(3);
+  });
+
+  it("records what it protected on the batch, and stamps the pipeline version", async () => {
+    const { row } = await importFlights();
+    await editRow(row.id, 9);
+    const second = await stageArchive(alice, FULLER_FLIGHTS);
+    await confirmHealthImport(alice.id, second.token, ["flights_climbed"]);
+
+    const [latest] = await listImportBatches(alice.id, 1);
+    expect(latest.protectedRows).toBe(1);
+    expect(latest.formatVersion).toBe(IMPORT_FORMAT_VERSION);
+  });
+
+  it("protects a row whose batch belongs to another account", async () => {
+    // Constructed rather than imported: it is the shape a hand-edited database
+    // or a partially-restored backup produces, and the rule must hold for it.
+    const { row: bobRow } = await importFlights(bob);
+    const { row: aliceRow } = await importFlights(alice);
+    await prisma.healthMetric.update({
+      where: { id: aliceRow.id },
+      data: { batchId: bobRow.batchId },
+    });
+
+    const second = await stageArchive(alice, FULLER_FLIGHTS);
+    const result = await confirmHealthImport(alice.id, second.token, ["flights_climbed"]);
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.outcome.protectedRows).toBe(1);
+    expect(
+      (await prisma.healthMetric.findUniqueOrThrow({ where: { id: aliceRow.id } })).value,
+    ).toBe(11);
+  });
+
+  it("leaves a protected row undoable by the batch that actually wrote it", async () => {
+    // The two rules share a boundary instant, so a row protected from
+    // re-import must still be classified as edited — and therefore kept — by
+    // undo. The contradiction to avoid is a row neither rule will touch being
+    // silently removed by the other.
+    const { row } = await importFlights();
+    await editRow(row.id, 9);
+    const second = await stageArchive(alice, FULLER_FLIGHTS);
+    await confirmHealthImport(alice.id, second.token, ["flights_climbed"]);
+
+    const removal = await removeImportBatch(alice.id, row.batchId as string);
+    expect(removal.ok).toBe(true);
+    if (!removal.ok) return;
+    expect(removal.report.keptCount).toBe(1);
+    expect(
+      await prisma.healthMetric.findUnique({ where: { id: row.id } }),
+    ).not.toBeNull();
+  });
+});
+
+describe("the import dashboard", () => {
+  it("is empty and honest for an account that has never imported", async () => {
+    const dashboard = await getImportDashboard(alice.id, "2026-03-20");
+    expect(dashboard.batches).toEqual([]);
+    expect(dashboard.totals.runs).toBe(0);
+    expect(dashboard.lastSuccessful).toBeNull();
+    expect(dashboard.recency).toBe("never");
+    expect(dashboard.pending).toBe(0);
+    expect(dashboard.truncated).toBe(false);
+  });
+
+  it("totals every run, not only the ones on the page", async () => {
+    const first = await stageArchive(alice);
+    await confirmHealthImport(alice.id, first.token, ["steps", "flights_climbed"]);
+    const second = await stageCsv(alice);
+    await confirmHealthImport(alice.id, second.token, allCategories(second));
+
+    const dashboard = await getImportDashboard(alice.id, "2026-03-20", 1);
+    expect(dashboard.batches).toHaveLength(1);
+    expect(dashboard.truncated).toBe(true);
+    expect(dashboard.totals.runs).toBe(2);
+    expect(dashboard.totals.completed).toBe(2);
+    // The sum spans both batches even though only one was listed.
+    expect(dashboard.totals.readingsWritten).toBeGreaterThan(dashboard.batches[0].imported);
+  });
+
+  it("counts an undone import separately and stops offering it as the last success", async () => {
+    const preview = await stageArchive(alice);
+    const result = await confirmHealthImport(alice.id, preview.token, ["steps"]);
+    if (!result.ok) return;
+    await removeImportBatch(alice.id, result.outcome.batchId);
+
+    const dashboard = await getImportDashboard(alice.id, "2026-03-20");
+    expect(dashboard.totals.runs).toBe(1);
+    expect(dashboard.totals.undone).toBe(1);
+    expect(dashboard.totals.completed).toBe(0);
+    expect(dashboard.lastSuccessful).toBeNull();
+    expect(dashboard.recency).toBe("never");
+  });
+
+  it("surfaces a staged import that has not been confirmed", async () => {
+    await stageArchive(alice);
+    const dashboard = await getImportDashboard(alice.id, "2026-03-20");
+    expect(dashboard.pending).toBe(1);
+    // Staging writes no batch, so the history is still empty.
+    expect(dashboard.totals.runs).toBe(0);
+  });
+
+  it("dates recency against the user's today, not the host clock", async () => {
+    const preview = await stageArchive(alice);
+    const result = await confirmHealthImport(alice.id, preview.token, ["steps"]);
+    if (!result.ok) return;
+    await prisma.healthImportBatch.update({
+      where: { id: result.outcome.batchId },
+      data: {
+        createdAt: new Date("2026-03-01T09:00:00.000Z"),
+        finishedAt: new Date("2026-03-01T09:00:00.000Z"),
+      },
+    });
+
+    expect((await getImportDashboard(alice.id, "2026-03-01")).recency).toBe("today");
+    expect((await getImportDashboard(alice.id, "2026-03-05")).recency).toBe("week");
+    expect((await getImportDashboard(alice.id, "2026-03-20")).recency).toBe("month");
+    expect((await getImportDashboard(alice.id, "2026-06-20")).recency).toBe("stale");
+    expect((await getImportDashboard(alice.id, "2026-03-05")).lastSuccessful?.daysAgo).toBe(4);
+  });
+
+  it("shows one account nothing about another's imports", async () => {
+    const preview = await stageArchive(alice);
+    await confirmHealthImport(alice.id, preview.token, ["steps"]);
+    await stageArchive(alice);
+
+    const bobsView = await getImportDashboard(bob.id, "2026-03-20");
+    expect(bobsView.batches).toEqual([]);
+    expect(bobsView.totals.runs).toBe(0);
+    expect(bobsView.totals.readingsWritten).toBe(0);
+    expect(bobsView.pending).toBe(0);
+    expect(bobsView.lastSuccessful).toBeNull();
+  });
+});
+
+describe("integrity checks", () => {
+  it("reports a clean account as clean", async () => {
+    const preview = await stageArchive(alice);
+    await confirmHealthImport(alice.id, preview.token, allCategories(preview));
+    const report = await getHealthIntegrityReport(alice.id, "2026-03-20");
+    expect(report.clean).toBe(true);
+    expect(report.findings).toEqual([]);
+  });
+
+  it("catches a unit no aggregation can read back", async () => {
+    const preview = await stageArchive(alice);
+    await confirmHealthImport(alice.id, preview.token, ["lean_body_mass", "steps"]);
+    const mangled = await prisma.healthMetric.updateMany({
+      where: { userId: alice.id, type: "lean_body_mass" },
+      data: { unit: "stones-and-a-bit" },
+    });
+    expect(mangled.count).toBeGreaterThan(0);
+
+    const report = await getHealthIntegrityReport(alice.id, "2026-03-20");
+    const finding = report.findings.find((entry) => entry.code === "unreadable_unit");
+    expect(finding).toBeDefined();
+    expect(finding?.detail).toContain("stones-and-a-bit");
+    expect(finding?.detail).toContain("Lean body mass");
+    expect(report.clean).toBe(false);
+  });
+
+  it("catches a future-dated reading and an unknown metric", async () => {
+    const preview = await stageArchive(alice);
+    await confirmHealthImport(alice.id, preview.token, ["steps"]);
+    await prisma.healthMetric.create({
+      data: {
+        userId: alice.id,
+        date: "2099-01-01",
+        type: "steps",
+        value: 1000,
+        unit: "",
+        source: "manual",
+        fingerprint: "manual|steps|2099-01-01",
+      },
+    });
+    await prisma.healthMetric.create({
+      data: {
+        userId: alice.id,
+        date: "2026-03-14",
+        type: "hk_something_new",
+        value: 1,
+        unit: "",
+        source: "apple_health",
+        fingerprint: "ah|hk_something_new|2026-03-14|Watch",
+      },
+    });
+
+    const report = await getHealthIntegrityReport(alice.id, "2026-03-20");
+    expect(report.findings.map((finding) => finding.code)).toContain("future_dated");
+    expect(report.findings.map((finding) => finding.code)).toContain("unknown_metric_type");
+  });
+
+  it("never sees another account's rows", async () => {
+    const preview = await stageArchive(bob);
+    await confirmHealthImport(bob.id, preview.token, ["lean_body_mass"]);
+    const mangled = await prisma.healthMetric.updateMany({
+      where: { userId: bob.id, type: "lean_body_mass" },
+      data: { unit: "not-a-unit", date: "2099-01-01" },
+    });
+    expect(mangled.count).toBeGreaterThan(0);
+
+    // Bob's account is a mess; Alice's is untouched by it.
+    expect((await getHealthIntegrityReport(bob.id, "2026-03-20")).clean).toBe(false);
+    expect((await getHealthIntegrityReport(alice.id, "2026-03-20")).clean).toBe(true);
   });
 });

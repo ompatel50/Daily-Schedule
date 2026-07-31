@@ -975,3 +975,129 @@ describe("hosted export", () => {
     expect(names).not.toContain("Stranger's snack");
   });
 });
+
+// ---------------------------------------------------------------------------
+// v8: the smart-merge accounting and the importer's version stamp.
+// ---------------------------------------------------------------------------
+
+describe("health import batches across the backup boundary", () => {
+  beforeEach(async () => {
+    await resetDatabase();
+    ({ alice, bob } = await twoUsers());
+    actAs(alice);
+  });
+
+  it("carries protectedRows and formatVersion out and back", async () => {
+    const batch = await prisma.healthImportBatch.create({
+      data: {
+        userId: alice.id,
+        source: "apple_health",
+        fileType: "zip",
+        fileName: "export.zip",
+        status: "completed",
+        imported: 40,
+        updated: 3,
+        duplicates: 7,
+        protectedRows: 5,
+        formatVersion: 2,
+      },
+    });
+    await prisma.healthMetric.create({
+      data: {
+        userId: alice.id,
+        date: D1,
+        type: "steps",
+        value: 9000,
+        unit: "",
+        batchId: batch.id,
+        fingerprint: `ah|steps|${D1}|Watch`,
+      },
+    });
+
+    const exported = await exportBackup();
+    expect(exported.ok).toBe(true);
+    if (!exported.ok) return;
+    expect(exported.data.version).toBe(8);
+    const [row] = exported.data.data.healthImportBatches as Array<Record<string, unknown>>;
+    expect(row.protectedRows).toBe(5);
+    expect(row.formatVersion).toBe(2);
+
+    // Restored into a different account, the accounting survives and the
+    // metric still points at the batch — remapped into the new id space.
+    actAs(bob);
+    const restored = await importBackup(exported.data, "merge");
+    expect(restored.ok).toBe(true);
+
+    const theirs = await prisma.healthImportBatch.findFirstOrThrow({ where: { userId: bob.id } });
+    expect(theirs.protectedRows).toBe(5);
+    expect(theirs.formatVersion).toBe(2);
+    expect(theirs.id).not.toBe(batch.id);
+    const metric = await prisma.healthMetric.findFirstOrThrow({ where: { userId: bob.id } });
+    expect(metric.batchId).toBe(theirs.id);
+  });
+
+  it("restores a v7 batch — which had neither column — as an honest v1 batch that protected nothing", async () => {
+    const v7 = {
+      app: "personal-os",
+      version: 7,
+      exportedAt: NOW,
+      data: {
+        healthImportBatches: [
+          {
+            id: "old-batch",
+            userId: "old-local-user",
+            source: "apple_health",
+            fileType: "zip",
+            fileName: "export.zip",
+            status: "completed",
+            imported: 12,
+          },
+        ],
+        healthMetrics: [
+          {
+            id: "old-metric",
+            userId: "old-local-user",
+            date: D1,
+            type: "steps",
+            value: 5000,
+            unit: "",
+            batchId: "old-batch",
+            fingerprint: `ah|steps|${D1}|Watch`,
+          },
+        ],
+      },
+    };
+
+    const preview = await previewBackup(v7);
+    expect(preview.ok).toBe(true);
+    if (!preview.ok) return;
+    expect(preview.data.ok).toBe(true);
+    expect(preview.data.warnings.join(" ")).toContain("format v7");
+    const restored = await importBackup(v7, "merge");
+    expect(restored.ok).toBe(true);
+
+    const batch = await prisma.healthImportBatch.findFirstOrThrow({ where: { userId: alice.id } });
+    expect(batch.imported).toBe(12);
+    // The defaults are the truth about that batch, not a placeholder: the
+    // pipeline that wrote it was version 1 and it protected nothing, because
+    // protecting was not a thing it did.
+    expect(batch.protectedRows).toBe(0);
+    expect(batch.formatVersion).toBe(1);
+    const metric = await prisma.healthMetric.findFirstOrThrow({ where: { userId: alice.id } });
+    expect(metric.batchId).toBe(batch.id);
+  });
+
+  it("refuses a file claiming a format this app does not read", async () => {
+    // The guarantee the version bump buys: a v8 file taken to an older build
+    // is refused rather than silently restored without its newer columns.
+    const future = { app: "personal-os", version: 9, exportedAt: NOW, data: {} };
+    const preview = await previewBackup(future);
+    expect(preview.ok).toBe(true);
+    if (!preview.ok) return;
+    expect(preview.data.ok).toBe(false);
+    expect(preview.data.error).toMatch(/newer version/);
+
+    const restored = await importBackup(future, "merge");
+    expect(restored.ok).toBe(false);
+  });
+});

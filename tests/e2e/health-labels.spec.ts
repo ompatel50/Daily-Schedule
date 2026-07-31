@@ -72,7 +72,11 @@ test.describe("reading the seeded health data", () => {
   }) => {
     await page.goto("/health/imports");
     await expect(pageTitle(page, "Import history")).toBeVisible();
-    await expect(page.getByText(/· Apple Health/).first()).toBeVisible();
+    // The source is its own badge on the batch row rather than part of the
+    // meta line, so it is asserted inside the row it labels.
+    const batch = page.getByTestId("import-batch").first();
+    await expect(batch).toBeVisible();
+    await expect(batch.getByText("Apple Health", { exact: true })).toBeVisible();
     await expect(page.getByRole("button", { name: /^Undo the import/ }).first()).toBeVisible();
   });
 

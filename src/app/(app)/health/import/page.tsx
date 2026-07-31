@@ -8,6 +8,7 @@ import { SectionCard } from "@/components/shared/section-card";
 import { Button } from "@/components/ui/button";
 import { getCurrentUser } from "@/lib/db";
 import { formatBytes, formatNumber } from "@/lib/utils";
+import { uploadLimitNote } from "@/server/apple-health/limits";
 import { listImportBatches } from "@/server/health-import";
 
 export const metadata: Metadata = { title: "Import · Health" };
@@ -42,7 +43,10 @@ export default async function HealthImportPage() {
       <div className="grid gap-6 lg:grid-cols-3">
         <div className="space-y-6 lg:col-span-2">
           <SectionCard title="Import" icon={Upload} accent="text-domain-health">
-            <ImportWizard />
+            {/* The limit is resolved on the server so the page states what this
+                deployment can actually accept, rather than a number that a
+                hosting platform will quietly overrule at the edge. */}
+            <ImportWizard limitNote={uploadLimitNote()} />
           </SectionCard>
 
           <SectionCard title="How to export from Apple Health" icon={FileUp} accent="text-domain-planner">

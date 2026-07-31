@@ -504,9 +504,15 @@ export interface HealthDashboard {
     status: string;
     imported: number;
     duplicates: number;
+    /** Whole days between the import and the user's today. */
+    daysAgo: number;
   } | null;
   importCount: number;
   totalMetrics: number;
+  /** Distinct days in the last 30 that carry at least one reading. */
+  activeDays: number;
+  /** The earliest health day this account holds, for "history since". */
+  earliestDay: DayKey | null;
   hasAnyData: boolean;
 }
 
@@ -539,40 +545,79 @@ export async function getHealthDashboard(): Promise<HealthDashboard> {
     ...new Set([...HEADLINE_METRICS, ...Object.values(GROUP_SUMMARY_METRICS).flat()]),
   ];
 
-  const [rows, sleepSessions, workouts, records, recordCounts, batches, totalMetrics] =
-    await Promise.all([
-      prisma.healthMetric.findMany({
-        where: { userId: user.id, type: { in: wanted }, date: { gte: from, lte: date } },
-        select: ROW_SELECT,
-      }) as Promise<HealthRowLike[]>,
-      getSleepSessions(user.id, from, date, 1),
-      getHealthWorkouts(user.id, shiftDay(date, -89), date, 5),
-      getHealthRecords(user.id, { limit: 5 }),
-      countHealthRecordsByKind(user.id),
-      prisma.healthImportBatch.findMany({
-        where: { userId: user.id },
-        orderBy: { createdAt: "desc" },
-        take: 1,
-        select: {
-          id: true,
-          fileName: true,
-          createdAt: true,
-          status: true,
-          imported: true,
-          duplicates: true,
-        },
-      }),
-      prisma.healthMetric.count({ where: { userId: user.id } }),
-    ]);
+  const [
+    rows,
+    sleepSessions,
+    workouts,
+    records,
+    recordCounts,
+    batches,
+    totalMetrics,
+    importCount,
+    earliest,
+  ] = await Promise.all([
+    prisma.healthMetric.findMany({
+      where: { userId: user.id, type: { in: wanted }, date: { gte: from, lte: date } },
+      select: ROW_SELECT,
+    }) as Promise<HealthRowLike[]>,
+    getSleepSessions(user.id, from, date, 1),
+    getHealthWorkouts(user.id, shiftDay(date, -89), date, 5),
+    getHealthRecords(user.id, { limit: 5 }),
+    countHealthRecordsByKind(user.id),
+    prisma.healthImportBatch.findMany({
+      where: { userId: user.id },
+      orderBy: { createdAt: "desc" },
+      take: 1,
+      select: {
+        id: true,
+        fileName: true,
+        createdAt: true,
+        finishedAt: true,
+        status: true,
+        imported: true,
+        duplicates: true,
+      },
+    }),
+    prisma.healthMetric.count({ where: { userId: user.id } }),
+    // Was a sequential await after this block — one avoidable round trip on
+    // every render of the section's busiest page.
+    prisma.healthImportBatch.count({ where: { userId: user.id } }),
+    prisma.healthMetric.findFirst({
+      where: { userId: user.id },
+      orderBy: { date: "asc" },
+      select: { date: true },
+    }),
+  ]);
 
-  const importCount = await prisma.healthImportBatch.count({ where: { userId: user.id } });
   const days = dayRange(from, date);
   const todayRows = rows.filter((row) => row.date === date);
 
+  /**
+   * Partition once, not once per metric.
+   *
+   * `buildSeries` filters the whole 30-day row set by type, and the overview
+   * asks for around twenty-five metrics — so the naive shape walks every row
+   * twenty-five times. Grouping first makes it one pass plus a lookup, which
+   * matters on an account whose thirty days hold several thousand rows.
+   */
+  const rowsByType = new Map<string, HealthRowLike[]>();
+  for (const row of rows) {
+    const group = rowsByType.get(row.type);
+    if (group) group.push(row);
+    else rowsByType.set(row.type, [row]);
+  }
+  const todayRowsByType = new Map<string, HealthRowLike[]>();
+  for (const row of todayRows) {
+    const group = todayRowsByType.get(row.type);
+    if (group) group.push(row);
+    else todayRowsByType.set(row.type, [row]);
+  }
+
   const metricFor = (type: HealthMetricType): OverviewMetric => {
     const meta = HEALTH_METRIC_META[type];
-    const todayValue = aggregateDay(type, todayRows);
-    const series = buildSeries(type, rows, days, user.unitSystem, undefined);
+    const ofType = rowsByType.get(type) ?? [];
+    const todayValue = aggregateDay(type, todayRowsByType.get(type) ?? []);
+    const series = buildSeries(type, ofType, days, user.unitSystem, undefined);
     return {
       type,
       label: meta.label,
@@ -595,6 +640,13 @@ export async function getHealthDashboard(): Promise<HealthDashboard> {
     metrics: GROUP_SUMMARY_METRICS[group].map(metricFor),
   }));
 
+  // How many of the last thirty days carry a reading — the single most useful
+  // measure of whether the data behind these cards is continuous or a patch.
+  const activeDays = new Set(rows.map((row) => row.date)).size;
+
+  const lastBatch = batches[0];
+  const lastImportAt = lastBatch ? (lastBatch.finishedAt ?? lastBatch.createdAt) : null;
+
   return {
     date,
     unitSystem: user.unitSystem,
@@ -604,9 +656,33 @@ export async function getHealthDashboard(): Promise<HealthDashboard> {
     workouts,
     records,
     recordCounts,
-    lastImport: batches[0] ?? null,
+    lastImport:
+      lastBatch && lastImportAt
+        ? {
+            id: lastBatch.id,
+            fileName: lastBatch.fileName,
+            createdAt: lastBatch.createdAt,
+            status: lastBatch.status,
+            imported: lastBatch.imported,
+            duplicates: lastBatch.duplicates,
+            daysAgo: wholeDaysBetween(lastImportAt.toISOString().slice(0, 10) as DayKey, date),
+          }
+        : null,
     importCount,
     totalMetrics,
+    activeDays,
+    earliestDay: (earliest?.date as DayKey | undefined) ?? null,
     hasAnyData: totalMetrics > 0 || workouts.length > 0 || records.length > 0,
   };
+}
+
+/**
+ * Whole days between two day keys, compared at midday UTC so a daylight-saving
+ * boundary cannot turn a one-day gap into 0.96 of one.
+ */
+function wholeDaysBetween(from: DayKey, to: DayKey): number {
+  return Math.max(
+    0,
+    Math.round((Date.parse(`${to}T12:00:00Z`) - Date.parse(`${from}T12:00:00Z`)) / 86_400_000),
+  );
 }

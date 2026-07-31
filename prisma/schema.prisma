@@ -1051,6 +1051,23 @@ model HealthImportBatch {
 
   removedAt DateTime?
 
+  /// Readings the import deliberately did NOT write over, because they were no
+  /// longer its to change: entered by hand, or edited by the user after an
+  /// earlier import wrote them. Counted separately from `duplicates` (already
+  /// identical) because the two mean opposite things — one is "nothing to do",
+  /// the other is "there was something to do and we chose not to".
+  /// See src/lib/logic/health-import/merge.ts.
+  protectedRows Int @default(0)
+
+  /// Which version of the import pipeline produced this batch.
+  ///
+  /// The importer's semantics have changed once already (browser parsing →
+  /// server streaming) and will again. Without a stamp, a batch from an older
+  /// pipeline is indistinguishable from a current one, so history cannot say
+  /// what its counts meant and a future migration cannot find the rows it needs
+  /// to revisit. Batches written before this column default to 1.
+  formatVersion Int @default(1)
+
   /// Undo stamp — the same shape finance import batches carry. Set once; a
   /// second undo is a no-op rather than a way to reach rows a later import
   /// wrote onto the same fingerprints.

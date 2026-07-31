@@ -10,6 +10,7 @@
 import { beforeAll, beforeEach, describe, expect, it } from "vitest";
 
 import { prisma } from "@/lib/prisma";
+import { BACKUP_VERSION } from "@/lib/backup-format";
 import { monthRange, shiftDay, weekRange } from "@/lib/date";
 import { budgetThresholdReminderKey, dueReminderKey } from "@/lib/logic/reminders";
 import { todayIn } from "@/lib/logic/schedule";
@@ -735,7 +736,8 @@ describe("backup round-trip for the new records", () => {
     const exported = await exportBackup();
     expect(exported.ok).toBe(true);
     if (!exported.ok) return;
-    expect(exported.data.version).toBe(7);
+    // The export always writes the current format; the assertion tracks it.
+    expect(exported.data.version).toBe(BACKUP_VERSION);
     expect(exported.data.data.documents).toHaveLength(1);
     expect(exported.data.data.taskTags).toHaveLength(2);
 

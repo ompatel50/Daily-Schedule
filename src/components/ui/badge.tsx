@@ -22,11 +22,26 @@ const badgeVariants = cva(
 );
 
 export interface BadgeProps
-  extends React.HTMLAttributes<HTMLDivElement>,
+  extends React.HTMLAttributes<HTMLSpanElement>,
     VariantProps<typeof badgeVariants> {}
 
+/**
+ * A `span`, not a `div`, and that is load-bearing.
+ *
+ * A badge is inline content — it is captioned by a sentence about as often as
+ * it sits in a row of its own. As a `div` it was a block element, so writing
+ * `<p>…<Badge/>…</p>` produced invalid HTML: the parser hoists the block out of
+ * the paragraph, the DOM stops matching what the server rendered, React
+ * discards the tree and re-renders, and any click landing in that window is
+ * silently lost. That happened — an undo button stopped opening its dialog,
+ * deterministically, with no symptom anywhere but a minified hydration error.
+ *
+ * The base class is already `inline-flex`, so the two render identically; the
+ * span simply makes the mistake impossible instead of leaving it to be
+ * rediscovered.
+ */
 function Badge({ className, variant, ...props }: BadgeProps) {
-  return <div className={cn(badgeVariants({ variant }), className)} {...props} />;
+  return <span className={cn(badgeVariants({ variant }), className)} {...props} />;
 }
 
 export { Badge, badgeVariants };

@@ -15,7 +15,7 @@ import {
   AppleImportError,
   parseAppleHealthArchive,
 } from "@/server/apple-health/parse-archive";
-import { MAX_UPLOAD_BYTES } from "@/server/apple-health/limits";
+import { formatLimit, resolveUploadLimit } from "@/server/apple-health/limits";
 import { detectUploadType, readCsvFile } from "@/server/apple-health/read-text";
 import { stageImport } from "@/server/health-import";
 import { logRedactedError } from "@/server/safe-error";
@@ -57,7 +57,14 @@ export const runtime = "nodejs";
  * plan at deploy time — a value above the plan's ceiling fails the whole
  * deployment rather than being clamped — and the ceiling is 60 s on Hobby.
  * 60 is therefore the highest value every plan accepts, and it is ample: a
- * 181 MB export.xml parses in about five seconds (docs/performance-measurement.md).
+ * 181 MB export.xml parses in about five seconds
+ * (docs/performance-measurement.md).
+ *
+ * It has to be a **literal**: Next.js statically analyses route segment config
+ * and refuses the build outright for an imported constant. So the number lives
+ * here and `MAX_FUNCTION_SECONDS` is what `tests/deploy-config.test.ts` holds
+ * every route to — a raised value is otherwise a *deploy-time* failure, which
+ * is the worst place to discover one.
  *
  * Self-hosted deployments ignore this entirely — `npm start` has no such
  * limit — which is the answer for an export large enough to need more.
@@ -70,12 +77,13 @@ export async function POST(request: NextRequest): Promise<NextResponse> {
   const user = await getCurrentUser();
   if (!user) return NextResponse.json({ ok: false, error: "Not signed in." }, { status: 401 });
 
+  // Resolved per request, not per module load, so an operator can change the
+  // override without a rebuild and tests can exercise both shapes.
+  const limit = resolveUploadLimit();
+
   const declaredLength = Number(request.headers.get("content-length") ?? "0");
-  if (Number.isFinite(declaredLength) && declaredLength > MAX_UPLOAD_BYTES) {
-    return NextResponse.json(
-      { ok: false, error: `That file is larger than the ${gib(MAX_UPLOAD_BYTES)} upload limit.` },
-      { status: 413 },
-    );
+  if (Number.isFinite(declaredLength) && declaredLength > limit.bytes) {
+    return NextResponse.json({ ok: false, error: tooLargeMessage(limit) }, { status: 413 });
   }
   if (!request.body) {
     return NextResponse.json({ ok: false, error: "No file was uploaded." }, { status: 400 });
@@ -90,7 +98,7 @@ export async function POST(request: NextRequest): Promise<NextResponse> {
   const path = join(directory, `upload-${randomUUID()}`);
 
   try {
-    const bytes = await writeBounded(request.body, path, MAX_UPLOAD_BYTES);
+    const bytes = await writeBounded(request.body, path, limit.bytes);
     if (bytes === 0) {
       return NextResponse.json({ ok: false, error: "That file is empty." }, { status: 400 });
     }
@@ -122,10 +130,7 @@ export async function POST(request: NextRequest): Promise<NextResponse> {
     return NextResponse.json({ ok: true, preview: staged.preview });
   } catch (error) {
     if (error instanceof UploadTooLarge) {
-      return NextResponse.json(
-        { ok: false, error: `That file is larger than the ${gib(MAX_UPLOAD_BYTES)} upload limit.` },
-        { status: 413 },
-      );
+      return NextResponse.json({ ok: false, error: tooLargeMessage(limit) }, { status: 413 });
     }
     if (error instanceof AppleImportError) {
       return NextResponse.json({ ok: false, error: error.message }, { status: 400 });
@@ -215,6 +220,15 @@ function decodeFileName(raw: string): string {
   }
 }
 
-function gib(bytes: number): string {
-  return `${Math.round(bytes / (1024 * 1024 * 1024))} GB`;
+/**
+ * The refusal, phrased so the user can act on it. When a hosting platform is
+ * the binding constraint it says so — otherwise "larger than the 4.5 MB limit"
+ * reads as an arbitrary decision this app made, and the user has no way to know
+ * that self-hosting lifts it.
+ */
+function tooLargeMessage(limit: ReturnType<typeof resolveUploadLimit>): string {
+  const size = formatLimit(limit.bytes);
+  return limit.platformBound
+    ? `That file is larger than the ${size} this deployment accepts. The hosting platform caps request bodies; a self-hosted instance has no such limit.`
+    : `That file is larger than the ${size} upload limit.`;
 }

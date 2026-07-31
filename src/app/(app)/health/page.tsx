@@ -57,6 +57,40 @@ function statHint(metric: OverviewMetric | undefined): string {
   return metric.sources.length > 0 ? metric.sources.join(" · ") : "logged today";
 }
 
+/**
+ * The direction-of-travel badge on a headline tile.
+ *
+ * `StatCard` colours a delta by sign, so a metric where *down* is better —
+ * resting heart rate — has to say so or a falling number reads as bad news.
+ * Neutral metrics show no delta at all rather than an arrow with no meaning.
+ */
+function statDelta(metric: OverviewMetric | undefined): {
+  delta?: number;
+  deltaInverted?: boolean;
+} {
+  if (!metric || metric.changePercent === null || metric.goodDirection === "neutral") return {};
+  return { delta: metric.changePercent, deltaInverted: metric.goodDirection === "down" };
+}
+
+/** "3 days ago", in the words a person would use. */
+function agoLabel(daysAgo: number): string {
+  if (daysAgo <= 0) return "today";
+  if (daysAgo === 1) return "yesterday";
+  if (daysAgo < 31) return `${daysAgo} days ago`;
+  if (daysAgo < 365) return `${Math.round(daysAgo / 30)} months ago`;
+  return "over a year ago";
+}
+
+/** The subpages worth one click from the overview, in the section's own order. */
+const QUICK_LINKS = [
+  { href: "/health/activity", label: "Activity" },
+  { href: "/health/sleep", label: "Sleep" },
+  { href: "/health/heart", label: "Heart" },
+  { href: "/health/body", label: "Body" },
+  { href: "/health/trends", label: "Trends" },
+  { href: "/health/imports", label: "Imports" },
+] as const;
+
 export default async function HealthPage() {
   const dashboard = await getHealthDashboard();
   const headline = new Map(dashboard.headline.map((metric) => [metric.type, metric]));
@@ -100,7 +134,14 @@ export default async function HealthPage() {
     <>
       <PageHeader
         title="Health"
-        description={`${formatDay(dashboard.date, "EEEE, MMMM d")} · ${formatNumber(dashboard.totalMetrics)} readings across ${dashboard.importCount} ${dashboard.importCount === 1 ? "import" : "imports"}`}
+        description={[
+          formatDay(dashboard.date, "EEEE, MMMM d"),
+          `${formatNumber(dashboard.totalMetrics)} readings`,
+          dashboard.earliestDay ? `since ${formatDay(dashboard.earliestDay, "MMM yyyy")}` : null,
+          `${dashboard.activeDays}/30 recent days with data`,
+        ]
+          .filter(Boolean)
+          .join(" · ")}
         actions={
           <Button asChild size="sm">
             <Link href="/health/import">
@@ -110,6 +151,20 @@ export default async function HealthPage() {
         }
       />
 
+      {/* One click to anywhere in the section, without going via the tab bar.
+          Wraps and scrolls with the viewport rather than overflowing it. */}
+      <nav aria-label="Health shortcuts" className="mb-6 flex flex-wrap gap-2">
+        {QUICK_LINKS.map((link) => (
+          <Link
+            key={link.href}
+            href={link.href}
+            className="rounded-lg border px-3 py-1.5 text-xs font-medium text-muted-foreground transition-colors hover:bg-accent hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+          >
+            {link.label}
+          </Link>
+        ))}
+      </nav>
+
       <div className="stat-grid mb-6">
         <StatCard
           label="Steps today"
@@ -118,6 +173,7 @@ export default async function HealthPage() {
           icon={Activity}
           accent="text-domain-habit"
           href="/health/activity"
+          {...statDelta(headline.get("steps"))}
         />
         <StatCard
           label="Active calories"
@@ -126,6 +182,7 @@ export default async function HealthPage() {
           icon={Flame}
           accent="text-domain-workout"
           href="/health/activity"
+          {...statDelta(headline.get("active_calories"))}
         />
         <StatCard
           label="Sleep"
@@ -134,6 +191,7 @@ export default async function HealthPage() {
           icon={Moon}
           accent="text-domain-planner"
           href="/health/sleep"
+          {...statDelta(headline.get("sleep_hours"))}
         />
         <StatCard
           label="Resting HR"
@@ -142,6 +200,7 @@ export default async function HealthPage() {
           icon={HeartPulse}
           accent="text-domain-health"
           href="/health/heart"
+          {...statDelta(headline.get("resting_hr"))}
         />
       </div>
 
@@ -170,7 +229,7 @@ export default async function HealthPage() {
                 >
                   {withValues.length === 0 ? (
                     <p className="rounded-lg border border-dashed px-3 py-4 text-center text-xs text-muted-foreground">
-                      Nothing recorded yet.
+                      Nothing recorded in the last 30 days.
                     </p>
                   ) : (
                     <dl className="space-y-1.5">
@@ -179,7 +238,10 @@ export default async function HealthPage() {
                           key={metric.type}
                           className="flex items-baseline justify-between gap-3 border-b pb-1.5 text-sm last:border-0 last:pb-0"
                         >
-                          <dt className="truncate text-muted-foreground">{metric.label}</dt>
+                          {/* Wraps instead of truncating: "Dietary calories"
+                              and "Blood pressure" both lose their meaning at
+                              the width these cards take on a narrow window. */}
+                          <dt className="min-w-0 text-muted-foreground">{metric.label}</dt>
                           <dd className="tabular shrink-0 text-right">
                             {metric.value !== null
                               ? formatNumber(metric.value, metric.decimals)
@@ -364,11 +426,15 @@ export default async function HealthPage() {
             title="Imports"
             icon={History}
             accent="text-muted-foreground"
-            description="Every import can be undone as a unit"
+            description={
+              dashboard.importCount === 0
+                ? "Every import can be undone as a unit"
+                : `${formatNumber(dashboard.importCount)} ${dashboard.importCount === 1 ? "import" : "imports"} · each undoable as a unit`
+            }
             action={
               <Link
                 href="/health/imports"
-                className="text-xs text-muted-foreground underline underline-offset-2 hover:text-foreground"
+                className="shrink-0 text-xs text-muted-foreground underline underline-offset-2 hover:text-foreground"
               >
                 History
               </Link>
@@ -376,20 +442,32 @@ export default async function HealthPage() {
           >
             {dashboard.lastImport ? (
               <div className="text-sm">
-                <p className="truncate font-medium">{dashboard.lastImport.fileName}</p>
+                {/* The name of a file the user chose — never elided into an
+                    ellipsis they cannot expand. */}
+                <p className="break-all font-medium">{dashboard.lastImport.fileName}</p>
                 <p className="mt-0.5 text-xs text-muted-foreground">
-                  {formatDay(dashboard.lastImport.createdAt.toISOString().slice(0, 10), "MMM d, yyyy")}{" "}
-                  · {formatNumber(dashboard.lastImport.imported)} new ·{" "}
+                  {/* Days-ago is computed against the user's own today on the
+                      server; formatting the instant here would have used the
+                      host's UTC day and been off by one either side of midnight. */}
+                  {agoLabel(dashboard.lastImport.daysAgo)} ·{" "}
+                  {formatNumber(dashboard.lastImport.imported)} new ·{" "}
                   {formatNumber(dashboard.lastImport.duplicates)} already present
+                  {dashboard.lastImport.status === "removed" ? " · undone" : ""}
                 </p>
-                <Button asChild size="sm" variant="outline" className="mt-3">
-                  <Link href="/health/import">Import another export</Link>
-                </Button>
+                <div className="mt-3 flex flex-wrap gap-2">
+                  <Button asChild size="sm" variant="outline">
+                    <Link href="/health/import">Import another export</Link>
+                  </Button>
+                  <Button asChild size="sm" variant="ghost">
+                    <Link href="/health/imports">See all imports</Link>
+                  </Button>
+                </div>
               </div>
             ) : (
               <div className="text-sm">
                 <p className="text-xs text-muted-foreground">
-                  Nothing imported yet. An Apple Health export fills in years of history in one go.
+                  Nothing imported yet. An Apple Health export fills in years of history in one go,
+                  and re-importing a later one only adds what is new.
                 </p>
                 <Button asChild size="sm" className="mt-3">
                   <Link href="/health/import">Import health data</Link>

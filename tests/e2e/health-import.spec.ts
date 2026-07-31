@@ -15,15 +15,46 @@ import { STORAGE } from "./auth";
  *
  * The export is built here rather than fixture-loaded, so this runs against
  * any database including CI's empty one, and every run cleans up after itself
- * by undoing the import it created. It runs as `alice` — the account this
- * suite is allowed to write to.
+ * by undoing the import it created.
+ *
+ * It runs as `importer` — an account no other spec touches. Spec files run in
+ * parallel across workers, and this one writes a month of readings, rebuilds
+ * every affected day, and then undoes all of it; sharing an account with the
+ * manual-entry check made the two race for the same rows.
  */
 
-test.use({ storageState: STORAGE.alice });
+test.use({ storageState: STORAGE.importer });
 test.describe.configure({ mode: "serial" });
 // Uploading, parsing and writing a 30-day export, then undoing it, is more
 // than the suite's default 30 s allows on a cold CI runner.
 test.setTimeout(180_000);
+
+/**
+ * Console errors are a failure, not a warning — collected per test and asserted
+ * at the end of each one.
+ *
+ * The single exclusion is Vercel's analytics script, which 404s whenever the
+ * app runs anywhere other than the Vercel platform. That is a property of the
+ * environment, not of this app, and every other console error is real.
+ */
+const IGNORED_CONSOLE = [/_vercel\/insights/];
+
+function watchConsole(page: Page): () => string[] {
+  const errors: string[] = [];
+  page.on("console", (message) => {
+    if (message.type() !== "error") return;
+    // A failed resource load reports a generic "Failed to load resource: 404"
+    // and puts the URL in the location instead, so both have to be considered:
+    // matching on the text alone can neither exclude the known-noisy request
+    // nor tell a reader which request failed.
+    const where = message.location()?.url ?? "";
+    const entry = where ? `${message.text()} (${where})` : message.text();
+    if (IGNORED_CONSOLE.some((pattern) => pattern.test(entry))) return;
+    errors.push(entry);
+  });
+  page.on("pageerror", (error) => errors.push(`uncaught: ${error.message}`));
+  return () => errors;
+}
 
 /** A minimal ZIP writer: deflate each member, then a central directory. */
 function buildZip(members: Array<{ name: string; content: string }>): Buffer {
@@ -173,6 +204,7 @@ async function upload(page: Page) {
  */
 async function expectRefusal(page: Page, file: string, reason: RegExp) {
   await page.goto("/health/import");
+  await expect(page.getByRole("heading", { level: 2, name: "Import health data" })).toBeVisible();
   // Both waits are armed BEFORE the upload starts, which is the whole point:
   // a refusal for a tiny file is near-instant, so anything set up afterwards
   // is racing an outcome that has already happened.
@@ -197,6 +229,8 @@ async function expectRefusal(page: Page, file: string, reason: RegExp) {
 }
 
 test("imports an Apple Health export end to end, then undoes it", async ({ page }) => {
+  const consoleErrors = watchConsole(page);
+
   // --- preview ---------------------------------------------------------------
   await upload(page);
   const dialog = page.getByRole("dialog");
@@ -236,29 +270,71 @@ test("imports an Apple Health export end to end, then undoes it", async ({ page 
 
   // --- re-importing the same file writes nothing -----------------------------
   await upload(page);
-  const again = (await page.getByRole("dialog").textContent()) ?? "";
-  expect(again).toContain("already present");
-  // No "<n> new" badge anywhere: every row the second file carries is one the
-  // first already wrote. Matched as the badge's own shape rather than the bare
-  // word, which could legitimately appear in a warning.
+  const previewDialog = page.getByRole("dialog");
+  // Wait for a badge to exist before reading the dialog's text: `textContent`
+  // is a single snapshot, so taking it the instant the heading appears can
+  // catch the dialog before its category list has rendered.
+  await expect(previewDialog.getByText(/already present/).first()).toBeVisible();
+  const again = (await previewDialog.textContent()) ?? "";
+  // No "<n> new" and no "<n> merged": every row the second file carries is one
+  // the first already wrote, unchanged. Matched as the badges' own shapes
+  // rather than the bare words, which could legitimately appear in a warning.
   expect(again).not.toMatch(/\d+ new/);
+  expect(again).not.toMatch(/\d+ merged/);
   await page.getByRole("button", { name: /Cancel/ }).click();
+  await expect(previewDialog).toBeHidden();
 
   // --- undo ------------------------------------------------------------------
   await page.goto("/health/imports");
-  await page
-    .getByRole("button", { name: /^Undo the import/ })
-    .first()
-    .click();
+  const undoButton = page.getByRole("button", { name: /^Undo the import/ }).first();
+  await expect(undoButton).toBeVisible();
+  await undoButton.click();
+
   const undoDialog = page.getByRole("dialog");
   await expect(undoDialog.getByRole("heading", { name: "Undo this import?" })).toBeVisible();
   await expect(undoDialog.getByText(/readings/).first()).toBeVisible();
   await undoDialog.getByRole("button", { name: "Undo import" }).click();
-  await expect(page.getByText(/^Undone/).first()).toBeVisible({ timeout: 60_000 });
+
+  // Asserted on DURABLE state, never on the toast. The success toast dismisses
+  // itself after a few seconds, so on a slow runner the assertion can arrive
+  // after the thing it is looking for has already gone — which is the exact
+  // race that made the refusal cases flaky. The batch row's own "Undone …"
+  // line and the disappearance of its undo button survive indefinitely, and
+  // they are what actually proves the undo happened.
+  await expect(undoDialog).toBeHidden({ timeout: 120_000 });
+  await expect(page.getByTestId("import-batch").first()).toContainText(/Undone/, {
+    timeout: 120_000,
+  });
+  await expect(page.getByRole("button", { name: /^Undo the import/ })).toHaveCount(0);
 
   // The medication it wrote is gone with it.
   await page.goto("/health/vitals");
   await expect(page.getByText(MEDICATION)).toBeHidden();
+
+  expect(consoleErrors(), "the import round trip must log no console errors").toEqual([]);
+});
+
+test("the import dashboard reports the run, and the integrity checks pass", async ({ page }) => {
+  const consoleErrors = watchConsole(page);
+  await page.goto("/health/imports");
+  await expect(page.getByRole("heading", { level: 2, name: "Import history" })).toBeVisible();
+
+  // The dashboard tiles, which are aggregates over every batch rather than
+  // sums of the visible page.
+  for (const tile of ["Last import", "Imports run", "Readings written", "Kept as yours"]) {
+    await expect(page.getByText(tile, { exact: true })).toBeVisible();
+  }
+
+  // The integrity panel always renders a verdict. What is asserted is the
+  // absence of the two findings THIS importer could have caused — a metric it
+  // has no rules for, or a unit no aggregation can read back. Asserting "every
+  // check passed" instead would make the test depend on whatever else the
+  // account happens to hold, which is not what it is here to measure.
+  await expect(page.getByText("Data integrity")).toBeVisible();
+  await expect(page.getByText(/unrecognised metric/)).toHaveCount(0);
+  await expect(page.getByText(/cannot be read back/)).toHaveCount(0);
+
+  expect(consoleErrors(), "the import dashboard must log no console errors").toEqual([]);
 });
 
 test("refuses a file that is not a health export, and writes nothing", async ({ page }) => {

@@ -14,3 +14,8 @@ setup("sign in as alice@example.com", async ({ page }) => {
   await signInWithPassword(page, "alice@example.com");
   await page.context().storageState({ path: STORAGE.alice });
 });
+
+setup("sign in as importer@example.com", async ({ page }) => {
+  await signInWithPassword(page, "importer@example.com");
+  await page.context().storageState({ path: STORAGE.importer });
+});

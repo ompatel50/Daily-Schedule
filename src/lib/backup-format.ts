@@ -39,16 +39,25 @@
  *      (`startedAt`, `finishedAt`, `durationMs`), per-kind counts and the
  *      parser's notes; health metric rows may carry any of the metric types
  *      the Apple Health importer added.
+ * v8 — health import batches carry the smart-merge accounting
+ *      (`protectedRows`: readings a re-import deliberately left alone because
+ *      the user had edited them) and `formatVersion`, which says **which
+ *      version of the importer wrote the batch**. No new tables.
  *
- * A v1–v6 file restores into a v7 app unchanged: the missing tables simply
- * have no rows, the new columns take their defaults (a v6 health batch
- * arrives un-undone and untimed, which is exactly what it was), `npm run
- * db:migrate` backfills an every-day schedule for anything that arrives
- * without one, and metric rows that arrive without a fingerprint get one from
- * the same migration — which is how those records behaved when the older
- * backup was taken.
+ * A v1–v7 file restores into a v8 app unchanged: the missing tables simply
+ * have no rows, the new columns take their defaults (a v7 health batch arrives
+ * with `protectedRows = 0` and `formatVersion = 1` — which is exactly true of
+ * it, because the importer that wrote it protected nothing and was version 1),
+ * `npm run db:migrate` backfills an every-day schedule for anything that
+ * arrives without one, and metric rows that arrive without a fingerprint get
+ * one from the same migration — which is how those records behaved when the
+ * older backup was taken.
+ *
+ * A v8 file restored by an older app loses only those two columns, which is
+ * why the version was bumped rather than left alone: `inspectBackup` refuses a
+ * file newer than the app reading it, and that refusal is the honest answer.
  */
-export const BACKUP_VERSION = 7;
+export const BACKUP_VERSION = 8;
 
 export interface BackupMetadata {
   /** Schema version of the backup format itself. */

@@ -11,7 +11,10 @@ rules it holds to. If you only want the privacy answer, read
 - [What is deliberately not imported](#what-is-deliberately-not-imported)
 - [The import, step by step](#the-import-step-by-step)
 - [Duplicate rules](#duplicate-rules)
+- [Merge rules](#merge-rules--what-a-re-import-does-to-a-reading-it-has-seen-before)
 - [Undo rules](#undo-rules)
+- [The import dashboard, and what history means](#the-import-dashboard-and-what-history-means)
+- [Data integrity checks](#data-integrity-checks)
 - [Performance expectations](#performance-expectations)
 - [The privacy model](#the-privacy-model)
 - [Backup](#backup)
@@ -262,6 +265,44 @@ reported**, never merged and never allowed to overwrite your own record.
 
 ---
 
+## Merge rules — what a re-import does to a reading it has seen before
+
+A fingerprint is a stable *identity*, not a claim of ownership. An import may refresh a row it
+wrote itself; it may not write over one that has become yours. The decision is made per row, by
+`src/lib/logic/health-import/merge.ts`, and the same code produces both the preview and the
+write — so the preview is a promise, not an estimate.
+
+| The stored row | What the import does |
+| --- | --- |
+| Does not exist | **Added** |
+| Already holds the same value | **Skipped** — counted as "already present" |
+| Was entered by hand, or carries no import batch at all | **Kept as yours** — nothing written |
+| Was written by an import, but you have edited it since | **Kept as yours** — nothing written |
+| Was written by an import and nobody has touched it | **Merged** — the file's fuller value wins |
+
+"Edited since" uses the batch's own `finishedAt` as the boundary, with a one-second grace so an
+import cannot classify its own writes as edits. That is *the same boundary undo uses*, and
+deliberately so: if the two rules disagreed, a row could be protected from re-import and yet
+removed by undo, or the reverse.
+
+Two properties follow, and both are asserted by tests:
+
+* **Ownership is re-read at confirm time**, never carried over from the preview. A staged import
+  can sit for up to two hours; a row you edit in that window is protected on the strength of what
+  is true when the write happens.
+* **Ambiguity means hands off.** A row whose batch id does not resolve to one of *your* batches —
+  a partially restored backup, a hand-edited database — is protected rather than merged. Refusing
+  to write is recoverable; overwriting is not.
+
+Every protected row is **reported**, in the preview's warnings, on the import's result screen and
+on the batch in `/health/imports`. A skip you are not told about is indistinguishable from data
+loss.
+
+The conservatism is intentional for this first version. There is no field-level merge, no
+"prefer the higher value", and no prompt asking you to resolve a conflict row by row.
+
+---
+
 ## Undo rules
 
 Every import is a batch, and `/health/imports` can undo any of them. An undo removes the
@@ -283,6 +324,74 @@ The preview shows all three counts before you commit. Beyond that:
   later import wrote onto the same fingerprints.
 * Every affected day's derived numbers — day scores, calendar, insights, goals — are recomputed
   afterwards through the same path every other write uses.
+
+---
+
+## The import dashboard, and what history means
+
+`/health/imports` is where the state of every import lives. Four tiles across the top, then the
+history itself.
+
+| Tile | What it means |
+| --- | --- |
+| **Last import** | How long ago the most recent *successful* import ran, against your own today. An undone import does not count as a success. |
+| **Imports run** | Every run this account has ever made, split into active / undone / failed. |
+| **Readings written** | New readings across every import, plus how many were merged into existing days. |
+| **Kept as yours** | Readings a re-import deliberately left alone (see the merge rules above). |
+
+These are **aggregates over every batch**, not sums of the rows on the page — an account with
+hundreds of imports would otherwise be shown a figure that silently meant "of the most recent
+hundred". The list itself is capped at 100 and says so when it is.
+
+Each row in the history carries: the file name, its status, its source (Apple Health or CSV), when
+it ran, how big the file was, how long the write took, the span of days it covered, and the full
+counts — new, merged, already present, kept as yours, workouts, records, invalid, unsupported.
+The categories it wrote are listed as badges, and any parser notes are one click away. Once there
+are three or more, a search box and status filters appear; both filter the list already on the
+page rather than asking the server per keystroke.
+
+A staged import that has not been confirmed is called out at the top of the page: nothing has been
+written, and it expires on its own after two hours.
+
+**Version awareness.** Every batch records `formatVersion` — which version of the importer wrote
+it. Version 1 is the original pipeline, which replaced any matching reading regardless of who had
+touched it; version 2 is the current one, with the merge rules above. A batch from version 1 says
+so in the history, because its "0 kept as yours" is a fact about the importer of the day rather
+than a promise about your data. The stamp also gives a future change something to migrate *from*
+instead of having to infer an old batch's semantics from its dates.
+
+---
+
+## Data integrity checks
+
+The same page runs a handful of read-only checks over what your imports have left behind. They
+exist because the quiet failures are the ones nobody notices: a unit the metric cannot express
+stores fine and then reads as nothing forever; a reading dated in the future sits outside every
+range the pages offer.
+
+| Check | Severity | What it means |
+| --- | --- | --- |
+| Readings under a metric this app has no rules for | Problem | Kept, but never shown or counted anywhere. Usually from a backup written by a different version. |
+| A unit the metric cannot convert | Problem | Every chart and average silently skips those rows, so the numbers you see are computed without them. |
+| A value outside any plausible range for its metric | Problem | Almost always a unit mix-up upstream. One wrong row skews the average and the chart's scale for its whole range. |
+| Readings dated after today | Problem | A device whose clock or timezone was wrong. Stored, never shown. |
+| Readings with no deduplication key | Note | They display normally, but a future import cannot recognise them as already present. |
+| Readings that outlived an undone import | Note | The intended behaviour for a row you had edited or built on — they are yours now. |
+| Failed imports | Note | Rolled back whole, so nothing they read was written. |
+
+**Everything is an aggregate.** Six queries, answered from the database's own counters and the
+existing indexes; not one materialises a row. That is why the panel costs the same for 400
+readings and 4,000,000. The trade is that a min/max says a metric *holds* an impossible reading
+without saying how many, so the implausible-value check counts **metrics**, not rows, rather than
+claim a number it did not measure.
+
+Nothing is written and nothing is repaired: the app never silently rewrites a stored reading on
+the strength of a heuristic. The findings tell you which metric's page to open.
+
+The bounds are deliberately absurd rather than clinical — a resting heart rate of 34 bpm is a
+well-trained athlete and must not be flagged; 4,000 bpm is a parse error. A committed test holds
+the rules to an ordinary, healthy range for every bounded metric, because a check that flags real
+data is worse than no check at all: you learn to ignore the panel.
 
 ---
 
@@ -314,11 +423,24 @@ a decade of data is a few hundred thousand small objects whether the file is 200
 Hitting a cap is reported, never silent: the import says what it kept and tells you to import
 again to continue.
 
-**On a hosting platform, the platform's own limits bind first.** Vercel caps a function's request
-body and its execution time by plan — the upload route asks for the 60 seconds every plan
-accepts, and a request body above the platform's limit is rejected before the app sees it. A
-self-hosted deployment (`npm start` behind your own proxy) has neither limit, which is the answer
-for an export large enough to hit them.
+**On a hosting platform, the platform's own limits bind first**, and the app now says so rather
+than promising a size it cannot accept.
+
+* **Execution time.** The upload route asks for `maxDuration = 60`, the highest value every
+  Vercel plan accepts. It has to be a literal — Next.js statically analyses route segment config
+  and refuses to build otherwise — so `tests/deploy-config.test.ts` holds every route in the app
+  to `MAX_FUNCTION_SECONDS`. A value above the plan's ceiling fails the *whole deployment* rather
+  than being clamped, which is the worst possible place to find out.
+* **Request body.** Vercel rejects a body above ~4.5 MB before the function runs, with a platform
+  413 the app never sees and cannot phrase. So when `VERCEL` is set, the importer advertises and
+  enforces *that* number instead of its own 2 GB: the import page states the real limit up front,
+  and a refusal explains that the platform is the constraint and self-hosting lifts it.
+* **Overriding it.** Set `HEALTH_MAX_UPLOAD_MB` when you know better than the defaults — a
+  reverse proxy with its own `client_max_body_size`, or a plan whose body cap is higher. It can
+  never raise the app's own 2 GB ceiling, which bounds memory and disk.
+
+A self-hosted deployment (`npm start` behind your own proxy) has neither platform limit, which
+remains the answer for an export large enough to hit them.
 
 **Measured.** A synthetic export of 60,000 records across 400 days parses in well under a second
 and produces 400 rows — one per day per device — with heap growth in the low tens of megabytes.
@@ -360,10 +482,16 @@ row's date may have changed since last time.
 ## Backup
 
 Health data is in the backup file from format **v7**: `healthMetrics`, `healthRecords` and
-`healthImportBatches`, restored in that order so a record keeps its batch link. A v1–v6 file
-restores into a v7 app unchanged — the missing tables simply have no rows and the new columns
-take their defaults, which is exactly how those records behaved when the backup was taken. See
-[`backup-and-recovery.md`](backup-and-recovery.md).
+`healthImportBatches`, restored in that order so a record keeps its batch link. **v8** adds the
+two columns this phase introduced — `protectedRows` and `formatVersion` — to the batch rows; it
+adds no tables.
+
+A v1–v7 file restores into a v8 app unchanged. The missing tables simply have no rows, and the
+new columns take their defaults — a v7 batch arrives with `protectedRows = 0` and
+`formatVersion = 1`, which is *exactly true of it*: the importer that wrote it was version 1 and
+protected nothing, because protecting was not a thing it did. A v8 file taken to an older build
+is refused rather than silently restored without those columns, which is what the version bump
+buys. See [`backup-and-recovery.md`](backup-and-recovery.md).
 
 ---
 

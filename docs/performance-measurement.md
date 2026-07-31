@@ -126,6 +126,23 @@ parse to well under a second with identical output. That is why this page
 exists — the numbers were only found because they were measured, and they stay
 honest only if they are re-measured the same way.
 
+## Health dashboard and import history (Phase A.2)
+
+Everything the Health section added in this phase is bounded by construction
+rather than by a limit that happens to be big enough.
+
+| Surface | Cost |
+| --- | --- |
+| Health overview | Nine queries in one `Promise.all` (was eight plus a sequential ninth — the import count was awaited after the batch, adding an avoidable round trip). Rows are partitioned by type **once** and reused across ~25 metrics; the previous shape re-filtered the whole 30-day row set per metric. |
+| Import dashboard | Five queries: one bounded list (100 rows), one count, one `groupBy` on status, one `aggregate` for the sums, one count of staged sessions. The totals are aggregates over *every* batch, so an account with hundreds of imports pays the same as one with three. |
+| Import history search | Filtered in the browser over the list the page already fetched. A round trip per keystroke would be both slower and a query per keystroke against the health tables. |
+| Integrity checks | Six aggregates — two `groupBy`s and four counts. Not one materialises a row, which is why the panel costs the same for 400 readings and 4,000,000. The trade: a min/max says a metric *holds* an impossible value without saying how many, so the check counts metrics rather than claiming a row count it never measured. |
+| Smart merge | No new queries in the hot path. The existing fingerprint lookup selects four more columns on the same scan, plus one bounded lookup of the batches those rows belong to — bounded by the number of distinct past imports touching the plan's date range. |
+
+Every one of these is served by indexes that already existed
+(`(userId, date)`, `(userId, type, date)`, `(userId, createdAt)`,
+`(userId, status)`, `(batchId)`). This phase added two columns and no index.
+
 ## Caveats, stated plainly
 
 * The local-database milliseconds above are a floor, not a promise: a hosted

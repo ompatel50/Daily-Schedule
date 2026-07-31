@@ -3751,3 +3751,266 @@ resting HR, exercise vs HRV); nutrition reconciliation that *shows* imported
 and logged figures side by side without merging them; per-metric detail pages
 with the raw reading list and per-source breakdown; and folding health signals
 into the "needs attention" digest Phase 33 left open.
+
+---
+
+## Phase A.2 — Health cleanup, import automation, and polish
+
+Two halves: finish what Phase A.1 left open, then build the automation layer
+that makes the import platform feel like a permanent part of the app rather
+than a feature that was added once. No AI, deliberately — that is the next
+phase, and nothing here anticipates it.
+
+### Part 1 — cleanup
+
+#### 1) The deployment limit, properly closed
+
+Phase A.1 had already fixed the immediate cause (`maxDuration = 800`, above the
+Hobby ceiling, which Vercel validates **at deploy time** and refuses the whole
+deployment for). What it had not done was stop it happening again, or deal with
+the *other* platform limit the app was quietly lying about.
+
+* **A committed guard.** `tests/deploy-config.test.ts` walks every file under
+  `src/app`, extracts any `maxDuration` export, and holds it to
+  `MAX_FUNCTION_SECONDS` (60 — the highest value every plan accepts). It also
+  asserts `vercel.json`'s crons stay inside the free plan's once-a-day cadence.
+  This class of mistake is invisible to lint, types, tests and the production
+  build; now it is a red test instead of a failed deploy.
+* **A real finding from that work.** The first attempt made the route import
+  the constant instead of repeating the number. Next.js statically analyses
+  route segment config and **failed the build outright** — `Invalid segment
+  configuration export detected`. So the literal stays, and the test asserts
+  the literal matches the constant. Worth recording because "extract the magic
+  number into a shared constant" is normally unambiguously right.
+* **The upload limit is now true.** The app advertised and enforced 2 GB. On
+  Vercel, a request body above ~4.5 MB is rejected by the platform before the
+  function runs, with a 413 the app never sees and cannot phrase — so a user
+  waited for a large upload only to get an opaque platform error.
+  `resolveUploadLimit()` returns what the deployment can actually keep: 2 GB
+  self-hosted, the platform cap when `VERCEL` is set, and `HEALTH_MAX_UPLOAD_MB`
+  when an operator knows better (never above the app's own ceiling). The import
+  page states it up front and the refusal says the platform is the reason and
+  self-hosting lifts it.
+* A smaller bug fell out: the size formatter rounded to whole gigabytes, so any
+  cap below half a gigabyte printed as "larger than the **0 GB** limit".
+
+#### 2) The sign-up limiter flake
+
+Sign-up is fenced at 8 attempts per client per hour. The browser suite spends
+two of them per run (the journey, plus the duplicate-email check). Behind no
+proxy, `clientRateLimitKey` finds no forwarding header and every run resolves to
+the same `signup:unknown` bucket — so the **fourth run within an hour failed**,
+the suite tripping the application's own abuse protection because the test
+environment made every run look like one persistent client.
+
+Fixed entirely on the test side; the protection is untouched and is still
+asserted directly by `tests/integration/signup-flow.test.ts`.
+
+* Playwright assigns one synthetic `x-forwarded-for` per run, in the runner
+  process so every worker inherits it — the same mechanism the config already
+  used for the browser path. Each run is now its own client, which is what
+  separate runs genuinely are.
+* `seed:e2e` prunes the throwaway `@e2e.local` accounts the journey creates and
+  clears the four fence buckets in the disposable database. Running it after
+  this session's work reported **24 stale accounts and 98 counters** — the
+  accumulation was real, not theoretical.
+
+#### 3) Browser determinism
+
+* **Cross-spec interference, removed at the source.** Spec files run in
+  parallel across workers, and the import round trip (a month of readings, a
+  summary rebuild, then an undo) shared the `alice` account with the manual
+  health-entry check. Individually correct, jointly a race. The import spec now
+  owns `importer@example.com` and nothing else touches it.
+* **The undo assertion no longer races a toast.** It asserts durable state —
+  the batch row's own "Undone …" line and the disappearance of its undo button
+  — instead of a notification that dismisses itself.
+* **A clean console is now an assertion**, with the failing URL captured
+  alongside the message (a failed resource load reports a generic "404" and
+  puts the URL in the location, so matching on text alone can neither exclude
+  the known-noisy Vercel request nor tell a reader what failed).
+* Sign-out navigations, which are a server round trip and can coincide with the
+  import spec's large write in the other worker, were given a timeout matched to
+  a loaded server. Observed twice in ~12 full runs; never reproducible in 20
+  stress repeats of the flow alone, which is what points at contention rather
+  than a race. What is asserted did not change.
+
+### Part 2 — automation and polish
+
+#### 4) Smart merge — the one behaviour with real teeth
+
+A fingerprint is a stable *identity*, not a claim of ownership. The old
+pipeline overwrote any row whose fingerprint matched, whoever had touched it —
+so a weight you corrected by hand was silently replaced by the next import, and
+the file is the authority while your correction is not in it. Undo already drew
+this line (`keep_edited`); re-import did not, which meant undo protected an edit
+that the next import destroyed.
+
+`src/lib/logic/health-import/merge.ts` is pure and decides one thing per row:
+**create · merge · unchanged · protected**, with `protected` covering both "you
+edited it after the import finished" and "no import wrote it at all". It shares
+`UNDO_GRACE_MS` with undo, deliberately — a row protected from re-import but
+removable by undo would be a contradiction the user could observe, and a test
+asserts the two constants are the same.
+
+Three properties that matter more than the happy path:
+
+* **Ownership is re-read inside the confirm transaction**, never carried from
+  the preview. A staged import can sit for two hours; a row edited in that
+  window is protected on the strength of what is true when the write happens.
+* **Ambiguity means hands off.** A row whose `batchId` does not resolve to one
+  of *this user's* batches — a partial restore, a hand-edited database — is
+  protected. Refusing to write is recoverable; overwriting is not.
+* **Every protected row is reported**, in the preview's warnings, on the result
+  screen and on the batch. A skip the user is not told about is
+  indistinguishable from data loss.
+
+The preview and the write run the same function, so the preview is a promise
+rather than an estimate.
+
+#### 5) Integrity checks
+
+Seven read-only checks over what imports leave behind, in **six aggregate
+queries** — two `groupBy`s and four counts, not one of which materialises a row.
+That is why the panel costs the same for 400 readings and 4,000,000.
+
+The trade is stated rather than hidden: a min/max says a metric *holds* an
+impossible reading without saying how many, so the implausible-value check
+counts **metrics**, not rows. Bounds are deliberately absurd rather than
+clinical, and a committed test holds them to an ordinary healthy range for every
+bounded metric — a 34 bpm resting heart rate is a well-trained athlete, and a
+check that flags real data teaches you to ignore the panel.
+
+Nothing is repaired. The app never silently rewrites a stored reading on the
+strength of a heuristic; the findings tell you which page to open.
+
+#### 6) The import dashboard and searchable history
+
+`/health/imports` became the place the state of every import lives: last
+successful import and its recency against the user's own today, runs split by
+outcome, readings written / merged / kept as yours, a staged-import callout, the
+integrity panel, and a searchable, status-filtered history. The totals are
+**aggregates over every batch**, not sums of the visible page — otherwise an
+account with hundreds of imports is shown a number that silently means "of the
+most recent hundred", and the list says so when it is capped.
+
+**Version awareness**: every batch records `formatVersion`. A batch from
+pipeline v1 says so in the history, because its "0 kept as yours" is a fact
+about the importer of the day rather than a promise about the data — and a
+future change now has something to migrate *from* instead of inferring an old
+batch's semantics from its dates.
+
+#### 7) Two real bugs found by looking
+
+* **A hydration mismatch that swallowed clicks.** `Badge` renders a `<div>`;
+  the integrity card put one inside a `<p>`. The parser hoists it, the DOM stops
+  matching what the server sent, React discards the tree and re-renders — and a
+  click landing in that window is lost. It presented as *the undo button not
+  opening its dialog*, deterministically, with no error anywhere except a
+  minified React #418 on that one page. Fixed twice over: `Badge` now renders a
+  `span` rather than a `div` (its base class was already `inline-flex`, so the
+  two are visually identical and the mistake becomes impossible everywhere
+  rather than guarded against in one place), and a dedicated spec asserts every
+  page in the section hydrates cleanly — for an empty account *and* the seeded
+  one, in its own file so CI's empty database does not skip it.
+* **Demo data that lied about itself.** The seeded import's rows were stamped
+  `now()` while the batch's `finishedAt` was two days earlier, so undo
+  classified all 1,682 readings as user-edited and the preview offered to remove
+  **nothing** while claiming the user had personally corrected every one. The
+  batch's `createdAt` also disagreed with its own timings by two days. Both
+  fixed; the demo undo now reports 1,682 readings, 5 workouts and 5 records.
+
+#### 8) Polish, demo data, performance
+
+* Overview: headline tiles carry a direction-of-travel delta coloured by the
+  metric's own `goodDirection` (a falling resting heart rate is good news), a
+  quick-link row, history depth and 30-day coverage in the header, and an import
+  card that reads "2 days ago" instead of a UTC-sliced date that was off by one
+  either side of midnight.
+* Group pages render panels only for metrics that have readings, and list the
+  rest in one line. Nutrition covers twenty-odd metrics; a page of identical
+  "nothing recorded" cards buried the four that had data.
+* `SectionCard` descriptions wrap instead of truncating — a sentence cut off
+  mid-word tells the reader less than nothing. Metric labels likewise.
+* Demo data gained an earlier CSV import (a smart scale, stamped
+  `formatVersion: 1` so the history's version note is demonstrable) and a failed
+  import that owns no rows, which is exactly what a rolled-back import is. Three
+  batches is also what makes the search box and status filters judgeable.
+* Performance: the overview's import count was a sequential await *after* a
+  `Promise.all` — one avoidable round trip on the section's busiest page — and
+  rows were re-filtered by type once per metric across ~25 metrics. Both fixed;
+  no new index was needed.
+
+### Schema
+
+Migration `20260731200000_health_import_merge_integrity` — additive only, two
+columns on `HealthImportBatch`, both with defaults:
+
+* `protectedRows` — readings a re-import deliberately left alone. Existing
+  batches default to 0, which is exactly what they did: the old pipeline
+  overwrote instead of protecting, so it protected nothing.
+* `formatVersion` — which pipeline wrote the batch. Existing rows default to 1.
+
+No index was added; the existing `(userId, createdAt)` and `(userId, status)`
+serve every new query. `prisma migrate diff` reports no drift and the migrations
+apply from zero on every integration run.
+
+**Backup v8** carries both. It adds no tables — the bump exists so an older app
+*refuses* a v8 file rather than restoring it silently without the merge
+accounting. A v1–v7 file restores unchanged, and its defaults are the truth
+about those older records rather than placeholders.
+
+### Testing
+
+| Suite | Before | After |
+| --- | --- | --- |
+| Unit (`npm test`) | 968 | **1,011** |
+| Integration (`npm run test:integration`) | 244 | **263** |
+| Browser (`npm run test:e2e`) | 45 | **49** |
+
+New coverage: the merge rule in every branch (including the grace period, the
+shared-boundary invariant with undo, and the legacy `createdAt` fallback); every
+integrity rule plus the negative case that ordinary healthy data is never
+flagged; the deployment-config guard; database-backed smart merge (protect,
+merge, re-read-at-confirm, foreign batch, and a protected row still being kept
+by undo); the dashboard's aggregates, recency buckets, truncation and
+cross-account isolation; integrity against real rows and across accounts; and
+the v8 backup round trip plus a v7 restore.
+
+### Verification
+
+* Typecheck, lint, unit, integration, migration drift check and production
+  build: all pass.
+* Browser: **four consecutive full runs, 0 failed** (one pre-existing documented
+  `fixme`). CI green on the first push: lint/types/tests/build/migrations,
+  browser tests, and the Vercel preview deployment — which is the deployment
+  limit fixed, confirmed on the real hosting stack rather than argued about. Health pages verified at 1280px and 720px with no
+  horizontal overflow, and no console errors beyond the pre-existing
+  `/_vercel/insights/script.js` 404 that every non-Vercel deployment produces.
+
+### Deliberately not implemented
+
+* **Field-level merge, or "prefer the higher value".** The first version is
+  conservative on purpose: a row is the import's or it is yours.
+* **Per-row conflict resolution.** A prompt per conflicting reading is a
+  different product; the batch-level report is what a user can actually act on.
+* **Repairing what the integrity checks find.** Read-only by design — the app
+  does not rewrite a stored reading on a heuristic.
+* **An exact row count for implausible values.** It would cost a scan on a page
+  that must stay cheap; the check counts metrics and says so.
+* **Server-side history search.** Filtering a bounded list in the browser is
+  faster than a query per keystroke against the health tables.
+
+### Exact next step
+
+The AI assistant phase. Everything it would read from is now in place and
+stable: bounded read models per module, one aggregation path, a health platform
+that reports its own state honestly, and an import pipeline whose behaviour is
+described rather than guessed at.
+
+Non-AI candidates that remain open, in rough order of value: health goals over
+the new metrics (VO₂ max, blood oxygen, exercise minutes) through the existing
+goal engine; a correlations view over the trend series the module already
+computes; nutrition reconciliation showing imported and logged figures side by
+side without merging them; per-metric detail pages with the raw reading list;
+and folding health signals into the "needs attention" digest Phase 33 left open.
