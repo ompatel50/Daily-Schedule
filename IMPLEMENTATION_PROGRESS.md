@@ -4191,6 +4191,18 @@ worked.
   delivers an empty `input.files` — a harness limit, not an app one — so the
   repeatable check is pinned below it.)
 
+**What was not exercised here, stated plainly.** Every browser check above ran
+against a local production build — `npm run build && npm start`, the same
+artifact Vercel serves — not against the deployed preview. The Vercel preview
+for this branch built and deployed successfully, but the session that wrote
+this could not reach the preview URL: the environment's network policy refuses
+the host at the proxy (`403` to `CONNECT`). So the claim being made is
+"the transport no longer sends a request the platform can refuse", which is
+asserted structurally by `tests/deploy-config.test.ts` and observed end to end
+locally — not "someone imported a real export through the preview URL". The
+first import on the deployed site is still worth watching; the stage panel now
+makes it obvious where it is if it stalls.
+
 ### Performance notes
 
 * Parsing is untouched: the same streaming reader, the same bounds, the same
