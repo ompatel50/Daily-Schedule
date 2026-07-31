@@ -2882,3 +2882,66 @@ tests/integration/life-os.test.ts
 * Low-balance, document-expiry and review-cadence reminders (the resolver
   and feed structure are ready for them).
 * Inbox → task/bill one-click conversion.
+
+### A real bug the new tests caught (fixed before merge)
+
+`nextOccurrenceAfter` estimated the occurrence index with 28-day months, so
+for a monthly anchor two-plus years in the past the estimate could overshoot
+the true index by more than the one step it walked back — and the walk only
+moves forward, so it returned e.g. 2026-09-30 for (anchor 2023-01-31, after
+2026-07-31) and silently skipped August. Reachable through
+`nextDueAfterCompletion` for a monthly repeating task with an old anchor.
+Fixed by dividing by each unit's MAXIMUM span (31/92/366 days) so the
+estimate can only undershoot; regressions pin decades-past-anchor behaviour
+in every unit.
+
+### Verification (all executed in this session, in order)
+
+* `npm run lint` — clean.
+* `npm run typecheck` — clean.
+* `npm test` — **793/793** (was 705 at session start; +88 across
+  `tests/due.test.ts` 18, `tests/finance-logic.test.ts` 36,
+  `tests/tasks-logic.test.ts` 24, extended reminder + search suites).
+* `npm run test:integration` — **155/155** on real PostgreSQL (was 125;
+  +30 in `tests/integration/life-os.test.ts`, plus backup round-trip
+  fixtures for all seven new tables in `backup-restore.test.ts`).
+* `npm run build` — clean; `/tasks` 198 kB, `/inbox` 179 kB, `/finance`
+  first-load in line with existing routes; middleware unchanged.
+* Playwright e2e — **32 passed / 1 deliberate skip** (the pre-seeded
+  Apple Health spec), including the widened nav assertions and the
+  signed-out wall over `/finance`, `/tasks`, `/inbox`.
+* **Browser verification (production build, real Chromium): 34/34 checks,
+  zero console errors, zero warnings, zero page errors** — sign-in; project
+  + task creation and completion; inbox capture → done; account,
+  transaction, bill (created due today, marked paid), savings goal; the
+  dashboard's Tasks/Money/inbox cards; the palette finding a new account
+  under its group; all 12 app routes returning 200; and 0 px horizontal
+  overflow at 900 px on all three new pages.
+* **Database-checked, not screen-checked**: after the browser's "mark
+  paid", the bill row read `anchorDate 2026-07-31 → nextDueDate 2026-08-31`
+  (month-end preserved) — and the atomic ledger-write path is asserted by
+  integration tests (amount −89.50, billId link, category carried).
+* Vercel preview deployment of the branch: **Ready** (built and deployed
+  by the repo's existing pipeline).
+
+### Performance notes
+
+* The dashboard gained exactly one bounded summary call
+  (`getCommandCenterSummary`: five small indexed queries + the memoised
+  account/bill loads shared with any other consumer in the render).
+* Search adds seven `take 8` indexed queries to the existing nine — still
+  one debounced round-trip per keystroke batch.
+* Open tasks are capped at 500 rows per fetch, transactions at 2 000 per
+  window, bills at 200, project progress computed from grouped counts —
+  no full-table scans anywhere in the new read models.
+* The reminder feed adds two bounded loads (bills due within 60 days,
+  tasks due today) to the existing three, and the candidate-key ledger
+  lookup stays one round trip.
+
+### Exact next step
+
+Phase 32 candidates, in rough order of user value: CSV transaction import
+(the `importKey` seat is reserved), inbox → task/bill conversion, budgets
+per category with month-over-month views, low-balance + document-expiry
+reminder types on the due-reminder foundation, task ↔ planner linking
+("schedule this task"), and demo/starter data for the new modules.

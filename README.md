@@ -660,7 +660,7 @@ npm run test:integration   # database-backed, against the disposable test databa
 npm run test:e2e       # Playwright browser suite (against a running production build)
 ```
 
-Three suites, each doing the job the others can't. The **unit suite** (696 tests) covers the pure
+Three suites, each doing the job the others can't. The **unit suite** (793 tests) covers the pure
 logic that would be expensive to get wrong:
 
 * **Scheduling** — every mode, both week-start settings, DST, leap years, month and year
@@ -678,20 +678,29 @@ logic that would be expensive to get wrong:
 * **Planner** — applying a routine once writes it, applying it again writes nothing, a deliberate
   second copy still works and never re-uses a key, and overlap detection flags a real clash while
   ignoring all-day items, back-to-back blocks and skipped items.
+* **Due dates & repeats** — the anchored cadence engine: "monthly on the 31st" clamping through
+  February (leap years included) and returning to the 31st, occurrence estimates that stay
+  correct decades past the anchor, and repeat advancement that never marches through missed
+  weeks.
+* **Finance** — signed-ledger summaries with adjustments excluded, computed balances, bill
+  advancement chains, savings progress capping, and deterministic money formatting.
 * Plus nutrition serving maths, the natural-language quick-add parser, planner recurrence, and
   day-key/time handling including a DST boundary.
 
 The unit tests are pure — no database, no fixtures, no mocking — because all the logic they cover
 lives in `src/lib/logic`.
 
-The **integration suite** (121 tests) runs against a real PostgreSQL — always the disposable
+The **integration suite** (155 tests) runs against a real PostgreSQL — always the disposable
 `personal_os_test` database, reset and re-migrated from zero each run — and covers what pure tests
 cannot: unique constraints, transaction rollback, backup import isolation, health-import session
 ownership, the reminder exactly-once ledger, password verification with its lockout and
 session-revocation rules, public sign-up (validation, duplicate refusal, racing duplicates, the
 rate limit), recovery-code redemption (burn-once, session revocation, enumeration resistance),
-and a cross-user suite asserting that every major operation against another account is refused
-*and* leaves the victim's row unchanged. The **e2e suite** drives the built app in a real
+a cross-user suite asserting that every major operation against another account is refused
+*and* leaves the victim's row unchanged, and the life-OS foundation end to end: bill payment
+advancing the due pointer with its atomic ledger row, set-balance writing the exact adjustment,
+repeating-task completion, subtask depth limits, command-center assembly, and cross-user denial
+for every new finance/task/inbox action. The **e2e suite** drives the built app in a real
 browser: signed-out redirects, password sign-in, the identical generic refusal for an unknown
 email and for a wrong password (so failed attempts reveal nothing about which emails exist), the
 full sign-up → recovery-codes → dashboard → sign-out → password-reset journey, surface postures,
