@@ -102,6 +102,16 @@ guaranteed no-card path, create the database at neon.tech as above.
   projects and free on Hobby; there is nothing to configure or pay for.
 * The scheduled-reminder cadence recommended in step 8 (a call every 10–15
   minutes) stays comfortably inside Neon's free monthly compute allowance.
+* **An Apple Health import briefly uses database space equal to the archive.**
+  The export is uploaded in 4 MB parts, which are held in your own rows only
+  until the import can reassemble and parse them — then deleted, in the same
+  invocation, on every path including failure. That is why the hosted default
+  stages up to **256 MB** rather than the app's own 2 GB: Neon's free tier
+  gives 0.5 GB of storage and a Vercel function about 500 MB of scratch space,
+  and a default above either would trade a clear refusal for an obscure
+  failure. Raise `HEALTH_MAX_UPLOAD_MB` if your plan and database allow it.
+  An upload that is abandoned expires after an hour and is swept by the daily
+  cron, so nothing accumulates.
 
 ## Step 3 — Set the environment variables
 
@@ -118,6 +128,7 @@ These are the same variables documented in `.env.example` in the repository.
 | `CRON_SECRET` | For background reminders | A random secret protecting the scheduled reminder endpoint. Generate with `openssl rand -base64 32`. Vercel sends it automatically as an `Authorization: Bearer` header when the variable is set; the external scheduler in step 8 sends the same header. |
 | `USDA_FDC_API_KEY` | Optional | Free key for USDA food search (<https://fdc.nal.usda.gov/api-key-signup.html>). Without it, food search still works locally and says USDA is not set up. |
 | `VAPID_PUBLIC_KEY`, `VAPID_PRIVATE_KEY`, `VAPID_SUBJECT` | Optional | Web Push keys for background reminders — see [`web-push-setup.md`](web-push-setup.md). Without them, reminders work only while a tab is open. |
+| `HEALTH_MAX_UPLOAD_MB` | Optional | How large an Apple Health export this deployment will stage. Defaults to 256 MB on Vercel (see the note below) and 2 GB self-hosted. Raise it if your plan and database can take more. |
 | `AUTH_TRUST_HOST` | **Not on Vercel** | Only needed when self-hosting behind a proxy (`AUTH_TRUST_HOST="true"`). Vercel sets the equivalent itself. |
 
 Two things to know about Vercel environment variables:

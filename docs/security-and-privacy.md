@@ -89,9 +89,13 @@ that touches the database re-checks on its own, every time.
   file structurally cannot address another account's rows
   ([`migrating-from-local.md`](migrating-from-local.md) explains the
   mechanism).
-* Health imports are owner-checked at every step — upload, staging, preview,
-  confirm, cancel and undo — and the uploaded export is deleted as soon as it
-  has been parsed. The parser refuses XML entity declarations and external
+* Health imports are owner-checked at every step — opening an upload, every
+  part of it, assembling, staging, preview, confirm, cancel and undo. An upload
+  resolves only by `(id, userId)`, so another account's id does not exist
+  rather than being refused, and the most a client can store is the part count
+  its own session declared. Every part is deleted as soon as the archive has
+  been parsed, on every path including failure, and an abandoned upload expires
+  within the hour. The parser refuses XML entity declarations and external
   DTDs outright, and bounds decompression, element size and nesting depth, so
   a crafted archive fails the import rather than the host
   ([`health-import-privacy.md`](health-import-privacy.md),

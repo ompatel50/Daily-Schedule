@@ -16,7 +16,16 @@ export const dynamic = "force-dynamic";
 
 const STEPS = [
   { title: "Choose the file", detail: "Apple Health export.zip, its export.xml, or a CSV." },
-  { title: "It uploads and is parsed on the server", detail: "Streamed, never held in memory." },
+  {
+    title: "It uploads in parts",
+    detail:
+      "The archive is sliced into small pieces, one request each, so no single request is ever " +
+      "large enough for a hosting platform to refuse. Progress is shown as it goes.",
+  },
+  {
+    title: "The server reassembles and parses it",
+    detail: "Streamed, never held in memory. Every part is deleted as soon as the parse finishes.",
+  },
   { title: "Preview", detail: "Counts, date span and what is already present — nothing saved yet." },
   { title: "Choose what to bring in", detail: "Per category, so you can take steps but not nutrition." },
   { title: "Confirm", detail: "One transaction. Recorded as a batch you can undo later." },
@@ -90,9 +99,10 @@ export default async function HealthImportPage() {
           <SectionCard title="Your data, and only yours" icon={Lock} accent="text-domain-health">
             <ul className="space-y-2 text-xs text-muted-foreground">
               <li>
-                <strong className="text-foreground">The upload is temporary.</strong> The file is
-                streamed to a scratch path, parsed, and deleted before the preview appears — on
-                every path, including failures.
+                <strong className="text-foreground">The upload is temporary.</strong> The parts are
+                held in your own account&rsquo;s rows only until they can be reassembled, parsed and
+                deleted — on every path, including failures. An upload you abandon expires within
+                the hour.
               </li>
               <li>
                 <strong className="text-foreground">Nothing is shared.</strong> Every record is

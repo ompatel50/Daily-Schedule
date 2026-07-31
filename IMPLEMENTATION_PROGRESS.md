@@ -4014,3 +4014,216 @@ goal engine; a correlations view over the trend series the module already
 computes; nutrition reconciliation showing imported and logged figures side by
 side without merging them; per-metric detail pages with the raw reading list;
 and folding health signals into the "needs attention" digest Phase 33 left open.
+
+---
+
+## Phase A.3 — Apple Health large-file import: the upload, restructured
+
+The AI assistant phase is still next. This phase exists because the Health
+module had a defect that made it unusable on the deployment it was built for,
+and shipping an assistant on top of an importer that cannot import would have
+been building on sand.
+
+### The bug, stated plainly
+
+On the hosted deployment every Apple Health import failed with:
+
+```
+413 FUNCTION_PAYLOAD_TOO_LARGE
+```
+
+Not slowly, not sometimes — always, and before a single line of this
+repository's code ran. Vercel refuses a request body above ~4.5 MB **at the
+edge**. The importer POSTed the entire `export.zip` to `/api/health/import` as
+one body. A real Apple Health export is one to three orders of magnitude larger
+than that cap.
+
+Everything downstream of the transport was already correct and stays untouched:
+the streaming ZIP reader, the bounded XML scanner, the per-day rollup, duplicate
+detection, the merge rules, preview, undo, history, integrity checks. The file
+simply never reached them.
+
+Two details are worth recording, because they are why this survived a phase
+that was explicitly about deployment limits:
+
+* **The app could not see the failure.** A platform-edge rejection never
+  reaches the function, so there was nothing to catch, phrase, log or retry.
+  Phase A.2 did the honest thing available at the time — it detected `VERCEL`
+  and *advertised* 4.5 MB as the limit, so the user was told the truth up front
+  instead of hitting an opaque 413. That was accurate and useless: the truth it
+  told was "this deployment cannot import your Apple Health export."
+* **The browser reported it as a network blip.** The client called
+  `response.json()` unguarded; the edge answers HTML, so every such failure
+  surfaced as "The upload did not complete." That is now handled explicitly
+  (`readJson`), with a test.
+
+### The fix: stop making the file size and the request size the same number
+
+```
+before   browser ──────── the whole export.zip ────────► /api/health/import ──► parse
+                          (one request; refused at the edge above 4.5 MB)
+
+after    browser ──► POST   /api/health/import           open a session
+                 ──► PUT    /api/health/import/part × n  4 MB each, retried individually
+                 ──► POST   /api/health/import/finalize  reassemble → parse → stage → preview
+```
+
+| | Before | After |
+| --- | --- | --- |
+| Requests per import | 1 | 1 open + *n* parts + 1 finalize |
+| Largest request | the whole archive | **4 MB** (`UPLOAD_PART_BYTES`) |
+| Hosted ceiling | 4.5 MB (the request cap) | **256 MB** (`VERCEL_STAGED_UPLOAD_BYTES`) |
+| Self-hosted ceiling | 2 GB | 2 GB (unchanged) |
+| A dropped connection | the whole upload again | that one part again |
+
+`UPLOAD_PART_BYTES` sits half a megabyte below the platform cap on purpose: the
+cap counts the whole request, and a part travels with headers and a query string
+beside it. `tests/deploy-config.test.ts` asserts that relationship, because a
+part size raised above the cap would fail *only* in production — which is
+exactly how the original bug reached a deployed app.
+
+### Why the parts live in the database
+
+Two requests to a serverless platform are not guaranteed to reach the same
+machine, so appending to a local file across requests silently loses data. The
+account's own database is the one place both requests can see; it needs no
+extra service, credential or paid tier; and it inherits the ownership model
+everything else here already has.
+
+The bytes are transient in exactly the way the old scratch file was: every part
+is deleted inside the same invocation that reads it, on every path including a
+parse failure. An abandoned upload expires after an hour, is swept whenever
+another upload is opened, and again by the daily cron (folded into the existing
+reminders tick rather than spending the free plan's second cron slot).
+
+Rejected alternatives, and why: **Vercel Blob** (a new service and credential
+for a self-hosting-first app, and another place health data lives);
+**client-side parsing** (deliberately undone in Phase A.1 — it means trusting
+numbers a browser produced); **streaming the body past the cap** (undocumented
+platform behaviour is precisely the brittle workaround this phase was told not
+to build).
+
+### Schema (migration `20260731212757_health_upload_staging` — additive only)
+
+Two new tables, no column changed, nothing dropped:
+
+* **`HealthUploadSession`** — one in-flight upload: owner, base filename,
+  declared size (a claim, used only to size the upload), server-counted
+  `receivedBytes`/`receivedParts`, `totalParts`, `partBytes`, status, expiry.
+* **`HealthUploadPart`** — one slice, as `BYTEA`. Unique on `(sessionId, seq)`,
+  which is what makes a retried part *replace* rather than duplicate.
+
+Neither table appears in backups, and neither should: they hold a file that
+exists for minutes. `prisma migrate diff` reports no drift and the migrations
+apply from zero on every integration run.
+
+### What is never trusted
+
+* The declared file size only *sizes* the upload. What binds is what the server
+  counted, recomputed from the stored rows before the parse.
+* A part index outside `[0, totalParts)` is refused, and `(session, seq)` is
+  unique — so the most a client can store is `totalParts × partBytes`, a bound
+  that holds under concurrency however the client behaves.
+* Every query resolves the session by `(id, userId)`. Another account's id does
+  not resolve at all rather than being refused, so there is nothing to probe.
+* The archive's type is still decided from its bytes, never from its name.
+
+### A gap the browser found
+
+Verifying this by hand surfaced something the tests had not: a tab closed
+between "open the session" and "send the first part" left a zero-byte session
+holding one of the account's two upload slots for fifteen minutes. Two of those
+and the account could not import at all — a self-inflicted lockout with no
+bytes stored to show for it.
+
+Two changes closed it, both tested: the client's abandon request now uses
+`keepalive`, so it outlives the closing document (paired with a `pagehide`
+listener, since unmount does not run when a tab is closed); and a session with
+zero parts after two minutes is treated as dead and cleared, separately from
+the fifteen-minute idle rule that protects an upload genuinely in flight.
+
+### UI
+
+The import page now shows named stages — **Staging → Upload → Parsing →
+Preview → Import → Summary** — with a progress bar, a byte count and a part
+counter while the archive is going up, and a Cancel button that actually
+cancels (aborting in flight *and* deleting the staged parts). This is not
+decoration: uploading a large export takes minutes and parsing it takes
+seconds, and one undifferentiated spinner leaves a user unable to tell a slow
+upload from a stuck one.
+
+### Testing
+
+| Suite | Before | After |
+| --- | --- | --- |
+| Unit (`npm test`) | 1,011 | **1,033** |
+| Integration (`npm run test:integration`) | 263 | **292** |
+| Browser (`npm run test:e2e`) | 49 | 49 (rewritten to assert the transport) |
+
+New coverage: the browser upload client against a fake server (slicing,
+**no request ever carrying more than one part**, byte-exact reassembly, retry
+of a transient failure, no retry of a refusal the server meant, cancellation,
+`keepalive` on abandon, and an HTML platform rejection still read as a readable
+message); the server session module against real PostgreSQL (staged success,
+a multi-megabyte archive in bounded parts, incomplete upload refused with
+nothing staged, idempotent re-send, every ownership rule, both eviction rules,
+sweep, expiry, and that duplicate detection, history and undo are unchanged
+through the staged path); and the deployment-config invariants that keep a part
+below the platform cap.
+
+The browser suite's archive is now deliberately **larger than a single request
+may carry**, and the test asserts the transport itself — one session, several
+parts, one finalize, and no 413 anywhere — rather than only that the import
+worked.
+
+### Verification
+
+* Typecheck, lint, unit, integration and production build: all pass.
+* Browser: full suite **49 passed, 0 failed** (1 pre-existing documented
+  `fixme`). The health-import spec passed on four consecutive runs.
+* Manual large-file check, three consecutive runs: a **24 MB** archive →
+  1 open + 7 parts + 1 finalize, every response 200, **no 413**, preview
+  shown, import confirmed, readings visible on `/health/activity`, history
+  entry written, undo removed it, zero leftover upload sessions, and no console
+  errors beyond the `/_vercel/insights/script.js` 404 every non-Vercel
+  deployment produces. A **64 MB** archive completed the same round trip in 17
+  parts. (Above ~50 MB Playwright's own CDP file transfer intermittently
+  delivers an empty `input.files` — a harness limit, not an app one — so the
+  repeatable check is pinned below it.)
+
+### Performance notes
+
+* Parsing is untouched: the same streaming reader, the same bounds, the same
+  per-day accumulators. A 24 MB archive's parse still reports as sub-second.
+* Reassembly reads four parts per round trip, streamed straight to disk, so
+  peak memory is a few megabytes whatever the export weighs.
+* The archive crosses the wire twice (up in parts, down once to be parsed).
+  That is inherent to staging on a platform with no shared scratch, and it is
+  bounded by the same 60 s invocation the parse already had.
+* Cleanup is a single indexed `deleteMany` on `expiresAt`. Cleanup that costs
+  anything is cleanup that gets turned off.
+
+### Deliberately not implemented
+
+* **A resumable upload.** A half-finished upload is not something a user should
+  have to reason about; picking the file again is one click and always correct.
+* **Blob or object-storage drivers.** The store sits behind a small module
+  boundary so one could be added, but adding a service and a credential to fix
+  a problem the database already fixes is not an improvement.
+* **Staging the backup import the same way.** It has the identical defect and
+  the identical fix, and it is a separate change with its own restore-safety
+  surface. Recorded in `docs/troubleshooting.md` as the obvious next candidate.
+* **Parallel parsing, or parsing parts as they arrive.** Inflate state cannot
+  span invocations, and the ZIP central directory is at the end of the file.
+
+### Exact next step
+
+**The AI assistant phase.** The reason this phase came first is now closed: the
+import path works on the deployment it ships to, end to end, and is asserted to
+keep working by tests that fail in CI rather than in production.
+
+The non-AI candidates from Phase A.2 remain open and unchanged: health goals
+over the new metrics through the existing goal engine; a correlations view over
+the trend series; nutrition reconciliation; per-metric detail pages; folding
+health signals into the "needs attention" digest. Staged upload for the
+**backup** import is now on that list too.

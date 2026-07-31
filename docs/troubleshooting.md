@@ -87,22 +87,60 @@ later.
 The value must be a **literal**: Next.js statically analyses route segment
 config and refuses to build if it is an imported constant.
 
+## A health import fails with `413 FUNCTION_PAYLOAD_TOO_LARGE`
+
+**This should no longer happen.** If it does, it is a bug — please report it
+with the request path from the browser's network panel.
+
+Vercel rejects a request body above about **4.5 MB** *at the edge*, before the
+function runs, so the app never sees it and cannot phrase the error. The
+importer used to POST the whole Apple Health `export.zip` as one body, which is
+one to three orders of magnitude over that cap — so on a hosted deployment
+every real export failed with exactly this message and nothing else.
+
+The upload is now staged: the browser slices the archive into 4 MB parts, sends
+one request each to `PUT /api/health/import/part`, and a final call reassembles
+and parses them. No request the client makes approaches the platform's cap, and
+`tests/deploy-config.test.ts` asserts that relationship so it cannot regress
+into a production-only failure.
+
+If you see a 413 today, check in this order:
+
+1. **A proxy in front of the app with a smaller body limit than 4 MB.** nginx's
+   `client_max_body_size` defaults to 1 MB. Raise it to at least 8 MB.
+2. **A stale deployment.** The staged upload needs both the client and the three
+   `/api/health/import*` routes from the same build.
+
 ## A health export is refused as too large on a hosted deployment
 
-Vercel rejects a request body above about **4.5 MB** before the function runs.
-The app knows this: when `VERCEL` is set it advertises and enforces that number
-rather than its own 2 GB ceiling, so the import page states the real limit up
-front and the refusal says the platform is the reason.
+Different failure, different cause: this one comes *from the app*, names a size,
+and says what to do about it.
+
+The archive is reassembled in the function's own scratch space (Vercel gives it
+about 500 MB) and its parts sit in your database while the upload is in flight,
+so a hosted deployment stages up to **256 MB** by default — not the 4.5 MB
+request cap, which no longer bounds the file.
 
 1. **Set the real limit if you know it.** `HEALTH_MAX_UPLOAD_MB` overrides the
-   default — a reverse proxy with its own `client_max_body_size`, or a plan
-   with a higher body cap. It can never raise the app's own 2 GB ceiling.
-2. **Self-host for a genuinely large export.** `npm start` behind your own
-   proxy has neither the body cap nor the execution-time cap, and a real
-   multi-gigabyte Apple Health export needs both lifted.
+   default — a plan with more scratch space, or a database that can hold more
+   than a free tier. It can never raise the app's own 2 GB ceiling.
+2. **Self-host for a genuinely large export.** `npm start` behind your own proxy
+   has neither the scratch-space cap nor the execution-time cap and stages up to
+   2 GB, which a decade-long export with workout routes can need.
 
-Nothing partial is ever written: an upload the platform rejects never reaches
-the app, and one the app rejects is deleted with its temporary file.
+Nothing partial is ever written: a refused upload's parts are deleted with it,
+and an abandoned one expires within the hour.
+
+## A health upload says another import is already in progress
+
+An account may hold two staged uploads at once — the bound that stops an
+abandoned upload filling the database. Closing the tab mid-upload leaves one
+behind.
+
+It clears itself: opening a new upload discards any of your own that have been
+idle for fifteen minutes, and every upload expires an hour after it started.
+Cancelling an upload with the button deletes its parts immediately, which is the
+fastest way to free a slot.
 
 ## A deploy fails during the migration step
 
@@ -140,9 +178,12 @@ request never reached the app.
    ceiling), or wait — chunked backup import is a known possible improvement,
    not a promise. The export side always works regardless of size.
 
-Note this is the *backup* import, which travels through a server action. The
-**health** import does not: it streams to `/api/health/import`, and its limit is
-described in the section above.
+Note this is the *backup* import, which travels through a server action — one
+request, whole body, so the platform cap genuinely binds it. The **health**
+import no longer works that way: it uploads in 4 MB parts, so its limit is set
+by what the deployment can stage rather than by what one request may carry. The
+same staging approach is the obvious future fix for backup import; it is a known
+possible improvement, not a promise.
 
 ## Push reminders don't arrive
 

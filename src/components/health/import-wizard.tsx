@@ -17,7 +17,9 @@ import {
   DialogTitle,
 } from "@/components/ui/dialog";
 import { Label } from "@/components/ui/label";
-import { formatBytes, formatNumber } from "@/lib/utils";
+import { Progress } from "@/components/ui/progress";
+import { stageHealthFile, type UploadStage } from "@/lib/health/staged-upload";
+import { cn, formatBytes, formatNumber } from "@/lib/utils";
 import {
   cancelHealthImportAction,
   confirmHealthImportAction,
@@ -25,16 +27,34 @@ import {
 import type { ImportOutcome, ImportPreviewResult } from "@/server/health-import";
 
 /**
- * The staged import: pick a file → it uploads and is parsed **on the server**
- * → a server-checked preview (nothing written) → choose what to bring in →
- * confirm → results. Cancelling discards the staged rows; the health tables
- * are only ever touched by the confirm step.
+ * The staged import: pick a file → it uploads **in parts** → the server
+ * reassembles and parses it → a server-checked preview (nothing written) →
+ * choose what to bring in → confirm → results. Cancelling discards the staged
+ * rows; the health tables are only ever touched by the confirm step.
  *
- * The upload goes to `/api/health/import` rather than through a server action
- * because an action buffers its whole body in memory and caps it at a few
- * megabytes — an Apple Health export is routinely far larger, and the route
- * streams it to disk instead.
+ * The file is never sent as one request body. It used to be, and on a hosting
+ * platform that failed at the edge with `413 FUNCTION_PAYLOAD_TOO_LARGE`
+ * before any of this app's code ran — an Apple Health export is one to three
+ * orders of magnitude larger than a serverless request may carry. The parts,
+ * the retries and the bounds live in `@/lib/health/staged-upload`; this
+ * component only renders where the upload has got to.
+ *
+ * The stages are shown rather than summarised in one spinner, because they take
+ * meaningfully different amounts of time — minutes of upload, then seconds of
+ * parsing — and a user watching a single "working…" has no way to tell a slow
+ * upload from a hung one.
  */
+
+/** The stages, in the order they happen, as the user sees them. */
+const STAGE_ORDER: ReadonlyArray<{ key: UploadStage; label: string }> = [
+  { key: "preparing", label: "Staging" },
+  { key: "uploading", label: "Upload" },
+  { key: "parsing", label: "Parsing" },
+  { key: "preview", label: "Preview" },
+  { key: "importing", label: "Import" },
+  { key: "done", label: "Summary" },
+];
+
 export function ImportWizard({
   compact = false,
   limitNote,
@@ -45,51 +65,83 @@ export function ImportWizard({
 }) {
   const router = useRouter();
   const fileRef = React.useRef<HTMLInputElement>(null);
+  const abortRef = React.useRef<AbortController | null>(null);
   const [open, setOpen] = React.useState(false);
   const [busy, setBusy] = React.useState(false);
-  const [progress, setProgress] = React.useState<string | null>(null);
+  const [stage, setStage] = React.useState<UploadStage>("idle");
+  const [uploaded, setUploaded] = React.useState({ sent: 0, total: 0, parts: 0, totalParts: 0 });
+  const [fileLabel, setFileLabel] = React.useState<string | null>(null);
   const [preview, setPreview] = React.useState<ImportPreviewResult | null>(null);
   const [outcome, setOutcome] = React.useState<ImportOutcome | null>(null);
   const [selected, setSelected] = React.useState<Set<string>>(new Set());
+
+  /**
+   * An upload in flight when the page goes away is an upload nobody is waiting
+   * for: abort it so its staged parts are dropped now rather than at expiry.
+   *
+   * Both halves are needed. Unmount covers navigating within the app; it does
+   * **not** run when the tab is closed or the browser is quit, which is the
+   * common way an upload is abandoned. `pagehide` covers that (and, unlike
+   * `beforeunload`, fires on mobile Safari's bfcache path too). The abort makes
+   * the upload client send its `keepalive` DELETE, which is the part that
+   * actually outlives the document — otherwise the account keeps paying for a
+   * slot it is no longer using.
+   */
+  React.useEffect(() => {
+    const abandon = () => abortRef.current?.abort();
+    window.addEventListener("pagehide", abandon);
+    return () => {
+      window.removeEventListener("pagehide", abandon);
+      abandon();
+    };
+  }, []);
 
   async function onFile(event: React.ChangeEvent<HTMLInputElement>) {
     const file = event.target.files?.[0];
     event.target.value = "";
     if (!file) return;
 
+    const controller = new AbortController();
+    abortRef.current = controller;
     setBusy(true);
     setOutcome(null);
-    setProgress(`Uploading ${formatBytes(file.size)}…`);
-    try {
-      const response = await fetch("/api/health/import", {
-        method: "POST",
-        body: file,
-        headers: {
-          "content-type": "application/octet-stream",
-          // Percent-encoded so a name with non-ASCII characters survives as
-          // a header; the server takes the base name and nothing else.
-          "x-file-name": encodeURIComponent(file.name),
-        },
-      });
-      setProgress("Reading the export on the server…");
+    setFileLabel(`${file.name} · ${formatBytes(file.size)}`);
+    setStage("preparing");
+    setUploaded({ sent: 0, total: file.size, parts: 0, totalParts: 0 });
 
-      const payload = (await response.json()) as
-        | { ok: true; preview: ImportPreviewResult }
-        | { ok: false; error: string };
+    const result = await stageHealthFile(file, {
+      signal: controller.signal,
+      onProgress: (progress) => {
+        setStage(progress.stage);
+        setUploaded({
+          sent: progress.sent,
+          total: progress.total,
+          parts: progress.parts,
+          totalParts: progress.totalParts,
+        });
+      },
+    });
 
-      if (!payload.ok) {
-        toast.error(payload.error);
-        return;
-      }
-      setPreview(payload.preview);
-      setSelected(new Set(payload.preview.categories.map((category) => category.key)));
-      setOpen(true);
-    } catch {
-      toast.error("The upload did not complete. Nothing was imported.");
-    } finally {
-      setBusy(false);
-      setProgress(null);
+    abortRef.current = null;
+    setBusy(false);
+
+    if (!result.ok) {
+      setStage("idle");
+      setFileLabel(null);
+      // A cancellation is the user's own doing; saying so as an error is noise.
+      if (!result.cancelled) toast.error(result.error);
+      return;
     }
+
+    setStage("preview");
+    setPreview(result.preview);
+    setSelected(new Set(result.preview.categories.map((category) => category.key)));
+    setOpen(true);
+  }
+
+  function cancelUpload() {
+    abortRef.current?.abort();
+    abortRef.current = null;
   }
 
   function toggleCategory(key: string, checked: boolean) {
@@ -104,17 +156,20 @@ export function ImportWizard({
   async function confirm() {
     if (!preview) return;
     setBusy(true);
+    setStage("importing");
     try {
       const result = await confirmHealthImportAction({
         token: preview.token,
         categories: [...selected],
       });
       if (!result.ok) {
+        setStage("preview");
         toast.error(result.error);
         return;
       }
       setOutcome(result.data);
       setPreview(null);
+      setStage("done");
       router.refresh();
     } finally {
       setBusy(false);
@@ -126,12 +181,16 @@ export function ImportWizard({
     setOpen(false);
     setPreview(null);
     setOutcome(null);
+    setStage("idle");
+    setFileLabel(null);
     if (token) await cancelHealthImportAction(token);
   }
 
   function closeAfterDone() {
     setOpen(false);
     setOutcome(null);
+    setStage("idle");
+    setFileLabel(null);
   }
 
   return (
@@ -156,17 +215,23 @@ export function ImportWizard({
         >
           Download the CSV template
         </a>
-        {progress && (
-          <span className="text-xs text-muted-foreground" role="status">
-            {progress}
-          </span>
-        )}
       </div>
+
+      {stage !== "idle" && (
+        <StagePanel
+          stage={stage}
+          fileLabel={fileLabel}
+          uploaded={uploaded}
+          onCancel={busy && (stage === "preparing" || stage === "uploading") ? cancelUpload : null}
+        />
+      )}
+
       {!compact && (
         <p className="mt-2 text-xs text-muted-foreground">
-          Apple Health <code>export.zip</code>, <code>export.xml</code> or a CSV. The file is read
-          on the server, in your account only, and is deleted the moment the preview is ready —
-          nothing is saved to your health records until you confirm.
+          Apple Health <code>export.zip</code>, <code>export.xml</code> or a CSV. The file is sent in
+          parts, reassembled and read on the server, in your account only, and every part is deleted
+          the moment the preview is ready — nothing is saved to your health records until you
+          confirm.
           {limitNote ? ` ${limitNote}` : ""}
         </p>
       )}
@@ -335,6 +400,98 @@ export function ImportWizard({
         </DialogContent>
       </Dialog>
     </>
+  );
+}
+
+/** What each stage is actually doing, in the user's terms. */
+const STAGE_DETAIL: Record<UploadStage, string> = {
+  idle: "",
+  preparing: "Preparing the upload…",
+  uploading: "Uploading in parts — no single request is large enough to be refused.",
+  parsing: "Reassembling and reading the export on the server…",
+  preview: "Ready to preview. Nothing has been saved yet.",
+  importing: "Writing the selected categories…",
+  done: "Import complete.",
+};
+
+/**
+ * Where the upload has got to.
+ *
+ * Rendered as named steps rather than one spinner because the stages take
+ * genuinely different amounts of time: uploading a large export is minutes,
+ * parsing it is seconds. A single "working…" leaves a user unable to tell a
+ * slow upload from a stuck one, which is precisely the confusion this whole
+ * change exists to remove.
+ *
+ * `role="status"` with `aria-live="polite"` so a screen reader is told when a
+ * stage changes without the announcement interrupting anything.
+ */
+function StagePanel({
+  stage,
+  fileLabel,
+  uploaded,
+  onCancel,
+}: {
+  stage: UploadStage;
+  fileLabel: string | null;
+  uploaded: { sent: number; total: number; parts: number; totalParts: number };
+  onCancel: (() => void) | null;
+}) {
+  const current = STAGE_ORDER.findIndex((entry) => entry.key === stage);
+  const percent = uploaded.total > 0 ? Math.round((uploaded.sent / uploaded.total) * 100) : 0;
+
+  return (
+    <div
+      className="mt-3 rounded-lg border bg-muted/30 p-3"
+      role="status"
+      aria-live="polite"
+      data-testid="import-stage"
+    >
+      <div className="flex flex-wrap items-center justify-between gap-2">
+        <p className="truncate text-xs font-medium">{fileLabel ?? "Health export"}</p>
+        {onCancel && (
+          <Button variant="ghost" size="sm" className="h-6 px-2 text-xs" onClick={onCancel}>
+            Cancel upload
+          </Button>
+        )}
+      </div>
+
+      <ol className="mt-2 flex flex-wrap items-center gap-x-1.5 gap-y-1 text-[11px]">
+        {STAGE_ORDER.map((entry, index) => (
+          <li key={entry.key} className="flex items-center gap-1.5">
+            <span
+              className={cn(
+                "rounded px-1.5 py-0.5",
+                index < current && "text-muted-foreground",
+                index === current && "bg-primary/10 font-medium text-foreground",
+                index > current && "text-muted-foreground/50",
+              )}
+              aria-current={index === current ? "step" : undefined}
+            >
+              {entry.label}
+            </span>
+            {index < STAGE_ORDER.length - 1 && (
+              <span aria-hidden className="text-muted-foreground/40">
+                →
+              </span>
+            )}
+          </li>
+        ))}
+      </ol>
+
+      {stage === "uploading" && uploaded.totalParts > 0 && (
+        <div className="mt-2 space-y-1">
+          <Progress value={percent} className="h-1.5" />
+          <p className="tabular text-[11px] text-muted-foreground">
+            {formatBytes(uploaded.sent)} of {formatBytes(uploaded.total)} · part{" "}
+            {formatNumber(Math.min(uploaded.parts + 1, uploaded.totalParts))} of{" "}
+            {formatNumber(uploaded.totalParts)} · {percent}%
+          </p>
+        </div>
+      )}
+
+      <p className="mt-1.5 text-[11px] text-muted-foreground">{STAGE_DETAIL[stage]}</p>
+    </div>
   );
 }
 

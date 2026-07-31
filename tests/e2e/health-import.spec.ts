@@ -1,5 +1,5 @@
 import { deflateRawSync } from "node:zlib";
-import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { mkdtemp, rm, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { expect, test } from "@playwright/test";
@@ -8,10 +8,17 @@ import type { Page } from "@playwright/test";
 import { STORAGE } from "./auth";
 
 /**
- * The whole import, through the browser: choose a file → it uploads and is
- * parsed on the server → preview → confirm → the data appears across the
- * Health section and in search → re-importing is a no-op → undo puts
- * everything back.
+ * The whole import, through the browser: choose a file → it uploads **in
+ * parts** → the server reassembles and parses it → preview → confirm → the
+ * data appears across the Health section and in search → re-importing is a
+ * no-op → undo puts everything back.
+ *
+ * The archive is deliberately larger than a hosting platform will accept in a
+ * single request. That is the regression this suite now guards: the importer
+ * used to POST the whole export as one body, which Vercel refuses at the edge
+ * with `413 FUNCTION_PAYLOAD_TOO_LARGE` before any application code runs. The
+ * assertions below check the transport itself — several part requests, one
+ * finalize, and no 413 anywhere — not just that the import happened to work.
  *
  * The export is built here rather than fixture-loaded, so this runs against
  * any database including CI's empty one, and every run cleans up after itself
@@ -56,19 +63,30 @@ function watchConsole(page: Page): () => string[] {
   return () => errors;
 }
 
-/** A minimal ZIP writer: deflate each member, then a central directory. */
-function buildZip(members: Array<{ name: string; content: string }>): Buffer {
+interface ZipMember {
+  name: string;
+  content: string | Buffer;
+  /** Stored (method 0) rather than deflated — used to make a bulky archive. */
+  stored?: boolean;
+}
+
+/** A minimal ZIP writer: deflate (or store) each member, then a directory. */
+function buildZip(members: ZipMember[]): Buffer {
   const parts: Buffer[] = [];
   const central: Buffer[] = [];
   let offset = 0;
   for (const member of members) {
     const name = Buffer.from(member.name, "utf8");
-    const raw = Buffer.from(member.content, "utf8");
-    const data = deflateRawSync(raw);
+    const raw = Buffer.isBuffer(member.content)
+      ? member.content
+      : Buffer.from(member.content, "utf8");
+    const data = member.stored ? raw : deflateRawSync(raw);
+    const method = member.stored ? 0 : 8;
+
     const local = Buffer.alloc(30);
     local.writeUInt32LE(0x04034b50, 0);
     local.writeUInt16LE(0x800, 6);
-    local.writeUInt16LE(8, 8);
+    local.writeUInt16LE(method, 8);
     local.writeUInt32LE(data.length, 18);
     local.writeUInt32LE(raw.length, 22);
     local.writeUInt16LE(name.length, 26);
@@ -77,7 +95,7 @@ function buildZip(members: Array<{ name: string; content: string }>): Buffer {
     const dir = Buffer.alloc(46);
     dir.writeUInt32LE(0x02014b50, 0);
     dir.writeUInt16LE(0x800, 8);
-    dir.writeUInt16LE(8, 10);
+    dir.writeUInt16LE(method, 10);
     dir.writeUInt32LE(data.length, 20);
     dir.writeUInt32LE(raw.length, 24);
     dir.writeUInt16LE(name.length, 28);
@@ -93,6 +111,54 @@ function buildZip(members: Array<{ name: string; content: string }>): Buffer {
   eocd.writeUInt32LE(centralBuffer.length, 12);
   eocd.writeUInt32LE(offset, 16);
   return Buffer.concat([...parts, centralBuffer, eocd]);
+}
+
+/**
+ * What every hosting platform this app targets refuses in a single request.
+ * Vercel's documented cap is 4.5 MB; the archive below is deliberately larger
+ * so the test cannot pass by accident on the old one-shot upload.
+ */
+const PLATFORM_BODY_CAP = Math.floor(4.5 * 1024 * 1024);
+
+/**
+ * Incompressible-enough padding from a fixed seed: *stored*, so the ZIP cannot
+ * shrink it away, deterministic so the archive is byte-for-byte reproducible,
+ * and named so the parser skips it without reading a byte. The point is to make
+ * the upload big, not the import.
+ */
+function padding(bytes: number): Buffer {
+  const buffer = Buffer.alloc(bytes);
+  let seed = 0x2545f491;
+  for (let index = 0; index < bytes; index += 1) {
+    seed = (seed * 1664525 + 1013904223) >>> 0;
+    buffer[index] = seed >>> 24;
+  }
+  return buffer;
+}
+
+/** Requests the client made, so the transport itself can be asserted. */
+interface UploadTraffic {
+  opens: number;
+  parts: number;
+  finalizes: number;
+  rejected: number[];
+}
+
+function watchUpload(page: Page): () => UploadTraffic {
+  const traffic: UploadTraffic = { opens: 0, parts: 0, finalizes: 0, rejected: [] };
+  page.on("request", (request) => {
+    const url = request.url();
+    if (!url.includes("/api/health/import")) return;
+    if (url.includes("/api/health/import/part")) traffic.parts += 1;
+    else if (url.includes("/api/health/import/finalize")) traffic.finalizes += 1;
+    else if (request.method() === "POST") traffic.opens += 1;
+  });
+  page.on("response", (response) => {
+    if (!response.url().includes("/api/health/import")) return;
+    // 413 is the failure this whole design exists to make impossible.
+    if (response.status() === 413) traffic.rejected.push(response.status());
+  });
+  return () => traffic;
 }
 
 /**
@@ -162,6 +228,10 @@ test.beforeAll(async () => {
     buildZip([
       { name: "apple_health_export/export.xml", content: buildExportXml() },
       { name: "apple_health_export/export_cda.xml", content: "<ClinicalDocument/>" },
+      // Pushes the archive past what a single serverless request may carry, so
+      // the end-to-end test genuinely exercises the multi-part upload rather
+      // than the one-part case that would also have worked before.
+      { name: "apple_health_export/padding.bin", content: padding(9 * 1024 * 1024), stored: true },
       {
         name: "apple_health_export/electrocardiograms/ecg_e2e.csv",
         content: [
@@ -179,6 +249,14 @@ test.beforeAll(async () => {
       },
     ]),
   );
+
+  // The premise of this suite, asserted rather than assumed: if the archive
+  // ever shrank below the platform's request cap, every transport assertion
+  // below would still pass while testing nothing.
+  const { size } = await stat(archivePath);
+  expect(size, "the test archive must exceed a single request's payload limit").toBeGreaterThan(
+    PLATFORM_BODY_CAP,
+  );
 });
 
 test.afterAll(async () => {
@@ -189,6 +267,10 @@ async function upload(page: Page) {
   await page.goto("/health/import");
   await expect(page.getByRole("heading", { level: 2, name: "Import health data" })).toBeVisible();
   await page.setInputFiles('input[type="file"]', archivePath);
+  // The stage panel appears as soon as the upload starts, and names where it
+  // has got to — armed as a wait rather than an assertion so a fast upload
+  // cannot race past it.
+  await page.waitForSelector('[data-testid="import-stage"]', { state: "attached" });
   await expect(page.getByRole("heading", { name: /Preview/ })).toBeVisible({ timeout: 120_000 });
 }
 
@@ -208,8 +290,11 @@ async function expectRefusal(page: Page, file: string, reason: RegExp) {
   // Both waits are armed BEFORE the upload starts, which is the whole point:
   // a refusal for a tiny file is near-instant, so anything set up afterwards
   // is racing an outcome that has already happened.
-  const responded = page.waitForResponse((response) =>
-    response.url().includes("/api/health/import"),
+  // The refusal, specifically: a staged upload opens its session with a 200
+  // before anything can be refused, so waiting for "a response from the import
+  // API" would resolve on that success and assert nothing.
+  const responded = page.waitForResponse(
+    (response) => response.url().includes("/api/health/import") && response.status() >= 400,
   );
   const toasted = page.waitForSelector("[data-sonner-toast]", { state: "attached" });
 
@@ -230,9 +315,28 @@ async function expectRefusal(page: Page, file: string, reason: RegExp) {
 
 test("imports an Apple Health export end to end, then undoes it", async ({ page }) => {
   const consoleErrors = watchConsole(page);
+  const traffic = watchUpload(page);
 
   // --- preview ---------------------------------------------------------------
   await upload(page);
+
+  // --- the transport, before anything about the contents ---------------------
+  // The archive is larger than a serverless request may carry, so this is the
+  // evidence that it did not travel as one. One session, several parts, one
+  // finalize, and nothing anywhere answered 413.
+  const observed = traffic();
+  expect(observed.opens, "the upload must open exactly one session").toBe(1);
+  expect(observed.parts, "a >4.5 MB archive must arrive in several parts").toBeGreaterThan(1);
+  expect(observed.finalizes, "the parse is one call, after the parts").toBe(1);
+  expect(observed.rejected, "no request may hit the platform's payload limit").toEqual([]);
+
+  // The user is told what is happening, in named stages rather than one
+  // spinner — the panel is still on the page behind the preview dialog.
+  const stagePanel = page.getByTestId("import-stage");
+  for (const label of ["Staging", "Upload", "Parsing", "Preview", "Import", "Summary"]) {
+    await expect(stagePanel, `the stage panel must name "${label}"`).toContainText(label);
+  }
+
   const dialog = page.getByRole("dialog");
   const previewText = (await dialog.textContent()) ?? "";
   for (const category of [

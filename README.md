@@ -290,14 +290,27 @@ water, body fat and VO₂ max over 7 days, 30 days, 90 days, 1 year or all time.
 in the URL (`/health/trends?range=90d`), so it is shareable and bookmarkable.
 
 **Importing Apple Health**: in the Health app, profile picture → *Export All Health Data* → move
-`export.zip` to the device you are using → `/health/import` → *Import health data*. The file is
-streamed to the server, parsed there, and the preview shows what was found (categories, counts,
-date range, what is already present) while your health tables are still untouched. You choose
-what to bring in, per category, and only confirmation writes anything.
+`export.zip` to the device you are using → `/health/import` → *Import health data*. The archive
+uploads **in parts**, the server reassembles and parses it, and the preview shows what was found
+(categories, counts, date range, what is already present) while your health tables are still
+untouched. You choose what to bring in, per category, and only confirmation writes anything. The
+page shows where it has got to throughout — *Staging → Upload → Parsing → Preview → Import →
+Summary*, with a progress bar and a part counter while the archive is going up.
 
-Self-hosted, the importer accepts up to 2 GB. On a hosting platform the platform's own request
-limit binds first and the app says so up front rather than promising a size it cannot accept —
-on Vercel that is 4.5 MB, overridable with `HEALTH_MAX_UPLOAD_MB` when you know your real limit.
+**The upload is staged, not one big request — and that is the point.** A hosting platform
+refuses a request body over a few megabytes *at the edge*, before any application code runs, and
+an Apple Health export is far larger than that. Sending the whole archive in one POST therefore
+failed on the hosted deployment with `413 FUNCTION_PAYLOAD_TOO_LARGE` and nothing the app could
+say about it. The browser now slices the file into 4 MB pieces, sends one request each (retrying
+a failed piece on its own, safely — a part is idempotent on its index), and a final call
+reassembles and parses them. No request approaches the platform's cap, so the size of the file
+and the size of a request are no longer the same number.
+
+Self-hosted, the importer stages up to 2 GB. On a hosting platform what binds is how much can be
+reassembled and parsed in one invocation — on Vercel that is 256 MB by default, roughly 57× the
+old effective limit and above the overwhelming majority of real exports, overridable with
+`HEALTH_MAX_UPLOAD_MB` when your plan and database allow more. The import page states the real
+number up front rather than promising a size it cannot accept.
 
 Raw sensor samples are rolled up to one row per day per device, workouts import as real
 workouts, and anything that looks like a workout you already logged by hand is **skipped and
@@ -337,8 +350,10 @@ guessed. `source` may be `csv`, `manual`, `estimated` or `calculated`; claiming 
 from a CSV is refused. Units convert automatically where they can (`l`→ml, `lb`→kg, `mi`→km,
 `kJ`→kcal, `min`→h, `degF`→°C); an unconvertible unit fails that row with a per-row message.
 
-**Privacy**: the upload is transient — streamed to a scratch path, parsed, and deleted before
-the preview appears, on every path including failures. Records are written against your account
+**Privacy**: the upload is transient — its parts are held in your own account's rows, reassembled
+into a scratch file, parsed, and deleted before the preview appears, on every path including
+failures. An abandoned upload expires within the hour. Nobody but you can add to, read or discard
+your upload; every query resolves it by `(id, userId)`. Records are written against your account
 and every query is scoped to it. ECG voltage traces, GPS coordinates and raw clinical documents
 are read for their summary and then dropped, never stored. Nothing is sent to any third party,
 and a committed test asserts the health modules contain no network call at all. Full detail in
@@ -817,7 +832,7 @@ npm run test:integration   # database-backed, against the disposable test databa
 npm run test:e2e       # Playwright browser suite (against a running production build)
 ```
 
-Three suites, each doing the job the others can't. The **unit suite** (1,011 tests) covers the pure
+Three suites, each doing the job the others can't. The **unit suite** (1,033 tests) covers the pure
 logic that would be expensive to get wrong:
 
 * **Scheduling** — every mode, both week-start settings, DST, leap years, month and year
@@ -878,14 +893,22 @@ logic that would be expensive to get wrong:
   accepts, `vercel.json`'s cron cadence held to the free plan's, and the upload limit resolving to
   what the deployment can actually keep. This suite exists because a `maxDuration` above the plan
   ceiling fails the *whole deployment* at deploy time, where lint, types, tests and the build
-  never see it.
+  never see it. It also holds the invariant behind the staged health upload: **one part must stay
+  comfortably below the platform's request-body cap**, with headroom, because a part size raised
+  above it would fail only in production — which is exactly how the original
+  `413 FUNCTION_PAYLOAD_TOO_LARGE` reached a deployed app.
+* **The staged upload client** — the browser half of the health import, against a fake server:
+  that a large file is sliced into parts and **no request ever carries more than one**, that the
+  parts reassemble to exactly the bytes chosen, that a transient failure is retried while a
+  refusal the server meant is not, that a cancelled upload abandons its session, and that a
+  platform rejection which answers HTML instead of JSON is still reported readably.
 * Plus nutrition serving maths, the natural-language quick-add parser, planner recurrence, and
   day-key/time handling including a DST boundary.
 
 The unit tests are pure — no database, no fixtures, no mocking — because all the logic they cover
 lives in `src/lib/logic`.
 
-The **integration suite** (263 tests) runs against a real PostgreSQL — always the disposable
+The **integration suite** (292 tests) runs against a real PostgreSQL — always the disposable
 `personal_os_test` database, reset and re-migrated from zero each run — and covers what pure tests
 cannot: unique constraints, transaction rollback, backup import isolation, the health import end to end
 (stage → preview → confirm → re-import → incremental import → undo, with ownership refused from
