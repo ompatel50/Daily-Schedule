@@ -1,6 +1,6 @@
 import type { DayKey } from "@/lib/date";
 import type { AccountType, BillRecurrence, FinanceCategory } from "@/lib/enums";
-import { ACCOUNT_TYPE_META, FINANCE_CATEGORY_META } from "@/lib/enums";
+import { ACCOUNT_TYPE_META, FINANCE_CATEGORY_META, isBookkeepingCategory } from "@/lib/enums";
 import {
   dueBucketOf,
   daysUntil,
@@ -102,15 +102,16 @@ export interface MoneySummary {
 
 /**
  * Income / spending / net over any window — the month card and the week card
- * are this one function over different slices. Balance adjustments are
- * bookkeeping, not earning or spending, and stay out of both sides.
+ * are this one function over different slices. Balance adjustments and
+ * transfer legs are bookkeeping, not earning or spending, and stay out of
+ * both sides — money moving between your own accounts changes no total.
  */
 export function summarizeTransactions(transactions: TransactionLike[]): MoneySummary {
   let income = 0;
   let spending = 0;
   let count = 0;
   for (const transaction of transactions) {
-    if (transaction.category === "adjustment") continue;
+    if (isBookkeepingCategory(transaction.category)) continue;
     count += 1;
     if (transaction.amount >= 0) income += transaction.amount;
     else spending += -transaction.amount;
@@ -133,7 +134,7 @@ export interface CategoryTotal {
 export function spendingByCategory(transactions: TransactionLike[], limit = 6): CategoryTotal[] {
   const totals = new Map<string, number>();
   for (const transaction of transactions) {
-    if (transaction.amount >= 0 || transaction.category === "adjustment") continue;
+    if (transaction.amount >= 0 || isBookkeepingCategory(transaction.category)) continue;
     totals.set(transaction.category, (totals.get(transaction.category) ?? 0) - transaction.amount);
   }
   return Array.from(totals.entries())
@@ -234,6 +235,114 @@ export function upcomingBillsTotal(views: BillDueView[], soonDays = 14): number 
       (view) => view.bill.amount,
     ),
   );
+}
+
+// --- budgets -----------------------------------------------------------------
+
+export interface BudgetLike {
+  id: string;
+  category: string;
+  amount: number;
+}
+
+export interface BudgetProgress<B extends BudgetLike = BudgetLike> {
+  budget: B;
+  label: string;
+  /** Money out in the budget's category over the window, as a positive number. */
+  spent: number;
+  /** Target − spent, floored at zero — "how much room is left". */
+  remaining: number;
+  /** Spent ÷ target, uncapped and rounded — 130 means 30% over. */
+  percent: number;
+  over: boolean;
+}
+
+/**
+ * Each budget against the window's transactions — the caller passes the slice
+ * that matches the budget period (a calendar month today). Spending only:
+ * income never offsets a budget, and bookkeeping rows never count against one.
+ * Most-spent-first, with anything over budget surfaced to the top.
+ */
+export function budgetProgress<B extends BudgetLike>(
+  budgets: B[],
+  transactions: TransactionLike[],
+): BudgetProgress<B>[] {
+  const spentByCategory = new Map<string, number>();
+  for (const transaction of transactions) {
+    if (transaction.amount >= 0 || isBookkeepingCategory(transaction.category)) continue;
+    spentByCategory.set(
+      transaction.category,
+      (spentByCategory.get(transaction.category) ?? 0) - transaction.amount,
+    );
+  }
+
+  return budgets
+    .map((budget) => {
+      const spent = moneyRound(spentByCategory.get(budget.category) ?? 0);
+      const target = Math.max(0, budget.amount);
+      return {
+        budget,
+        label: FINANCE_CATEGORY_META[budget.category as FinanceCategory]?.label ?? budget.category,
+        spent,
+        remaining: moneyRound(Math.max(0, target - spent)),
+        percent: target <= 0 ? (spent > 0 ? 999 : 0) : Math.round((spent / target) * 100),
+        over: spent > target,
+      };
+    })
+    .sort(
+      (a, b) =>
+        Number(b.over) - Number(a.over) || b.percent - a.percent || a.label.localeCompare(b.label),
+    );
+}
+
+// --- transfers ---------------------------------------------------------------
+
+/**
+ * The two ledger rows one transfer writes: money out of the source, the same
+ * money into the destination, both category `transfer` (excluded from every
+ * income/spending summary) and sharing a `transferGroupId` so delete removes
+ * the pair. Same-currency only — the caller enforces that; this function just
+ * shapes the legs.
+ */
+export function transferLegs(input: {
+  fromAccountId: string;
+  toAccountId: string;
+  fromAccountName: string;
+  toAccountName: string;
+  amount: number;
+  date: DayKey;
+  notes: string | null;
+  transferGroupId: string;
+}): Array<{
+  accountId: string;
+  date: DayKey;
+  amount: number;
+  category: "transfer";
+  payee: string;
+  notes: string | null;
+  transferGroupId: string;
+}> {
+  const amount = moneyRound(Math.abs(input.amount));
+  return [
+    {
+      accountId: input.fromAccountId,
+      date: input.date,
+      amount: -amount,
+      category: "transfer",
+      payee: `Transfer to ${input.toAccountName}`,
+      notes: input.notes,
+      transferGroupId: input.transferGroupId,
+    },
+    {
+      accountId: input.toAccountId,
+      date: input.date,
+      amount,
+      category: "transfer",
+      payee: `Transfer from ${input.fromAccountName}`,
+      notes: input.notes,
+      transferGroupId: input.transferGroupId,
+    },
+  ];
 }
 
 // --- savings goals -----------------------------------------------------------

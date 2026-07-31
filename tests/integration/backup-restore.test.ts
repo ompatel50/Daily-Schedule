@@ -133,6 +133,14 @@ function syntheticBackup(): Record<string, unknown> {
           allDay: true,
           mealId: "meal1",
         },
+        {
+          id: "si-task",
+          userId: "old-local-user",
+          title: "Paint hallway",
+          date: D2,
+          allDay: true,
+          taskId: "task1",
+        },
       ],
       scheduleItemTags: [{ scheduleItemId: "si-parent", tagId: "tag1" }],
       habitLogs: [
@@ -204,6 +212,12 @@ function syntheticBackup(): Record<string, unknown> {
       ],
       reminderDeliveries: [
         { id: "rd1", userId: "old-local-user", key: `habit:habit1:${D1}`, deliveredAt: NOW },
+        {
+          id: "rd2",
+          userId: "old-local-user",
+          key: `low_balance:acct1:${D1}`,
+          deliveredAt: NOW,
+        },
       ],
       favorites: [
         { id: "fav1", userId: "old-local-user", kind: "food", refId: "food-custom", label: "My shake" },
@@ -226,7 +240,26 @@ function syntheticBackup(): Record<string, unknown> {
         },
       ],
       financeAccounts: [
-        { id: "acct1", userId: "old-local-user", name: "Checking", openingBalance: 500 },
+        {
+          id: "acct1",
+          userId: "old-local-user",
+          name: "Checking",
+          openingBalance: 500,
+          lowBalanceThreshold: 100,
+        },
+        { id: "acct2", userId: "old-local-user", name: "Savings pot", type: "savings" },
+      ],
+      financeImportBatches: [
+        {
+          id: "fib1",
+          userId: "old-local-user",
+          accountId: "acct1",
+          fileName: "bank.csv",
+          rowCount: 1,
+          createdCount: 1,
+          skippedCount: 0,
+          rejectedCount: 0,
+        },
       ],
       bills: [
         {
@@ -251,6 +284,37 @@ function syntheticBackup(): Record<string, unknown> {
           category: "housing",
           payee: "Landlord",
         },
+        {
+          id: "txn-imported",
+          userId: "old-local-user",
+          accountId: "acct1",
+          date: D1,
+          amount: -42.5,
+          category: "groceries",
+          payee: "Grocer",
+          importKey: `v1|acct1|${D1}|-42.5|grocer|0`,
+          importBatchId: "fib1",
+        },
+        {
+          id: "txn-transfer-out",
+          userId: "old-local-user",
+          accountId: "acct1",
+          date: D2,
+          amount: -200,
+          category: "transfer",
+          payee: "Transfer to Savings pot",
+          transferGroupId: "grp-1",
+        },
+        {
+          id: "txn-transfer-in",
+          userId: "old-local-user",
+          accountId: "acct2",
+          date: D2,
+          amount: 200,
+          category: "transfer",
+          payee: "Transfer from Checking",
+          transferGroupId: "grp-1",
+        },
       ],
       savingsGoals: [
         {
@@ -261,7 +325,17 @@ function syntheticBackup(): Record<string, unknown> {
           currentAmount: 750,
         },
       ],
-      inboxItems: [{ id: "inbox1", userId: "old-local-user", title: "Renew passport" }],
+      budgets: [{ id: "bud1", userId: "old-local-user", category: "dining", amount: 250 }],
+      inboxItems: [
+        { id: "inbox1", userId: "old-local-user", title: "Renew passport" },
+        {
+          id: "inbox-converted",
+          userId: "old-local-user",
+          title: "Paint the hallway",
+          status: "archived",
+          taskId: "task1",
+        },
+      ],
       seedBatches: [],
       seedRecords: [],
     },
@@ -402,10 +476,57 @@ describe("importing a local backup into an empty hosted account", () => {
     const inboxItem = await prisma.inboxItem.findUniqueOrThrow({ where: { id: id("inbox1") } });
     expect(inboxItem.userId).toBe(alice.id);
 
+    // v5: the low-balance threshold survives on the account.
+    expect(account.lowBalanceThreshold).toBe(100);
+
+    // v5: the import batch and the ledger row that references it.
+    const batch = await prisma.financeImportBatch.findUniqueOrThrow({ where: { id: id("fib1") } });
+    expect(batch.userId).toBe(alice.id);
+    expect(batch.accountId).toBe(id("acct1"));
+    const imported = await prisma.financeTransaction.findUniqueOrThrow({
+      where: { id: id("txn-imported") },
+    });
+    expect(imported.importBatchId).toBe(id("fib1"));
+    expect(imported.importKey).toBe(`v1|acct1|${D1}|-42.5|grocer|0`);
+
+    // v5: transfer legs stay paired — the group id is remapped IDENTICALLY on
+    // both legs, and never survives as the file's raw value.
+    const out = await prisma.financeTransaction.findUniqueOrThrow({
+      where: { id: id("txn-transfer-out") },
+    });
+    const into = await prisma.financeTransaction.findUniqueOrThrow({
+      where: { id: id("txn-transfer-in") },
+    });
+    expect(out.transferGroupId).not.toBeNull();
+    expect(out.transferGroupId).toBe(into.transferGroupId);
+    expect(out.transferGroupId).not.toBe("grp-1");
+
+    // v5: the budget row, the planner block's task link, the converted
+    // capture's task link.
+    const budget = await prisma.budget.findUniqueOrThrow({ where: { id: id("bud1") } });
+    expect(budget.userId).toBe(alice.id);
+    expect(budget.category).toBe("dining");
+    const taskBlock = await prisma.scheduleItem.findUniqueOrThrow({
+      where: { id: id("si-task") },
+    });
+    expect(taskBlock.taskId).toBe(id("task1"));
+    const converted = await prisma.inboxItem.findUniqueOrThrow({
+      where: { id: id("inbox-converted") },
+    });
+    expect(converted.taskId).toBe(id("task1"));
+
+    // v5: the low-balance delivery key re-points at the remapped account.
+    const deliveries = await prisma.reminderDelivery.findMany({ where: { userId: alice.id } });
+    expect(deliveries.map((row) => row.key)).toContain(
+      `low_balance:${id("acct1")}:${D1}`,
+    );
+
     // And the report counts them.
     expect(result.data.verification.projects).toBe(1);
     expect(result.data.verification.tasks).toBe(2);
-    expect(result.data.verification.financeTransactions).toBe(1);
+    expect(result.data.verification.financeTransactions).toBe(4);
+    expect(result.data.verification.budgets).toBe(1);
+    expect(result.data.verification.financeImportBatches).toBe(1);
   });
 
   it("re-importing the same file creates nothing new", async () => {
@@ -420,8 +541,10 @@ describe("importing a local backup into an empty hosted account", () => {
     expect(await prisma.scheduleItem.count({ where: { userId: alice.id } })).toBe(countAfterFirst);
     // The life-admin tables are idempotent under the same deterministic ids.
     expect(await prisma.task.count({ where: { userId: alice.id } })).toBe(2);
-    expect(await prisma.financeTransaction.count({ where: { userId: alice.id } })).toBe(1);
-    expect(await prisma.inboxItem.count({ where: { userId: alice.id } })).toBe(1);
+    expect(await prisma.financeTransaction.count({ where: { userId: alice.id } })).toBe(4);
+    expect(await prisma.inboxItem.count({ where: { userId: alice.id } })).toBe(2);
+    expect(await prisma.budget.count({ where: { userId: alice.id } })).toBe(1);
+    expect(await prisma.financeImportBatch.count({ where: { userId: alice.id } })).toBe(1);
   });
 });
 
@@ -455,6 +578,19 @@ describe("replacement into an existing account", () => {
       data: { userId: alice.id, name: "Old goal", targetAmount: 100 },
     });
     await prisma.inboxItem.create({ data: { userId: alice.id, title: "Old note" } });
+    await prisma.budget.create({
+      data: { userId: alice.id, category: "travel", amount: 500 },
+    });
+    await prisma.financeImportBatch.create({
+      data: {
+        userId: alice.id,
+        fileName: "old.csv",
+        rowCount: 0,
+        createdCount: 0,
+        skippedCount: 0,
+        rejectedCount: 0,
+      },
+    });
 
     const result = await importBackup(syntheticBackup(), "replace");
     expect(result.ok).toBe(true);
@@ -462,27 +598,36 @@ describe("replacement into an existing account", () => {
     // Only the file's rows survive — the "Old *" rows are gone.
     const tasks = (await prisma.task.findMany({ where: { userId: alice.id } })).map((t) => t.title);
     expect(tasks.sort()).toEqual(["Buy paint", "Paint hallway"]);
-    const accounts = (await prisma.financeAccount.findMany({ where: { userId: alice.id } })).map(
-      (a) => a.name,
-    );
-    expect(accounts).toEqual(["Checking"]);
+    const accounts = (await prisma.financeAccount.findMany({ where: { userId: alice.id } }))
+      .map((a) => a.name)
+      .sort();
+    expect(accounts).toEqual(["Checking", "Savings pot"]);
     const bills = (await prisma.bill.findMany({ where: { userId: alice.id } })).map((b) => b.name);
     expect(bills).toEqual(["Rent"]);
     const transactions = await prisma.financeTransaction.findMany({
       where: { userId: alice.id },
     });
-    expect(transactions.map((t) => t.payee)).toEqual(["Landlord"]);
+    expect(transactions).toHaveLength(4);
+    expect(transactions.map((t) => t.payee)).toContain("Landlord");
     const goals = (await prisma.savingsGoal.findMany({ where: { userId: alice.id } })).map(
       (g) => g.name,
     );
     expect(goals).toEqual(["Emergency fund"]);
-    const inbox = (await prisma.inboxItem.findMany({ where: { userId: alice.id } })).map(
-      (i) => i.title,
-    );
-    expect(inbox).toEqual(["Renew passport"]);
+    const inbox = (await prisma.inboxItem.findMany({ where: { userId: alice.id } }))
+      .map((i) => i.title)
+      .sort();
+    expect(inbox).toEqual(["Paint the hallway", "Renew passport"]);
     expect(
       (await prisma.project.findMany({ where: { userId: alice.id } })).map((p) => p.name),
     ).toEqual(["Home renovation"]);
+    expect(
+      (await prisma.budget.findMany({ where: { userId: alice.id } })).map((b) => b.category),
+    ).toEqual(["dining"]);
+    expect(
+      (await prisma.financeImportBatch.findMany({ where: { userId: alice.id } })).map(
+        (b) => b.fileName,
+      ),
+    ).toEqual(["bank.csv"]);
   });
 
   it("merge keeps the account's previous records", async () => {
@@ -604,7 +749,8 @@ describe("cross-user safety", () => {
     const outcome = result.ok
       ? result.data.perTable.find((t) => t.table === "financeTransactions")
       : null;
-    expect(outcome?.dropped).toBe(1);
+    // Every ledger row in the fixture dangles once the accounts are gone.
+    expect(outcome?.dropped).toBe(4);
     // The bill still imports — its account link is optional and was unlinked.
     const bill = await prisma.bill.findUniqueOrThrow({
       where: { id: remapId(alice.id, "bill1") },

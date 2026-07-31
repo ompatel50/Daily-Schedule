@@ -4,7 +4,14 @@ import { revalidatePath } from "next/cache";
 
 import { getCurrentUser, prisma } from "@/lib/db";
 import { INBOX_STATUSES, type InboxStatus } from "@/lib/enums";
-import { fail, fromZod, inboxItemSchema, succeed, type ActionResult } from "@/lib/validation";
+import {
+  convertInboxItemSchema,
+  fail,
+  fromZod,
+  inboxItemSchema,
+  succeed,
+  type ActionResult,
+} from "@/lib/validation";
 
 function revalidateAll() {
   revalidatePath("/", "layout");
@@ -47,4 +54,66 @@ export async function deleteInboxItem(id: string): Promise<ActionResult<null>> {
   await prisma.inboxItem.deleteMany({ where: { id, userId: user.id } });
   revalidateAll();
   return succeed(null);
+}
+
+export interface ConvertInboxItemOutcome {
+  taskId: string;
+}
+
+/**
+ * Turn a capture into a task, atomically: the task is created and the item is
+ * archived with a link to it in one transaction. The link is also the
+ * double-conversion guard — an item that already became a task refuses to
+ * become a second one until that task is deleted (which frees the link via
+ * SetNull). The inbox stays a capture queue; the work now lives in Tasks.
+ */
+export async function convertInboxItemToTask(
+  input: unknown,
+): Promise<ActionResult<ConvertInboxItemOutcome>> {
+  const parsed = convertInboxItemSchema.safeParse(input);
+  if (!parsed.success) return fromZod(parsed.error);
+  const user = await getCurrentUser();
+  const { id, projectId, ...data } = parsed.data;
+
+  const item = await prisma.inboxItem.findFirst({ where: { id, userId: user.id } });
+  if (!item) return fail("Inbox item not found");
+  if (item.taskId) return fail("This item already became a task");
+
+  if (projectId) {
+    const project = await prisma.project.findFirst({
+      where: { id: projectId, userId: user.id },
+    });
+    if (!project) return fail("Project not found");
+  }
+
+  const task = await prisma.$transaction(async (db) => {
+    // Guarded update first: if another tab converted the item in the
+    // meantime, the count is 0 and nothing is created.
+    const claimed = await db.inboxItem.updateMany({
+      where: { id, userId: user.id, taskId: null },
+      data: { status: "archived", completedAt: null },
+    });
+    if (claimed.count === 0) throw new Error("already-converted");
+
+    const created = await db.task.create({
+      data: {
+        userId: user.id,
+        title: data.title ?? item.title,
+        notes: data.notes !== undefined ? data.notes : item.notes,
+        projectId: projectId ?? null,
+        priority: data.priority,
+        dueDate: data.dueDate ?? null,
+        sortOrder: await db.task.count({ where: { userId: user.id, status: "open" } }),
+      },
+    });
+    await db.inboxItem.update({ where: { id }, data: { taskId: created.id } });
+    return created;
+  }).catch((error: Error) => {
+    if (error.message === "already-converted") return null;
+    throw error;
+  });
+
+  if (!task) return fail("This item already became a task");
+  revalidateAll();
+  return succeed({ taskId: task.id });
 }

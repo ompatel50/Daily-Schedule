@@ -25,6 +25,13 @@ async function openTasksImpl(userId: string) {
         select: { id: true, title: true, status: true, sortOrder: true },
         orderBy: [{ sortOrder: "asc" }, { createdAt: "asc" }],
       },
+      // Planner blocks created from this task ("add to planner") — enough to
+      // show a "scheduled" chip without loading planner history.
+      scheduleItems: {
+        select: { id: true, date: true, status: true },
+        orderBy: { date: "asc" },
+        take: 3,
+      },
     },
     orderBy: [{ dueDate: { sort: "asc", nulls: "last" } }, { sortOrder: "asc" }],
     take: OPEN_TASKS_CAP,

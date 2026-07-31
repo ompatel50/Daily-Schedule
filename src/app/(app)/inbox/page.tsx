@@ -16,13 +16,14 @@ export const dynamic = "force-dynamic";
 export default async function InboxPage() {
   const user = await getUser();
   const settings = scheduleSettingsFor(user);
-  const { open, resolved } = await getInboxPage();
+  const { open, resolved, projects } = await getInboxPage();
 
   const mapItem = (item: (typeof open)[number]): InboxListItem => ({
     id: item.id,
     title: item.title,
     notes: item.notes,
     status: item.status,
+    taskId: item.taskId,
     createdDay: toDayKey(item.createdAt),
     resolvedDay: toDayKey(item.updatedAt),
   });
@@ -47,6 +48,7 @@ export default async function InboxPage() {
         <InboxBoard
           open={open.map(mapItem)}
           resolved={resolved.map(mapItem)}
+          projects={projects.map((project) => ({ id: project.id, name: project.name }))}
           today={settings.today}
         />
       </Suspense>

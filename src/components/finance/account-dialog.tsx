@@ -34,6 +34,8 @@ export interface AccountView {
   type: string;
   currency: string;
   openingBalance: number;
+  /** Remind when the balance drops below this; null = no alert. */
+  lowBalanceThreshold: number | null;
   notes: string | null;
   archived: boolean;
   /** openingBalance + every transaction — computed on the server. */
@@ -47,11 +49,20 @@ interface AccountForm {
   type: string;
   currency: string;
   openingBalance: string;
+  /** Empty string = no low-balance alert. */
+  lowBalanceThreshold: string;
   notes: string;
 }
 
 function blankAccount(): AccountForm {
-  return { name: "", type: "checking", currency: "USD", openingBalance: "0", notes: "" };
+  return {
+    name: "",
+    type: "checking",
+    currency: "USD",
+    openingBalance: "0",
+    lowBalanceThreshold: "",
+    notes: "",
+  };
 }
 
 function formFrom(account: AccountView): AccountForm {
@@ -60,6 +71,8 @@ function formFrom(account: AccountView): AccountForm {
     type: account.type,
     currency: account.currency,
     openingBalance: String(account.openingBalance),
+    lowBalanceThreshold:
+      account.lowBalanceThreshold === null ? "" : String(account.lowBalanceThreshold),
     notes: account.notes ?? "",
   };
 }
@@ -102,6 +115,12 @@ export function AccountDialog({
       setErrors({ openingBalance: ["Enter a number"] });
       return;
     }
+    const thresholdRaw = form.lowBalanceThreshold.trim();
+    const lowBalanceThreshold = thresholdRaw === "" ? null : Number(thresholdRaw);
+    if (lowBalanceThreshold !== null && !Number.isFinite(lowBalanceThreshold)) {
+      setErrors({ lowBalanceThreshold: ["Enter a number, or leave it empty"] });
+      return;
+    }
 
     startTransition(async () => {
       const result = await saveFinanceAccount({
@@ -110,6 +129,7 @@ export function AccountDialog({
         type: form.type,
         currency: form.currency.trim() || "USD",
         openingBalance,
+        lowBalanceThreshold,
         notes: form.notes.trim() || null,
       });
 
@@ -212,6 +232,33 @@ export function AccountDialog({
                   ? "Changing this shifts the computed balance — prefer “Set balance…” for corrections."
                   : "What the account held before the first transaction you record. Negative for money owed."}
               </p>
+            </div>
+
+            <div className="space-y-1.5">
+              <Label htmlFor="account-threshold">Low-balance alert (optional)</Label>
+              <Input
+                id="account-threshold"
+                type="number"
+                inputMode="decimal"
+                step="0.01"
+                value={form.lowBalanceThreshold}
+                aria-invalid={Boolean(errors.lowBalanceThreshold)}
+                aria-describedby={
+                  errors.lowBalanceThreshold ? "account-threshold-error" : undefined
+                }
+                onChange={(event) => set("lowBalanceThreshold", event.target.value)}
+                placeholder="No alert"
+              />
+              {errors.lowBalanceThreshold ? (
+                <p id="account-threshold-error" className="text-xs text-destructive">
+                  {errors.lowBalanceThreshold[0]}
+                </p>
+              ) : (
+                <p className="text-xs text-muted-foreground">
+                  Remind me when the balance drops below this — at most once a week. Leave empty
+                  for no alert.
+                </p>
+              )}
             </div>
 
             <div className="space-y-1.5">

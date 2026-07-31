@@ -52,6 +52,35 @@ describe("backup validation", () => {
     expect(result.warnings.join(" ")).toContain("every-day schedule");
   });
 
+  it("v5 carries the finance-workflow tables and counts their rows", () => {
+    expect(BACKUP_VERSION).toBe(5);
+    expect(BACKUP_TABLES).toContain("budgets");
+    expect(BACKUP_TABLES).toContain("financeImportBatches");
+    // Restore order: tasks precede the schedule items that may link to them,
+    // and import batches precede the transactions that may link to THEM.
+    expect(BACKUP_TABLES.indexOf("tasks")).toBeLessThan(BACKUP_TABLES.indexOf("scheduleItems"));
+    expect(BACKUP_TABLES.indexOf("financeImportBatches")).toBeLessThan(
+      BACKUP_TABLES.indexOf("financeTransactions"),
+    );
+
+    const result = inspectBackup(
+      backup({ data: { budgets: [{ id: "b1" }], financeImportBatches: [{ id: "i1" }] } }),
+    );
+    expect(result.ok).toBe(true);
+    expect(result.counts.budgets).toBe(1);
+    expect(result.counts.financeImportBatches).toBe(1);
+    expect(result.warnings.join(" ")).not.toContain("unrecognised");
+  });
+
+  it("a v4 file (no budgets, no import batches) still inspects cleanly", () => {
+    const result = inspectBackup(
+      backup({ version: 4, data: { financeAccounts: [{ id: "a1" }], tasks: [{ id: "t1" }] } }),
+    );
+    expect(result.ok).toBe(true);
+    expect(result.counts.budgets).toBe(0);
+    expect(result.warnings.join(" ")).toContain("format v4");
+  });
+
   it("warns about unrecognised tables instead of failing", () => {
     const result = inspectBackup(backup({ data: { habits: [], somethingElse: [{}] } }));
     expect(result.ok).toBe(true);

@@ -6,13 +6,16 @@ import {
   DUE_REMINDER_MINUTE,
   dueReminderKey,
   isDeliverable,
+  lowBalanceReminderKey,
   minuteToWallClock,
   occurrenceKey,
   resolveClassicReminder,
   resolveDueReminder,
+  resolveLowBalanceReminder,
   resolveScheduleReminder,
   type ClassicReminderInput,
   type DueReminderInput,
+  type LowBalanceReminderInput,
   type ScheduleReminderInput,
 } from "@/lib/logic/reminders";
 
@@ -282,6 +285,80 @@ describe("due-date reminders (bills & tasks foundation)", () => {
       expect(result.occurrence.key).toBe("task:t1:2026-07-30");
       expect(result.occurrence.message).toBe("Task due today");
     }
+  });
+});
+
+describe("low-balance reminders", () => {
+  function low(partial: Partial<LowBalanceReminderInput> = {}): LowBalanceReminderInput {
+    return {
+      accountId: "acc1",
+      accountName: "Everyday checking",
+      balance: 40,
+      threshold: 100,
+      archived: false,
+      today: "2026-07-30",
+      weekStart: "2026-07-27",
+      detail: "Balance $40 is below your $100 alert level",
+      deliveredKeys: none,
+      ...partial,
+    };
+  }
+
+  it("fires when the balance sits below the threshold, keyed by the WEEK", () => {
+    const result = resolveLowBalanceReminder(low());
+    expect(result.ok).toBe(true);
+    if (result.ok) {
+      expect(result.occurrence.key).toBe("low_balance:acc1:2026-07-27");
+      expect(result.occurrence.kind).toBe("low_balance");
+      expect(result.occurrence.title).toBe("Everyday checking is low");
+      expect(result.occurrence.message).toContain("below your");
+      expect(result.occurrence.fireAt).toBe(minuteToWallClock("2026-07-30", DUE_REMINDER_MINUTE));
+      expect(result.occurrence.reminderId).toBeNull();
+    }
+  });
+
+  it("stays silent at or above the threshold — including exactly at it", () => {
+    expect(resolveLowBalanceReminder(low({ balance: 100 }))).toEqual({
+      ok: false,
+      reason: "not_scheduled",
+    });
+    expect(resolveLowBalanceReminder(low({ balance: 5000 }))).toEqual({
+      ok: false,
+      reason: "not_scheduled",
+    });
+  });
+
+  it("no threshold means no alert; archived accounts never remind", () => {
+    expect(resolveLowBalanceReminder(low({ threshold: null }))).toEqual({
+      ok: false,
+      reason: "disabled",
+    });
+    expect(resolveLowBalanceReminder(low({ archived: true }))).toEqual({
+      ok: false,
+      reason: "inactive",
+    });
+  });
+
+  it("fires at most once per week — the ledger key covers the whole week", () => {
+    const delivered = new Set([lowBalanceReminderKey("acc1", "2026-07-27")]);
+    // Any later day in the same week is suppressed…
+    expect(
+      resolveLowBalanceReminder(low({ today: "2026-08-01", deliveredKeys: delivered })),
+    ).toEqual({ ok: false, reason: "delivered" });
+    // …and a new week arms it again.
+    const nextWeek = resolveLowBalanceReminder(
+      low({ today: "2026-08-03", weekStart: "2026-08-03", deliveredKeys: delivered }),
+    );
+    expect(nextWeek.ok).toBe(true);
+  });
+
+  it("a negative threshold works for debt accounts", () => {
+    // "Tell me when the card balance drops below −500" (more owed than 500).
+    expect(resolveLowBalanceReminder(low({ balance: -600, threshold: -500 })).ok).toBe(true);
+    expect(resolveLowBalanceReminder(low({ balance: -400, threshold: -500 }))).toEqual({
+      ok: false,
+      reason: "not_scheduled",
+    });
   });
 });
 

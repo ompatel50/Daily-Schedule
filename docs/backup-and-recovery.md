@@ -28,8 +28,9 @@ routines, habits and their logs, meals, food records and meal templates,
 workouts, sets and workout templates, health metrics and the record of each
 health import batch, goals and their schedules, journal entries, reminders,
 favourites, tasks and projects, finance accounts with their transaction
-ledger, bills and subscriptions, savings goals, inbox items, and the
-sample-data registry. It also carries a safe subset of
+ledger (transfer pairings and CSV import identities included), bills and
+subscriptions, savings goals, budgets, CSV import batch records, inbox items
+(with their converted-to-task links), and the sample-data registry. It also carries a safe subset of
 your settings — name, timezone, units, week start, day window and score
 settings — plus a format version and a checksum so a damaged file is
 detected rather than half-imported.
