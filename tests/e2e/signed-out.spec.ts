@@ -15,6 +15,13 @@ test.describe("signed-out visitor", () => {
     await expect(page).toHaveURL(/\/signin\?callbackUrl=.*settings/);
   });
 
+  test("the new life-admin surfaces are behind the same wall", async ({ page }) => {
+    for (const route of ["/finance", "/tasks", "/inbox"]) {
+      await page.goto(route);
+      await expect(page).toHaveURL(new RegExp(`/signin\\?callbackUrl=.*${route.slice(1)}`));
+    }
+  });
+
   test("the sign-in page has no app nav and links to sign-up and password recovery", async ({
     page,
   }) => {

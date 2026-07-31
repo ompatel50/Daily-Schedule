@@ -1,4 +1,13 @@
 import { relativeDayLabel, type DayKey } from "@/lib/date";
+import {
+  ACCOUNT_TYPE_META,
+  BILL_KINDS,
+  FINANCE_CATEGORY_META,
+  type AccountType,
+  type FinanceCategory,
+} from "@/lib/enums";
+import { formatMoney } from "@/lib/logic/finance";
+import { describeDueDistance } from "@/lib/logic/due";
 
 /**
  * Global-search hit building — pure. The server fetches matching rows; this
@@ -9,9 +18,16 @@ import { relativeDayLabel, type DayKey } from "@/lib/date";
 
 export const SEARCH_GROUPS = [
   "Planner",
+  "Tasks",
+  "Projects",
+  "Inbox",
   "Routines",
   "Habits",
   "Goals",
+  "Bills",
+  "Accounts",
+  "Transactions",
+  "Savings goals",
   "Workouts",
   "Templates",
   "Foods",
@@ -38,6 +54,20 @@ export interface SearchRows {
   routines: Array<{ id: string; name: string; category: string }>;
   workoutTemplates: Array<{ id: string; name: string; type: string }>;
   mealTemplates: Array<{ id: string; name: string; mealType: string }>;
+  tasks: Array<{ id: string; title: string; status: string; dueDate: DayKey | null }>;
+  projects: Array<{ id: string; name: string; status: string }>;
+  inboxItems: Array<{ id: string; title: string; status: string }>;
+  accounts: Array<{ id: string; name: string; type: string; archived: boolean; currency: string }>;
+  transactions: Array<{
+    id: string;
+    payee: string | null;
+    category: string;
+    date: DayKey;
+    amount: number;
+    currency: string;
+  }>;
+  bills: Array<{ id: string; name: string; kind: string; amount: number; nextDueDate: DayKey }>;
+  savingsGoals: Array<{ id: string; name: string; targetAmount: number; currentAmount: number }>;
 }
 
 export function emptySearchRows(): SearchRows {
@@ -51,6 +81,13 @@ export function emptySearchRows(): SearchRows {
     routines: [],
     workoutTemplates: [],
     mealTemplates: [],
+    tasks: [],
+    projects: [],
+    inboxItems: [],
+    accounts: [],
+    transactions: [],
+    bills: [],
+    savingsGoals: [],
   };
 }
 
@@ -68,6 +105,43 @@ export function buildSearchHits(rows: SearchRows, referenceDay: DayKey): SearchH
       title: item.title,
       subtitle: `${relativeDayLabel(item.date, referenceDay)} · ${item.category}`,
       href: `/planner?date=${item.date}`,
+    });
+  }
+
+  for (const task of rows.tasks) {
+    hits.push({
+      id: `task-${task.id}`,
+      group: "Tasks",
+      title: task.title,
+      subtitle:
+        task.status !== "open"
+          ? task.status === "done"
+            ? "Done"
+            : "Dropped"
+          : task.dueDate
+            ? describeDueDistance(task.dueDate, referenceDay)
+            : "Open",
+      href: "/tasks",
+    });
+  }
+
+  for (const project of rows.projects) {
+    hits.push({
+      id: `project-${project.id}`,
+      group: "Projects",
+      title: project.name,
+      subtitle: project.status === "active" ? "Project" : `Project · ${project.status}`,
+      href: "/tasks",
+    });
+  }
+
+  for (const item of rows.inboxItems) {
+    hits.push({
+      id: `inbox-${item.id}`,
+      group: "Inbox",
+      title: item.title,
+      subtitle: item.status === "open" ? "In your inbox" : `Inbox · ${item.status}`,
+      href: "/inbox",
     });
   }
 
@@ -98,6 +172,50 @@ export function buildSearchHits(rows: SearchRows, referenceDay: DayKey): SearchH
       title: goal.label,
       subtitle: `${goal.domain} · target ${formatTarget(goal.target)}${goal.unit ? ` ${goal.unit}` : ""}`,
       href: "/settings",
+    });
+  }
+
+  for (const bill of rows.bills) {
+    const kindLabel = bill.kind === BILL_KINDS[1] ? "Subscription" : "Bill";
+    hits.push({
+      id: `bill-${bill.id}`,
+      group: "Bills",
+      title: bill.name,
+      subtitle: `${kindLabel} · ${formatMoney(bill.amount)} · ${describeDueDistance(bill.nextDueDate, referenceDay)}`,
+      href: "/finance",
+    });
+  }
+
+  for (const account of rows.accounts) {
+    const typeLabel = ACCOUNT_TYPE_META[account.type as AccountType]?.label ?? account.type;
+    hits.push({
+      id: `acct-${account.id}`,
+      group: "Accounts",
+      title: account.name,
+      subtitle: account.archived ? `${typeLabel} · archived` : typeLabel,
+      href: "/finance",
+    });
+  }
+
+  for (const transaction of rows.transactions) {
+    const categoryLabel =
+      FINANCE_CATEGORY_META[transaction.category as FinanceCategory]?.label ?? transaction.category;
+    hits.push({
+      id: `txn-${transaction.id}`,
+      group: "Transactions",
+      title: transaction.payee || categoryLabel,
+      subtitle: `${relativeDayLabel(transaction.date, referenceDay)} · ${formatMoney(transaction.amount, transaction.currency)}`,
+      href: "/finance",
+    });
+  }
+
+  for (const goal of rows.savingsGoals) {
+    hits.push({
+      id: `sg-${goal.id}`,
+      group: "Savings goals",
+      title: goal.name,
+      subtitle: `${formatMoney(goal.currentAmount)} of ${formatMoney(goal.targetAmount)} saved`,
+      href: "/finance",
     });
   }
 

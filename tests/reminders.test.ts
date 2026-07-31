@@ -3,12 +3,16 @@ import { describe, expect, it } from "vitest";
 import {
   classicReminderKey,
   DELIVERY_WINDOW_MS,
+  DUE_REMINDER_MINUTE,
+  dueReminderKey,
   isDeliverable,
   minuteToWallClock,
   occurrenceKey,
   resolveClassicReminder,
+  resolveDueReminder,
   resolveScheduleReminder,
   type ClassicReminderInput,
+  type DueReminderInput,
   type ScheduleReminderInput,
 } from "@/lib/logic/reminders";
 
@@ -174,6 +178,110 @@ describe("schedule-rule reminders", () => {
     expect(occurrenceKey("goal", "x", "2026-07-30")).not.toBe(
       occurrenceKey("habit", "x", "2026-07-30"),
     );
+  });
+});
+
+function due(partial: Partial<DueReminderInput> = {}): DueReminderInput {
+  return {
+    kind: "bill",
+    ownerId: "b1",
+    name: "Rent",
+    dueDate: "2026-07-30",
+    today: "2026-07-30",
+    enabled: true,
+    completed: false,
+    inactive: false,
+    daysBefore: 3,
+    detail: "$1,800",
+    deliveredKeys: none,
+    ...partial,
+  };
+}
+
+describe("due-date reminders (bills & tasks foundation)", () => {
+  it("fires on the due day with the amount in the message", () => {
+    const result = resolveDueReminder(due());
+    expect(result.ok).toBe(true);
+    if (result.ok) {
+      expect(result.occurrence.key).toBe("bill:b1:2026-07-30");
+      expect(result.occurrence.kind).toBe("bill");
+      expect(result.occurrence.message).toBe("Bill due today · $1,800");
+      expect(result.occurrence.fireAt).toBe(minuteToWallClock("2026-07-30", DUE_REMINDER_MINUTE));
+      expect(result.occurrence.reminderId).toBeNull();
+    }
+  });
+
+  it("fires once during the run-up window, under a distinct 'ahead' key", () => {
+    const result = resolveDueReminder(due({ today: "2026-07-28" }));
+    expect(result.ok).toBe(true);
+    if (result.ok) {
+      expect(result.occurrence.key).toBe("bill:b1:2026-07-30:ahead");
+      expect(result.occurrence.message).toBe("Bill due in 2 days · $1,800");
+      // It fires on TODAY's wall clock — the run-up day — not the due day's.
+      expect(result.occurrence.fireAt).toBe(minuteToWallClock("2026-07-28", DUE_REMINDER_MINUTE));
+    }
+  });
+
+  it("says 'tomorrow' the day before", () => {
+    const result = resolveDueReminder(due({ today: "2026-07-29", detail: null }));
+    expect(result.ok).toBe(true);
+    if (result.ok) expect(result.occurrence.message).toBe("Bill due tomorrow");
+  });
+
+  it("stays silent outside the run-up window", () => {
+    expect(resolveDueReminder(due({ today: "2026-07-26" }))).toEqual({
+      ok: false,
+      reason: "not_scheduled",
+    });
+  });
+
+  it("stays silent for an overdue item — nagging is the dashboard's job", () => {
+    expect(resolveDueReminder(due({ today: "2026-07-31" }))).toEqual({
+      ok: false,
+      reason: "not_scheduled",
+    });
+  });
+
+  it("daysBefore 0 means only the due day itself", () => {
+    expect(resolveDueReminder(due({ today: "2026-07-29", daysBefore: 0 }))).toEqual({
+      ok: false,
+      reason: "not_scheduled",
+    });
+    expect(resolveDueReminder(due({ today: "2026-07-30", daysBefore: 0 })).ok).toBe(true);
+  });
+
+  it("never reminds for paid, archived or disabled items", () => {
+    expect(resolveDueReminder(due({ completed: true }))).toEqual({
+      ok: false,
+      reason: "completed",
+    });
+    expect(resolveDueReminder(due({ inactive: true }))).toEqual({ ok: false, reason: "inactive" });
+    expect(resolveDueReminder(due({ enabled: false }))).toEqual({ ok: false, reason: "disabled" });
+  });
+
+  it("respects the delivery ledger for both keys independently", () => {
+    const deliveredMain = new Set([dueReminderKey("bill", "b1", "2026-07-30")]);
+    expect(resolveDueReminder(due({ deliveredKeys: deliveredMain }))).toEqual({
+      ok: false,
+      reason: "delivered",
+    });
+    // The ahead key is separate: yesterday's run-up delivery never suppresses
+    // the due-day reminder itself.
+    const aheadResult = resolveDueReminder(
+      due({ today: "2026-07-28", deliveredKeys: deliveredMain }),
+    );
+    expect(aheadResult.ok).toBe(true);
+  });
+
+  it("tasks read as tasks", () => {
+    const result = resolveDueReminder(
+      due({ kind: "task", ownerId: "t1", name: "Renew passport", detail: null, daysBefore: 0 }),
+    );
+    expect(result.ok).toBe(true);
+    if (result.ok) {
+      expect(result.occurrence.key).toBe("task:t1:2026-07-30");
+      expect(result.occurrence.message).toBe("Task due today");
+    }
   });
 });
 
