@@ -3078,20 +3078,50 @@ Two new tables and six new columns, all user-scoped, no drops, validated with
   verify; tasks & projects moved AHEAD of schedule items in restore order
   (the new `taskId` FK requires it); `transferGroupId` remapped with the
   same id function on both legs (pairs survive, file values never collide
-  with live groups); `importKey` preserved verbatim so restore-then-reimport
-  still dedups; inbox/schedule-item task links remapped or dropped like
-  every optional link. v1–v4 files restore unchanged.
+  with live groups); the account id EMBEDDED in `importKey` remapped with
+  the account itself — so a CSV re-imported after a restore computes the
+  exact same keys and still dedups row-for-row; inbox/schedule-item task
+  links remapped or dropped like every optional link. v1–v4 files restore
+  unchanged.
 * **Dashboard**: Money card over-budget callout; everything else untouched.
+
+### Adversarial review round (7 findings confirmed by independent verifiers, all fixed before merge)
+
+A 14-agent review pass (7 focused reviewers over the diff, one skeptic per
+finding; 0 findings refuted) caught, and this session fixed:
+
+1. **Restore did not remap the account id embedded in `importKey`** — after
+   any backup restore, re-importing an overlapping CSV would have
+   double-counted the whole window silently. Fixed by remapping the key's
+   account segment exactly like the delivery keys; pinned by a new
+   import → export → replace-restore → re-import integration test.
+2. **A negative value in a debit/credit column was sign-flipped into
+   income** via `Math.abs` — a reversed deposit would have imported as
+   money in. Now rejected per-row with a message, like every other
+   contract violation.
+3. **A bill could carry the new `transfer` category** — "mark paid" would
+   then write a lone pseudo-transfer leg that every summary skips, hiding
+   real spending. Bookkeeping categories now refused by `billSchema` and
+   absent from the bill dialog.
+4. **The finance week card counted future-dated entries** on its
+   month-reuse path (and disagreed with its cross-month fallback path).
+   Both now compute the same `weekAgo..today` window.
+5. **The "Planned" chip vanished once a task had 3+ past planner blocks**
+   (unfiltered take-3). The include now filters to upcoming planned blocks
+   server-side.
+6. Docs claimed restore-then-reimport dedups while the code preserved keys
+   verbatim (the flip side of #1) — code now matches the claim.
+7. Stale test counts in the README.
 
 ### Verification (all executed this session, in order)
 
 * `npm run lint` — clean. `npm run typecheck` — clean.
-* `npm test` — **836/836** (was 793; +43: `finance-import.test.ts` 25 new,
+* `npm test` — **837/837** (was 793; +44: `finance-import.test.ts` 26 new,
   budget/transfer additions in `finance-logic.test.ts`, low-balance suite in
   `reminders.test.ts`, v5 pins in `backup.test.ts`, Budgets in
   `search.test.ts`).
-* `npm run test:integration` — **187/187** on real PostgreSQL (was 155;
-  +32: `finance-workflows.test.ts` — import preview/commit/idempotency/
+* `npm run test:integration` — **190/190** on real PostgreSQL (was 155;
+  +35: `finance-workflows.test.ts` — import preview/commit/idempotency/
   delete-then-reimport/invalid-file/cross-user, transfer atomicity/
   summary-exclusion/pair-delete/edit-refusal/cross-currency/cross-user,
   budget CRUD/uniqueness/category-rules/cross-user/dashboard-summary,

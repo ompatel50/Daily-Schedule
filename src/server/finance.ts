@@ -183,7 +183,12 @@ export async function getFinanceOverview() {
       budgetsMemo(user.id),
     ]);
 
-  const weekTransactions = monthTransactions.filter((transaction) => transaction.date >= weekAgo);
+  // Bounded on BOTH sides so this reuse path computes the same weekAgo..today
+  // window as the fallback fetch below — a future-dated entry (rent typed in
+  // ahead of time) must not inflate "the last 7 days".
+  const weekTransactions = monthTransactions.filter(
+    (transaction) => transaction.date >= weekAgo && transaction.date <= today,
+  );
 
   return {
     today,

@@ -702,7 +702,7 @@ npm run test:integration   # database-backed, against the disposable test databa
 npm run test:e2e       # Playwright browser suite (against a running production build)
 ```
 
-Three suites, each doing the job the others can't. The **unit suite** (793 tests) covers the pure
+Three suites, each doing the job the others can't. The **unit suite** (837 tests) covers the pure
 logic that would be expensive to get wrong:
 
 * **Scheduling** — every mode, both week-start settings, DST, leap years, month and year
@@ -732,7 +732,7 @@ logic that would be expensive to get wrong:
 The unit tests are pure — no database, no fixtures, no mocking — because all the logic they cover
 lives in `src/lib/logic`.
 
-The **integration suite** (155 tests) runs against a real PostgreSQL — always the disposable
+The **integration suite** (190 tests) runs against a real PostgreSQL — always the disposable
 `personal_os_test` database, reset and re-migrated from zero each run — and covers what pure tests
 cannot: unique constraints, transaction rollback, backup import isolation, health-import session
 ownership, the reminder exactly-once ledger, password verification with its lockout and

@@ -10,7 +10,7 @@
 import { beforeAll, beforeEach, describe, expect, it } from "vitest";
 
 import { prisma } from "@/lib/prisma";
-import { weekRange } from "@/lib/date";
+import { shiftDay, weekRange } from "@/lib/date";
 import { todayIn } from "@/lib/logic/schedule";
 import { lowBalanceReminderKey } from "@/lib/logic/reminders";
 import { actAs, resetDatabase, twoUsers } from "./helpers";
@@ -18,6 +18,7 @@ import { actAs, resetDatabase, twoUsers } from "./helpers";
 import {
   deleteBudget,
   deleteTransaction,
+  saveBill,
   saveBudget,
   saveFinanceAccount,
   saveTransaction,
@@ -27,9 +28,10 @@ import {
   commitFinanceCsvImport,
   previewFinanceCsvImport,
 } from "@/server/actions/finance-import";
+import { exportBackup, importBackup } from "@/server/actions/backup";
 import { convertInboxItemToTask } from "@/server/actions/inbox";
 import { scheduleTaskOnPlanner } from "@/server/actions/tasks";
-import { getFinanceSummary } from "@/server/finance";
+import { getFinanceOverview, getFinanceSummary } from "@/server/finance";
 import { getReminderFeedFor, recordReminderDeliveryFor } from "@/server/reminders";
 import { searchEverything } from "@/server/queries";
 
@@ -187,6 +189,34 @@ describe("CSV import", () => {
     expect(await prisma.financeTransaction.count({ where: { userId: alice.id } })).toBe(3);
   });
 
+  it("import → backup → replace-restore → re-import still dedups row-for-row", async () => {
+    const account = await makeAccount(alice.id);
+    await commitFinanceCsvImport({ accountId: account.id, fileName: "b.csv", content: CSV });
+
+    const exported = await exportBackup();
+    expect(exported.ok).toBe(true);
+    if (!exported.ok) return;
+    const restored = await importBackup(exported.data, "replace");
+    expect(restored.ok).toBe(true);
+
+    // The account now lives under its remapped id; the same CSV must still
+    // collide with every restored row instead of double-counting the ledger.
+    const remappedAccount = await prisma.financeAccount.findFirstOrThrow({
+      where: { userId: alice.id },
+    });
+    expect(remappedAccount.id).not.toBe(account.id);
+    const again = await commitFinanceCsvImport({
+      accountId: remappedAccount.id,
+      fileName: "b.csv",
+      content: CSV,
+    });
+    expect(again.ok).toBe(true);
+    if (!again.ok) return;
+    expect(again.data.createdCount).toBe(0);
+    expect(again.data.skippedCount).toBe(3);
+    expect(await prisma.financeTransaction.count({ where: { userId: alice.id } })).toBe(3);
+  });
+
   it("a wholly invalid file fails without writing a batch record", async () => {
     const account = await makeAccount(alice.id);
     const result = await commitFinanceCsvImport({
@@ -328,6 +358,20 @@ describe("account transfers", () => {
     expect(result.ok).toBe(false);
   });
 
+  it("refuses bills with bookkeeping categories — a 'transfer' bill payment would hide spending", async () => {
+    for (const category of ["transfer", "adjustment"]) {
+      const result = await saveBill({
+        name: "Sneaky",
+        amount: 100,
+        category,
+        recurrence: "monthly",
+        dueDate: DAY,
+      });
+      expect(result.ok).toBe(false);
+    }
+    expect(await prisma.bill.count()).toBe(0);
+  });
+
   it("refuses cross-currency, same-account, archived and foreign accounts", async () => {
     const usd = await makeAccount(alice.id);
     const eur = await makeAccount(alice.id, { name: "Euro", currency: "EUR" });
@@ -418,6 +462,26 @@ describe("budgets", () => {
 
     actAs(alice);
     expect(await prisma.budget.count({ where: { userId: alice.id } })).toBe(1);
+  });
+
+  it("the week card never counts future-dated entries", async () => {
+    const account = await makeAccount(alice.id);
+    const today = aliceToday();
+    await prisma.financeTransaction.createMany({
+      data: [
+        { userId: alice.id, accountId: account.id, date: today, amount: -20, category: "dining" },
+        // Rent typed in ahead of time — real spending, but not "the last 7 days".
+        {
+          userId: alice.id,
+          accountId: account.id,
+          date: shiftDay(today, 5),
+          amount: -1800,
+          category: "housing",
+        },
+      ],
+    });
+    const overview = await getFinanceOverview();
+    expect(overview.week.spending).toBe(20);
   });
 
   it("the dashboard summary reports over-budget state from this month's spending", async () => {

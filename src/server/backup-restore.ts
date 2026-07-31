@@ -625,6 +625,18 @@ export async function restoreBackupForUser(
     mapped.importBatchId = inFile("financeImportBatches", row.importBatchId)
       ? map(row.importBatchId)
       : null;
+    // importKey embeds the account id (`v1|<accountId>|…`); remap that
+    // segment the same way accountId itself is remapped — like the delivery
+    // keys above — so a CSV re-imported AFTER a restore still dedups
+    // row-for-row instead of double-counting the ledger. Ids never contain
+    // "|", so splitting on the first two pipes is safe even for payees that
+    // do.
+    if (typeof mapped.importKey === "string") {
+      const keyMatch = /^v1\|([^|]+)\|([\s\S]*)$/.exec(mapped.importKey);
+      if (keyMatch && inFile("financeAccounts", keyMatch[1])) {
+        mapped.importKey = `v1|${map(keyMatch[1])}|${keyMatch[2]}`;
+      }
+    }
     // Not a row id, but remapped with the same function anyway: the pair
     // keeps pairing (both legs remap identically) and a file value can never
     // collide with a group this account created live.

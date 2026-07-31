@@ -5,6 +5,7 @@ import {
   BILL_RECURRENCES,
   BUDGETABLE_CATEGORIES,
   FINANCE_CATEGORIES,
+  isBookkeepingCategory,
   FOOD_CATEGORIES,
   GOAL_DOMAINS,
   HABIT_CATEGORIES,
@@ -507,7 +508,16 @@ export const billSchema = z.object({
   name: z.string().trim().min(1, "Give it a name").max(120),
   amount: money.refine((value) => value > 0, "The amount must be above zero"),
   kind: z.enum(BILL_KINDS).default("bill"),
-  category: z.enum(FINANCE_CATEGORIES).default("utilities"),
+  // Bookkeeping categories are refused: markBillPaid writes the payment into
+  // the ledger under the bill's category, and a `transfer`/`adjustment` row
+  // would hide real spending from every summary while pairing with nothing.
+  category: z
+    .enum(FINANCE_CATEGORIES)
+    .default("utilities")
+    .refine(
+      (value) => !isBookkeepingCategory(value),
+      "Bills record real spending — pick a spending category",
+    ),
   accountId: z.string().nullable().optional(),
   recurrence: z.enum(BILL_RECURRENCES).default("monthly"),
   /** The next due date; on create it anchors the recurrence too. */

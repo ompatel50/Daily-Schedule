@@ -415,7 +415,17 @@ export function parseFinanceCsv(
         rowError(line, "both debit and credit are set — one per row.");
         continue;
       }
-      amount = credit !== 0 ? Math.abs(credit) : -Math.abs(debit);
+      // These columns carry positive magnitudes by contract; a negative here
+      // (some exports encode reversals that way) is ambiguous — flipping the
+      // sign silently would turn a reversed credit into invented income.
+      if (debit < 0 || credit < 0) {
+        rowError(
+          line,
+          `debit/credit values must be positive — "${debit < 0 ? debitRaw : creditRaw}" is ambiguous here; use a signed amount column instead.`,
+        );
+        continue;
+      }
+      amount = credit !== 0 ? credit : -debit;
     } else {
       rowError(line, "no amount on this row.");
       continue;

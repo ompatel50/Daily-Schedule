@@ -139,6 +139,23 @@ describe("parseFinanceCsv", () => {
     expect(result.rows.map((row) => row.amount)).toEqual([-42.5, 100]);
   });
 
+  it("rejects NEGATIVE debit/credit magnitudes instead of sign-flipping them", () => {
+    // A negative deposit (how some exports encode reversals) must never be
+    // absorbed into positive income by Math.abs — that would invent money.
+    const result = parseFinanceCsv(
+      csv([
+        "date,withdrawal,deposit",
+        "2026-07-01,,-100.00",
+        "2026-07-02,-42.50,",
+        "2026-07-03,,50.00",
+      ]),
+      OPTS,
+    );
+    expect(result.rows.map((row) => row.amount)).toEqual([50]);
+    expect(result.invalid).toHaveLength(2);
+    expect(result.invalid[0].message).toContain("must be positive");
+  });
+
   it("applies a type column's direction to the amount", () => {
     const result = parseFinanceCsv(
       csv([

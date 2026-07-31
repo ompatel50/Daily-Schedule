@@ -16,7 +16,7 @@ import { scheduleSettingsFor } from "@/server/schedule";
  *  problem, not a rendering problem. */
 const OPEN_TASKS_CAP = 500;
 
-async function openTasksImpl(userId: string) {
+async function openTasksImpl(userId: string, today: DayKey) {
   return prisma.task.findMany({
     where: { userId, status: "open" },
     include: {
@@ -25,9 +25,12 @@ async function openTasksImpl(userId: string) {
         select: { id: true, title: true, status: true, sortOrder: true },
         orderBy: [{ sortOrder: "asc" }, { createdAt: "asc" }],
       },
-      // Planner blocks created from this task ("add to planner") — enough to
-      // show a "scheduled" chip without loading planner history.
+      // Upcoming planner blocks created from this task ("add to planner") —
+      // enough to show a "scheduled" chip. Filtered here, not client-side:
+      // an unfiltered take-3 would fill up with past blocks and hide a real
+      // upcoming one.
       scheduleItems: {
+        where: { status: "planned", date: { gte: today } },
         select: { id: true, date: true, status: true },
         orderBy: { date: "asc" },
         take: 3,
@@ -44,7 +47,7 @@ export type TaskWithRefs = Awaited<ReturnType<typeof openTasksImpl>>[number];
 
 export async function getOpenTasks(): Promise<TaskWithRefs[]> {
   const user = await getCurrentUser();
-  return openTasksMemo(user.id);
+  return openTasksMemo(user.id, scheduleSettingsFor(user).today);
 }
 
 /** Everything the tasks page renders. */
@@ -55,7 +58,7 @@ export async function getTaskBoard() {
   const doneSince = shiftDay(today, -14);
 
   const [openTasks, projects, taskCounts, recentlyDone] = await Promise.all([
-    openTasksMemo(user.id),
+    openTasksMemo(user.id, today),
     prisma.project.findMany({
       where: { userId: user.id },
       orderBy: [{ sortOrder: "asc" }, { createdAt: "asc" }],
@@ -108,7 +111,7 @@ export async function getTaskSummary() {
   const today = settings.today;
 
   const [openTasks, activeProjects] = await Promise.all([
-    openTasksMemo(user.id),
+    openTasksMemo(user.id, today),
     prisma.project.count({ where: { userId: user.id, status: "active" } }),
   ]);
 

@@ -487,7 +487,10 @@ describe("importing a local backup into an empty hosted account", () => {
       where: { id: id("txn-imported") },
     });
     expect(imported.importBatchId).toBe(id("fib1"));
-    expect(imported.importKey).toBe(`v1|acct1|${D1}|-42.5|grocer|0`);
+    // The account id embedded in importKey is remapped WITH the account, so a
+    // CSV re-imported after this restore computes the exact same keys and
+    // still dedups row-for-row.
+    expect(imported.importKey).toBe(`v1|${id("acct1")}|${D1}|-42.5|grocer|0`);
 
     // v5: transfer legs stay paired — the group id is remapped IDENTICALLY on
     // both legs, and never survives as the file's raw value.

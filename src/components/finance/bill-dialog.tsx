@@ -32,6 +32,7 @@ import {
   BILL_RECURRENCES,
   FINANCE_CATEGORIES,
   FINANCE_CATEGORY_META,
+  isBookkeepingCategory,
   type BillRecurrence,
   type FinanceCategory,
 } from "@/lib/enums";
@@ -140,9 +141,11 @@ export function BillDialog({
     setForm((current) => ({ ...current, [key]: value }));
   }
 
-  // A bill is money out; income and bookkeeping categories make no sense here.
+  // A bill is money out; income and bookkeeping categories make no sense here
+  // (the server refuses them too — a "transfer" bill payment would hide real
+  // spending from every summary).
   const categories = FINANCE_CATEGORIES.filter(
-    (value) => value !== "adjustment" && value !== "income",
+    (value) => !isBookkeepingCategory(value) && value !== "income",
   );
 
   function submit(event: React.FormEvent) {
