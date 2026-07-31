@@ -53,6 +53,8 @@ const config: Config = {
           workout: "hsl(var(--domain-workout))",
           habit: "hsl(var(--domain-habit))",
           health: "hsl(var(--domain-health))",
+          task: "hsl(var(--domain-task))",
+          finance: "hsl(var(--domain-finance))",
         },
       },
       borderRadius: {

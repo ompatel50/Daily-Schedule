@@ -1,12 +1,20 @@
 import { getCurrentUser, prisma } from "@/lib/db";
+import { shiftDay } from "@/lib/date";
+import { formatMoney } from "@/lib/logic/finance";
 import {
+  dueReminderKey,
   resolveClassicReminder,
+  resolveDueReminder,
   resolveScheduleReminder,
   type ReminderOccurrence,
 } from "@/lib/logic/reminders";
 import { evaluateGoalsForDate } from "@/server/goals";
 import { getHabitViews } from "@/server/habits";
 import { scheduleSettingsFor } from "@/server/schedule";
+
+/** The furthest ahead any bill's run-up reminder can start (validation caps
+ *  `reminderDaysBefore` at 60), so the feed never scans past this horizon. */
+const BILL_REMINDER_HORIZON_DAYS = 60;
 
 /**
  * The reminder feed: every occurrence that is *allowed* to fire today, fully
@@ -34,13 +42,27 @@ export async function getReminderFeedFor(user: {
   const settings = scheduleSettingsFor(user);
   const date = settings.today;
 
-  const [reminders, habits, goals] = await Promise.all([
+  const [reminders, habits, goals, dueBills, dueTasks] = await Promise.all([
     prisma.reminder.findMany({
       where: { userId: user.id, enabled: true },
       include: { scheduleItem: { select: { status: true } } },
     }),
     getHabitViews(user.id, date, settings, { historyDays: 14 }),
     evaluateGoalsForDate(user.id, date, settings, { historyDays: 14 }),
+    prisma.bill.findMany({
+      where: {
+        userId: user.id,
+        reminderEnabled: true,
+        archivedAt: null,
+        settledAt: null,
+        nextDueDate: { gte: date, lte: shiftDay(date, BILL_REMINDER_HORIZON_DAYS) },
+      },
+      take: 200,
+    }),
+    prisma.task.findMany({
+      where: { userId: user.id, status: "open", reminderEnabled: true, dueDate: date },
+      take: 200,
+    }),
   ]);
 
   // One round trip for the delivery ledger: today's schedule keys are
@@ -49,6 +71,11 @@ export async function getReminderFeedFor(user: {
     ...reminders.map((reminder) => `reminder:${reminder.id}:${reminder.remindAt.toISOString()}`),
     ...habits.map((habit) => `habit:${habit.id}:${date}`),
     ...goals.map((evaluation) => `goal:${evaluation.goal.id}:${date}`),
+    ...dueBills.flatMap((bill) => [
+      dueReminderKey("bill", bill.id, bill.nextDueDate),
+      dueReminderKey("bill", bill.id, bill.nextDueDate, true),
+    ]),
+    ...dueTasks.map((task) => dueReminderKey("task", task.id, date)),
   ];
   const delivered = await prisma.reminderDelivery.findMany({
     where: { userId: user.id, key: { in: candidateKeys } },
@@ -108,6 +135,43 @@ export async function getReminderFeedFor(user: {
       reminderMinute: rule?.reminderMinute ?? null,
       timeMinute: evaluation.occurrence.timeMinute,
       archived: false, // evaluateGoalsForDate already filters archived goals
+      deliveredKeys,
+    });
+    if (resolved.ok) occurrences.push(resolved.occurrence);
+  }
+
+  // Due-date reminders — bills and tasks share the one foundation resolver;
+  // future modules (documents expiring, low balances, review check-ins) add a
+  // load here and reuse it rather than growing their own engines.
+  for (const bill of dueBills) {
+    const resolved = resolveDueReminder({
+      kind: "bill",
+      ownerId: bill.id,
+      name: bill.name,
+      dueDate: bill.nextDueDate,
+      today: date,
+      enabled: bill.reminderEnabled,
+      completed: bill.settledAt !== null,
+      inactive: bill.archivedAt !== null,
+      daysBefore: bill.reminderDaysBefore,
+      detail: formatMoney(bill.amount),
+      deliveredKeys,
+    });
+    if (resolved.ok) occurrences.push(resolved.occurrence);
+  }
+
+  for (const task of dueTasks) {
+    const resolved = resolveDueReminder({
+      kind: "task",
+      ownerId: task.id,
+      name: task.title,
+      dueDate: task.dueDate ?? date,
+      today: date,
+      enabled: task.reminderEnabled,
+      completed: task.status !== "open",
+      inactive: false,
+      daysBefore: 0,
+      detail: null,
       deliveredKeys,
     });
     if (resolved.ok) occurrences.push(resolved.occurrence);

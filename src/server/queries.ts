@@ -624,8 +624,24 @@ export async function searchEverything(query: string, limit = 8): Promise<Search
   if (term.length < 2) return emptySearchRows();
 
   const user = await getCurrentUser();
-  const [items, workouts, foods, habits, goals, journal, routines, workoutTemplates, mealTemplates] =
-    await Promise.all([
+  const [
+    items,
+    workouts,
+    foods,
+    habits,
+    goals,
+    journal,
+    routines,
+    workoutTemplates,
+    mealTemplates,
+    tasks,
+    projects,
+    inboxItems,
+    accounts,
+    transactionRows,
+    bills,
+    savingsGoals,
+  ] = await Promise.all([
       prisma.scheduleItem.findMany({
         where: { userId: user.id, title: { contains: term, mode: "insensitive" } },
         orderBy: { date: "desc" },
@@ -668,9 +684,82 @@ export async function searchEverything(query: string, limit = 8): Promise<Search
         where: { userId: user.id, name: { contains: term, mode: "insensitive" } },
         take: limit,
       }),
+      prisma.task.findMany({
+        where: { userId: user.id, title: { contains: term, mode: "insensitive" } },
+        orderBy: { updatedAt: "desc" },
+        take: limit,
+      }),
+      prisma.project.findMany({
+        where: { userId: user.id, name: { contains: term, mode: "insensitive" } },
+        take: limit,
+      }),
+      prisma.inboxItem.findMany({
+        where: {
+          userId: user.id,
+          OR: [
+            { title: { contains: term, mode: "insensitive" } },
+            { notes: { contains: term, mode: "insensitive" } },
+          ],
+        },
+        orderBy: { createdAt: "desc" },
+        take: limit,
+      }),
+      prisma.financeAccount.findMany({
+        where: { userId: user.id, name: { contains: term, mode: "insensitive" } },
+        take: limit,
+      }),
+      prisma.financeTransaction.findMany({
+        where: {
+          userId: user.id,
+          OR: [
+            { payee: { contains: term, mode: "insensitive" } },
+            { notes: { contains: term, mode: "insensitive" } },
+          ],
+        },
+        include: { account: { select: { currency: true } } },
+        orderBy: { date: "desc" },
+        take: limit,
+      }),
+      prisma.bill.findMany({
+        where: {
+          userId: user.id,
+          archivedAt: null,
+          settledAt: null,
+          name: { contains: term, mode: "insensitive" },
+        },
+        orderBy: { nextDueDate: "asc" },
+        take: limit,
+      }),
+      prisma.savingsGoal.findMany({
+        where: { userId: user.id, archivedAt: null, name: { contains: term, mode: "insensitive" } },
+        take: limit,
+      }),
     ]);
 
-  return { items, workouts, foods, habits, goals, journal, routines, workoutTemplates, mealTemplates };
+  return {
+    items,
+    workouts,
+    foods,
+    habits,
+    goals,
+    journal,
+    routines,
+    workoutTemplates,
+    mealTemplates,
+    tasks,
+    projects,
+    inboxItems,
+    accounts: accounts.map((account) => ({
+      ...account,
+      archived: account.archivedAt !== null,
+    })),
+    transactions: transactionRows.map((transaction) => ({
+      ...transaction,
+      currency: transaction.account.currency,
+    })),
+    bills,
+    savingsGoals,
+  };
 }
 
 /** Totals over a window, used by Insights and the weekly review. */

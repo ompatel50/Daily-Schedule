@@ -1,4 +1,4 @@
-import type { DayKey } from "@/lib/date";
+import { daysBetween, type DayKey } from "@/lib/date";
 import type { DayStatus } from "@/lib/logic/schedule";
 
 /**
@@ -34,7 +34,7 @@ export type ReminderSuppression =
 export interface ReminderOccurrence {
   /** Stable identity for exactly-once delivery, e.g. `habit:<id>:<date>`. */
   key: string;
-  kind: "reminder" | "habit" | "goal";
+  kind: "reminder" | "habit" | "goal" | "bill" | "task";
   title: string;
   message: string | null;
   /**
@@ -180,6 +180,88 @@ export function resolveScheduleReminder(
       title: input.name,
       message: input.kind === "habit" ? "Habit scheduled today" : "Goal scheduled today",
       fireAt: minuteToWallClock(input.date, minute),
+      reminderId: null,
+    },
+  };
+}
+
+// --- due-date reminders (bills & tasks — the shared foundation) --------------
+
+/**
+ * When a due-date reminder fires, minutes from midnight. Bills and tasks have
+ * a due *day* rather than a time; one fixed morning hour keeps the behaviour
+ * predictable until per-item times are worth their settings surface.
+ */
+export const DUE_REMINDER_MINUTE = 9 * 60;
+
+/**
+ * Keys for due-date occurrences. The due date rides inside the key, so paying
+ * a bill (which advances `nextDueDate`) automatically arms the next
+ * occurrence, and the single `ahead` key makes the whole run-up window fire at
+ * most once — whichever day a tab or the push runner first sees it.
+ */
+export function dueReminderKey(
+  kind: "bill" | "task",
+  ownerId: string,
+  dueDate: DayKey,
+  ahead = false,
+): string {
+  return `${kind}:${ownerId}:${dueDate}${ahead ? ":ahead" : ""}`;
+}
+
+export interface DueReminderInput {
+  kind: "bill" | "task";
+  ownerId: string;
+  name: string;
+  dueDate: DayKey;
+  /** The user's today — the caller resolves it from their timezone. */
+  today: DayKey;
+  enabled: boolean;
+  /** Paid, settled, done — nothing left to remind about. */
+  completed: boolean;
+  /** Archived / cancelled. */
+  inactive: boolean;
+  /** Also remind this many days before the due date (0 = only on the day). */
+  daysBefore: number;
+  /** Extra context appended to the message, e.g. a formatted amount. */
+  detail: string | null;
+  deliveredKeys: ReadonlySet<string>;
+}
+
+/**
+ * A due-date occurrence for one bill or task, or the reason it stays silent.
+ * Fires on the due day itself, and once during the `daysBefore` run-up window.
+ * Deliberately silent for an overdue item: the dashboard and the owning page
+ * carry overdue state, and a daily nag would train people to dismiss it.
+ */
+export function resolveDueReminder(
+  input: DueReminderInput,
+): { ok: true; occurrence: ReminderOccurrence } | { ok: false; reason: ReminderSuppression } {
+  if (input.inactive) return { ok: false, reason: "inactive" };
+  if (!input.enabled) return { ok: false, reason: "disabled" };
+  if (input.completed) return { ok: false, reason: "completed" };
+
+  const untilDue = daysBetween(input.today, input.dueDate);
+  const dueToday = untilDue === 0;
+  const inRunUp = untilDue > 0 && untilDue <= input.daysBefore;
+  if (!dueToday && !inRunUp) return { ok: false, reason: "not_scheduled" };
+
+  const key = dueReminderKey(input.kind, input.ownerId, input.dueDate, !dueToday);
+  if (input.deliveredKeys.has(key)) return { ok: false, reason: "delivered" };
+
+  const noun = input.kind === "bill" ? "Bill" : "Task";
+  const duePhrase = dueToday
+    ? `${noun} due today`
+    : `${noun} due ${untilDue === 1 ? "tomorrow" : `in ${untilDue} days`}`;
+
+  return {
+    ok: true,
+    occurrence: {
+      key,
+      kind: input.kind,
+      title: input.name,
+      message: input.detail ? `${duePhrase} · ${input.detail}` : duePhrase,
+      fireAt: minuteToWallClock(input.today, DUE_REMINDER_MINUTE),
       reminderId: null,
     },
   };

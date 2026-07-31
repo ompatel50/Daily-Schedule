@@ -321,9 +321,10 @@ recurrence, routines — is the planner's job, and Today links straight to it.
 ### 9. Dashboard — `/`
 
 The home screen, and deliberately **read-only**: how the last seven days are going with today as
-the hint, a day score ring, what's next, 30-day consistency, weekly training load, habit status,
-health highlights and quick actions. Every tile links to the screen that owns it. You cannot tick
-anything off from here — that happens in Today.
+the hint, a day score ring, what's next, tasks due now with an inbox count, 30-day consistency,
+weekly training load, habit status, health highlights, a money card (net balance, this month's
+in/out, bills due soon) and quick actions. Every tile links to the screen that owns it. You cannot
+tick anything off from here — that happens in Today (day items) or Tasks (tasks).
 
 ### Three surfaces, three jobs
 
@@ -348,10 +349,60 @@ a `surface` prop chooses which affordances it offers, so there is no second impl
 drift. The ownership table is in `src/lib/logic/surfaces.ts`, and `tests/surfaces.test.ts` fails
 if two surfaces ever claim the same job.
 
-### 10. Productivity layer
+### 10. Tasks & projects — `/tasks`
 
-* **Command palette** (`⌘K` / `Ctrl K`) — searches across schedule items, workouts, foods, habits
-  and journal entries, plus actions and navigation.
+Obligations rather than time blocks — deliberately separate from the planner, which owns the
+shape of a day. A task has a title, notes, a priority, an optional due date and an optional
+project; one level of subtasks; and an opt-in reminder on its due date.
+
+* **Today / Upcoming / Overdue**: open tasks bucketed by due date (overdue, due today, next
+  seven days, later, someday), each bucket ordered priority-first.
+* **Repeating tasks** come back on their own: completing one advances its due date to the next
+  occurrence instead of closing it. Occurrences generate from the date the repeat was configured
+  against, so "monthly on the 31st" clamps to short months and returns to the 31st — it never
+  drifts. Completing a long-overdue repeater yields one next occurrence in the future, not a
+  march through every missed week.
+* **Projects** group tasks with a colour, a progress bar and a lifecycle (active / completed /
+  archived). Deleting a project never deletes its tasks.
+* **Drop** is distinct from done: a deliberate "not doing this" that closes the task without
+  pretending it happened.
+
+### 11. Inbox — `/inbox`
+
+One catchall queue for life admin: things to decide, follow up on, or file later. Capture is a
+single text box; an item is open until you mark it done or archive it. Deliberately **not** a
+second task system — no projects, no priorities, no due dates. When something in the inbox turns
+out to be a real task, make it one in Tasks.
+
+### 12. Finance — `/finance`
+
+Manual-first money tracking: no bank sync, no third-party integration, nothing leaves the app.
+
+* **Accounts** with computed balances: the balance is always `opening balance + every
+  transaction` — never stored, so it cannot drift from the ledger. "Set balance" records the
+  difference as an adjustment transaction. Credit cards and loans are accounts with negative
+  balances, which is what makes one net-worth number possible.
+* **Transactions**: a signed ledger (positive in, negative out) with categories, payees and
+  notes. Monthly and weekly income/spending/net summaries and a spending-by-category breakdown
+  derive from it; balance adjustments count in neither income nor spending.
+* **Bills & subscriptions**: one model with a `kind` flag. Each carries a recurrence (once /
+  weekly / monthly / quarterly / yearly) anchored to its first due date — "monthly on the 31st"
+  clamps to short months without drifting — and a single `next due` pointer that everything
+  reads. Marking one paid advances the pointer and (when an account is known) writes the payment
+  into the ledger atomically. Bills remind by default: on the due day and once in a configurable
+  run-up window.
+* **Savings goals**: target, saved-so-far, optional target date. Maintained by its own add /
+  withdraw actions rather than derived from the ledger, so goals work even without transaction
+  discipline.
+* Amounts are stored per account currency and never converted; net balance is reported **per
+  currency** rather than pretending exchange rates don't exist. A future CSV import has a
+  structural seat reserved (`importKey` dedup identity on every transaction).
+
+### 13. Productivity layer
+
+* **Command palette** (`⌘K` / `Ctrl K`) — searches across schedule items, tasks, projects, inbox
+  items, bills, accounts, transactions, savings goals, workouts, foods, habits and journal
+  entries, plus actions and navigation.
 * **Keyboard shortcuts**: `N` quick add · `/` search · `?` shortcuts · `G` then a letter to
   navigate · `J`/`K` previous/next day · `T` jump to today.
 * **Journal**: a note plus mood and energy on any day (which also feed the health charts).
@@ -537,7 +588,16 @@ and the formula in words.
 `FoodItem`, `Meal`, `MealEntry`, `MealTemplate`, `MealTemplateItem`, `Workout`, `WorkoutSet`,
 `WorkoutTemplate`, `HealthMetric`, `Goal`, `GoalEntry`, `ScheduleRule`, `ScheduleRuleDay`,
 `ScheduleOverride`, `CalendarDaySummary`, `JournalEntry`, `Reminder`, `FavoriteItem`, `SeedBatch`,
-`SeedRecord`.
+`SeedRecord` — plus the universal-OS foundation: `Project`, `Task`, `FinanceAccount`,
+`FinanceTransaction`, `Bill`, `SavingsGoal`, `InboxItem`.
+
+**Tasks are not schedule items.** A `ScheduleItem` occupies a slot in a day; a `Task` is an
+obligation with an optional due date. Keeping them separate means neither inherits the other's
+semantics (materialised recurrence, day scores). Task repeats and bill recurrences share one
+anchored cadence engine (`lib/logic/due.ts`) — occurrences generate from the first due date, which
+is what keeps "monthly on the 31st" from drifting to the 28th forever. `FinanceAccount.balance`
+does not exist as a column: the balance is always `openingBalance + sum(transactions)`, and "set
+balance" writes an adjustment transaction instead of editing a number.
 
 **Scheduling is three shared tables, not two parallel families.** `ScheduleRule` is one
 effective-dated version owned by `(ownerType, ownerId)`; `ScheduleRuleDay` is one row per selected
@@ -600,7 +660,7 @@ npm run test:integration   # database-backed, against the disposable test databa
 npm run test:e2e       # Playwright browser suite (against a running production build)
 ```
 
-Three suites, each doing the job the others can't. The **unit suite** (696 tests) covers the pure
+Three suites, each doing the job the others can't. The **unit suite** (793 tests) covers the pure
 logic that would be expensive to get wrong:
 
 * **Scheduling** — every mode, both week-start settings, DST, leap years, month and year
@@ -618,20 +678,29 @@ logic that would be expensive to get wrong:
 * **Planner** — applying a routine once writes it, applying it again writes nothing, a deliberate
   second copy still works and never re-uses a key, and overlap detection flags a real clash while
   ignoring all-day items, back-to-back blocks and skipped items.
+* **Due dates & repeats** — the anchored cadence engine: "monthly on the 31st" clamping through
+  February (leap years included) and returning to the 31st, occurrence estimates that stay
+  correct decades past the anchor, and repeat advancement that never marches through missed
+  weeks.
+* **Finance** — signed-ledger summaries with adjustments excluded, computed balances, bill
+  advancement chains, savings progress capping, and deterministic money formatting.
 * Plus nutrition serving maths, the natural-language quick-add parser, planner recurrence, and
   day-key/time handling including a DST boundary.
 
 The unit tests are pure — no database, no fixtures, no mocking — because all the logic they cover
 lives in `src/lib/logic`.
 
-The **integration suite** (121 tests) runs against a real PostgreSQL — always the disposable
+The **integration suite** (155 tests) runs against a real PostgreSQL — always the disposable
 `personal_os_test` database, reset and re-migrated from zero each run — and covers what pure tests
 cannot: unique constraints, transaction rollback, backup import isolation, health-import session
 ownership, the reminder exactly-once ledger, password verification with its lockout and
 session-revocation rules, public sign-up (validation, duplicate refusal, racing duplicates, the
 rate limit), recovery-code redemption (burn-once, session revocation, enumeration resistance),
-and a cross-user suite asserting that every major operation against another account is refused
-*and* leaves the victim's row unchanged. The **e2e suite** drives the built app in a real
+a cross-user suite asserting that every major operation against another account is refused
+*and* leaves the victim's row unchanged, and the life-OS foundation end to end: bill payment
+advancing the due pointer with its atomic ledger row, set-balance writing the exact adjustment,
+repeating-task completion, subtask depth limits, command-center assembly, and cross-user denial
+for every new finance/task/inbox action. The **e2e suite** drives the built app in a real
 browser: signed-out redirects, password sign-in, the identical generic refusal for an unknown
 email and for a wrong password (so failed attempts reveal nothing about which emails exist), the
 full sign-up → recovery-codes → dashboard → sign-out → password-reset journey, surface postures,

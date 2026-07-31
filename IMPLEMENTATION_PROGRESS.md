@@ -2739,3 +2739,209 @@ security-and-privacy rewritten (public accounts, private data; the
 `AUTH_SECRET` rotation + project pause, stated honestly);
 troubleshooting, local-development, migrating-from-local, README and
 `.env.example` updated to match.
+
+## Phase 31 — Universal OS foundation: finance, tasks & projects, inbox, cross-module backbone
+
+The first expansion phase beyond the health/schedule core: the shared data
+model, server layer, search, reminders and dashboard plumbing that the rest
+of the universal-OS roadmap builds on. Nothing existing was recreated or
+removed; every addition rides the established patterns (user-scoped Prisma
+models, pure logic modules under `lib/logic`, `ActionResult` server actions,
+bounded read models, the one reminder ledger, backup format versioning).
+
+### Schema (migration `20260731004637_universal_os_foundation` — additive only)
+
+Seven new tables, all `userId`-scoped with cascade deletes and indexed
+foreign keys:
+
+* `Project` — grouping + colour + lifecycle (`active | completed |
+  archived`). Deleting a project never deletes its tasks (SetNull).
+* `Task` — title/notes/priority (planner's scale reused), `status` (`open |
+  done | dropped`), optional `dueDate`, optional one-level `parentId`
+  subtasks (depth enforced in the action layer), repeats (`repeat`,
+  `repeatEvery`, `repeatAnchor`), per-task `reminderEnabled` (default off).
+* `FinanceAccount` — type (`checking | savings | cash | credit_card |
+  investment | loan | other`; debt types are just accounts whose balance is
+  normally negative), display-only ISO currency, `openingBalance`. **No
+  stored balance column**: the balance is always `openingBalance +
+  sum(transactions)`.
+* `FinanceTransaction` — the signed ledger (positive in, negative out),
+  category/payee/notes, optional `billId` link, and a reserved
+  `(userId, importKey)` unique for a future CSV import's dedup identity.
+* `Bill` — bills and subscriptions in one model (`kind`), recurrence
+  (`once | weekly | monthly | quarterly | yearly`) generated from an
+  immutable `anchorDate`, a single `nextDueDate` pointer that all
+  due-detection reads, `settledAt` for finished one-time bills, per-bill
+  reminder settings (`reminderEnabled` default ON, `reminderDaysBefore`).
+* `SavingsGoal` — target / saved-so-far / optional target date; maintained
+  by its own add/withdraw actions, deliberately not derived from the ledger.
+* `InboxItem` — title/notes/status (`open | done | archived`). Deliberately
+  no priorities, projects or due dates: a catchall queue, not a second task
+  system.
+
+### Key design decisions
+
+1. **Tasks are not schedule items.** A `ScheduleItem` occupies a slot in a
+   day and feeds the day score; a `Task` is an obligation with an optional
+   due date. Separate models mean neither inherits the other's semantics
+   (materialised recurrence, scoring, surfaces). Tasks deliberately do NOT
+   enter the day score in this phase.
+2. **One anchored cadence engine for everything with a moving due date**
+   (`src/lib/logic/due.ts`): occurrences are generated from the anchor (the
+   first due date), never from the previous occurrence, so "monthly on the
+   31st" clamps to Feb 28 and *returns* to the 31st — no drift. Bills and
+   repeating tasks share it; it is distinct from `lib/logic/recurrence.ts`
+   (planner materialisation) on purpose — a due date is a pointer that
+   advances when the obligation is met, not a set of rows.
+3. **Completing a repeating task advances it; completing anything else
+   closes it.** The advance lands strictly after both the current due date
+   and today, so a long-overdue weekly repeater yields ONE next occurrence,
+   not a march through every missed week. `dropped` exists as an honest
+   "deliberately not doing this".
+4. **The ledger is the balance.** "Set balance" computes the delta and
+   writes an `adjustment` transaction (excluded from income/spending
+   summaries), so the displayed balance can never drift from the recorded
+   history, and a future CSV import needs no special path.
+5. **Net worth is reported per currency** — never summed across currencies.
+6. **Bill payment is atomic**: advancing `nextDueDate` (or settling a
+   one-time bill) and writing the ledger row happen in one transaction;
+   paying early or late never skips an occurrence because the advance is
+   relative to the due date, not the paid date.
+7. **Money is `Float` rounded to cents at every boundary** (`moneyRound`),
+   matching the schema-wide no-Decimal convention (the restore engine's
+   sanitiser accepts only String/Int/Float/Boolean/DateTime).
+
+### Cross-module infrastructure
+
+* **Universal search** — `SEARCH_GROUPS` gained Tasks, Projects, Inbox,
+  Bills, Accounts, Transactions and Savings goals; `searchEverything` fans
+  out the same bounded (`take 8`), case-insensitive, user-scoped queries per
+  entity, and the palette renders the new groups with zero component
+  changes. Transactions search by payee/notes and title themselves from the
+  category when payee-less; archived accounts say so in the subtitle.
+* **Reminder foundation** — one new pure resolver
+  (`resolveDueReminder`) covers every "thing with a due date": fires on the
+  due day, and at most once during a configurable run-up window (distinct
+  `:ahead` ledger key, so the run-up never suppresses the due-day
+  reminder). Bills default ON with a 3-day run-up and carry the amount in
+  the message; tasks are opt-in, due-day only. Paid, settled, archived,
+  done and dropped items are suppressed with the existing reason enum;
+  delivery rides the same exactly-once `ReminderDelivery` ledger and the
+  unchanged watcher/push runner (both are kind-agnostic). Future types
+  (document expiry, low balance, check-ins) are additional feed loads
+  reusing the same resolver — that is the "foundation" deliverable.
+  The restore engine's delivery-key remap regex learned the new
+  `bill:`/`task:` prefixes so re-imported ledgers keep meaning the right
+  occurrences.
+* **Dashboard command center** — `src/server/command-center.ts` assembles
+  one bounded summary (top 5 due-now tasks, overdue/today counts, inbox
+  count + latest, net-per-currency, month in/out, ≤3 soonest bills within
+  14 days with totals) shared by the dashboard's new read-only **Tasks**
+  and **Money** cards. The dashboard stays read-only per the Phase 8
+  surface contract — completing a task happens on /tasks.
+* **Backup format v4** — all seven tables export, restore (deterministic id
+  remap, dangling-required-FK rows dropped, optional links unlinked),
+  replace-mode delete, and verification counts. Subtasks get the same
+  two-phase parent-first write as series items. `resetAllData` covers the
+  new tables via the same replace path.
+* **Navigation** — Tasks (`g a`), Inbox (`g b`), Finance (`g f`) join the
+  sidebar between Planner and Nutrition; two new theme accents
+  (`--domain-task`, `--domain-finance`) declared in both light and dark
+  blocks; quick actions gained "New task" and "Capture to inbox".
+
+### New / changed files (foundation layer)
+
+```
+prisma/migrations/20260731004637_universal_os_foundation/   7 CREATE TABLE, no drops
+src/lib/logic/due.ts            anchored cadence + due bucketing (pure)
+src/lib/logic/finance.ts        money, balances, summaries, bill advance (pure)
+src/lib/logic/tasks.ts          bucketing, ordering, repeat advance (pure)
+src/server/finance.ts           finance read model (memoised, bounded)
+src/server/tasks.ts             task board + summary read model
+src/server/inbox.ts             inbox read model
+src/server/command-center.ts    the one dashboard summary assembly
+src/server/actions/finance.ts   accounts / transactions / bills / savings
+src/server/actions/tasks.ts     projects / tasks / complete / repeat advance
+src/server/actions/inbox.ts     capture / status / delete
+src/app/(app)/tasks/  src/app/(app)/inbox/  src/app/(app)/finance/   pages
+src/components/tasks/  src/components/inbox/  src/components/finance/  boards + dialogs
+tests/due.test.ts  tests/finance-logic.test.ts  tests/tasks-logic.test.ts
+tests/integration/life-os.test.ts
+```
+
+### Deliberately deferred (recorded so nothing reads as forgotten)
+
+* CSV import for transactions (the `importKey` identity is reserved; no UI).
+* Cross-currency totals, budgets-per-category, transfer transactions
+  between accounts (a transfer is currently two transactions by hand).
+* Task tags/labels, drag reordering, task ↔ planner block linking, tasks in
+  the day score, per-task reminder times (fixed 9:00 fire for due-date
+  reminders).
+* Demo/starter seed data for the new modules (SeedBatch wiring exists;
+  nothing seeds finance/tasks yet).
+* Low-balance, document-expiry and review-cadence reminders (the resolver
+  and feed structure are ready for them).
+* Inbox → task/bill one-click conversion.
+
+### A real bug the new tests caught (fixed before merge)
+
+`nextOccurrenceAfter` estimated the occurrence index with 28-day months, so
+for a monthly anchor two-plus years in the past the estimate could overshoot
+the true index by more than the one step it walked back — and the walk only
+moves forward, so it returned e.g. 2026-09-30 for (anchor 2023-01-31, after
+2026-07-31) and silently skipped August. Reachable through
+`nextDueAfterCompletion` for a monthly repeating task with an old anchor.
+Fixed by dividing by each unit's MAXIMUM span (31/92/366 days) so the
+estimate can only undershoot; regressions pin decades-past-anchor behaviour
+in every unit.
+
+### Verification (all executed in this session, in order)
+
+* `npm run lint` — clean.
+* `npm run typecheck` — clean.
+* `npm test` — **793/793** (was 705 at session start; +88 across
+  `tests/due.test.ts` 18, `tests/finance-logic.test.ts` 36,
+  `tests/tasks-logic.test.ts` 24, extended reminder + search suites).
+* `npm run test:integration` — **155/155** on real PostgreSQL (was 125;
+  +30 in `tests/integration/life-os.test.ts`, plus backup round-trip
+  fixtures for all seven new tables in `backup-restore.test.ts`).
+* `npm run build` — clean; `/tasks` 198 kB, `/inbox` 179 kB, `/finance`
+  first-load in line with existing routes; middleware unchanged.
+* Playwright e2e — **32 passed / 1 deliberate skip** (the pre-seeded
+  Apple Health spec), including the widened nav assertions and the
+  signed-out wall over `/finance`, `/tasks`, `/inbox`.
+* **Browser verification (production build, real Chromium): 34/34 checks,
+  zero console errors, zero warnings, zero page errors** — sign-in; project
+  + task creation and completion; inbox capture → done; account,
+  transaction, bill (created due today, marked paid), savings goal; the
+  dashboard's Tasks/Money/inbox cards; the palette finding a new account
+  under its group; all 12 app routes returning 200; and 0 px horizontal
+  overflow at 900 px on all three new pages.
+* **Database-checked, not screen-checked**: after the browser's "mark
+  paid", the bill row read `anchorDate 2026-07-31 → nextDueDate 2026-08-31`
+  (month-end preserved) — and the atomic ledger-write path is asserted by
+  integration tests (amount −89.50, billId link, category carried).
+* Vercel preview deployment of the branch: **Ready** (built and deployed
+  by the repo's existing pipeline).
+
+### Performance notes
+
+* The dashboard gained exactly one bounded summary call
+  (`getCommandCenterSummary`: five small indexed queries + the memoised
+  account/bill loads shared with any other consumer in the render).
+* Search adds seven `take 8` indexed queries to the existing nine — still
+  one debounced round-trip per keystroke batch.
+* Open tasks are capped at 500 rows per fetch, transactions at 2 000 per
+  window, bills at 200, project progress computed from grouped counts —
+  no full-table scans anywhere in the new read models.
+* The reminder feed adds two bounded loads (bills due within 60 days,
+  tasks due today) to the existing three, and the candidate-key ledger
+  lookup stays one round trip.
+
+### Exact next step
+
+Phase 32 candidates, in rough order of user value: CSV transaction import
+(the `importKey` seat is reserved), inbox → task/bill conversion, budgets
+per category with month-over-month views, low-balance + document-expiry
+reminder types on the due-reminder foundation, task ↔ planner linking
+("schedule this task"), and demo/starter data for the new modules.

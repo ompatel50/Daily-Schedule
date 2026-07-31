@@ -4,13 +4,16 @@ import {
   Apple,
   ArrowRight,
   CheckCircle2,
+  CheckSquare,
   Dumbbell,
   Flame,
   Footprints,
+  Inbox,
   Moon,
   Repeat,
   Sparkles,
   TrendingUp,
+  Wallet,
 } from "lucide-react";
 
 import { DashboardQuickActions } from "@/components/dashboard/quick-actions";
@@ -31,10 +34,14 @@ import {
   lastNDays,
   shiftDay,
 } from "@/lib/date";
+import { describeDueDistance } from "@/lib/logic/due";
+import { formatMoney } from "@/lib/logic/finance";
 import { parseOnboardingState } from "@/lib/logic/onboarding";
 import { trendDelta } from "@/lib/logic/scoring";
 import { SURFACE_ROLES, surfaceHref } from "@/lib/logic/surfaces";
-import { cn, formatNumber, pct, sum } from "@/lib/utils";
+import { cn, formatNumber, pct, pluralize, sum } from "@/lib/utils";
+import { PRIORITY_META, type Priority } from "@/lib/enums";
+import { getCommandCenterSummary } from "@/server/command-center";
 import { getDemoStatus } from "@/server/demo";
 import { getConsistencyWindow, getDayOverview, getToday, getWindowStats } from "@/server/queries";
 
@@ -44,11 +51,12 @@ export default async function DashboardPage() {
   // The user's configured timezone decides what "today" is, not the host clock.
   const date = await getToday();
 
-  const [overview, window, thisWeek, lastWeek] = await Promise.all([
+  const [overview, window, thisWeek, lastWeek, lifeAdmin] = await Promise.all([
     getDayOverview(date),
     getConsistencyWindow(30, date),
     getWindowStats(shiftDay(date, -6), date),
     getWindowStats(shiftDay(date, -13), shiftDay(date, -7)),
+    getCommandCenterSummary(),
   ]);
 
   const onboarding = parseOnboardingState(overview.user.onboardingState);
@@ -279,6 +287,90 @@ export default async function DashboardPage() {
             )}
           </SectionCard>
 
+          {/*
+            Read-only, like everything on the dashboard: status and a way in.
+            Completing a task happens on /tasks, which owns the interaction.
+          */}
+          <SectionCard
+            title="Tasks"
+            icon={CheckSquare}
+            accent="text-domain-task"
+            description={taskLine(lifeAdmin.tasks)}
+            action={
+              <Button asChild variant="ghost" size="sm">
+                <Link href="/tasks">
+                  All <ArrowRight />
+                </Link>
+              </Button>
+            }
+          >
+            {lifeAdmin.tasks.top.length === 0 ? (
+              <EmptyState
+                icon={CheckSquare}
+                title="Nothing due right now"
+                description={
+                  lifeAdmin.tasks.openCount > 0
+                    ? `${lifeAdmin.tasks.openCount} open ${pluralize(lifeAdmin.tasks.openCount, "task")}, none with a pressing date.`
+                    : "Capture a task with a due date and it will surface here on the day."
+                }
+                action={
+                  <Button asChild size="sm" variant="outline">
+                    <Link href="/tasks?new=1">New task</Link>
+                  </Button>
+                }
+              />
+            ) : (
+              <div className="space-y-1.5">
+                {lifeAdmin.tasks.top.map((task) => {
+                  const overdue = task.dueDate !== null && task.dueDate < date;
+                  const priority = PRIORITY_META[task.priority as Priority];
+                  return (
+                    <div key={task.id} className="flex items-baseline gap-2 text-sm">
+                      <span
+                        className={cn(
+                          "h-1.5 w-1.5 shrink-0 translate-y-[-1px] rounded-full",
+                          overdue ? "bg-red-500" : "bg-domain-task",
+                        )}
+                        aria-hidden
+                      />
+                      <span className="min-w-0 flex-1 truncate font-medium">{task.title}</span>
+                      {task.projectName && (
+                        <span className="hidden shrink-0 text-xs text-muted-foreground sm:inline">
+                          {task.projectName}
+                        </span>
+                      )}
+                      {(task.priority === "high" || task.priority === "urgent") && (
+                        <Badge variant="outline" className={cn("shrink-0 text-[10px]", priority?.chip)}>
+                          {priority?.label}
+                        </Badge>
+                      )}
+                      {task.dueDate && (
+                        <span
+                          className={cn(
+                            "shrink-0 text-xs",
+                            overdue ? "text-red-700 dark:text-red-400" : "text-muted-foreground",
+                          )}
+                        >
+                          {describeDueDistance(task.dueDate, date)}
+                        </span>
+                      )}
+                    </div>
+                  );
+                })}
+              </div>
+            )}
+            <Link
+              href="/inbox"
+              className="mt-3 flex items-center gap-2 rounded-lg bg-muted/50 px-3 py-2 text-xs text-muted-foreground transition-colors hover:text-foreground"
+            >
+              <Inbox className="h-3.5 w-3.5" aria-hidden />
+              {lifeAdmin.inbox.openCount === 0
+                ? "Inbox zero — nothing waiting on a decision."
+                : `Inbox · ${lifeAdmin.inbox.openCount} ${pluralize(lifeAdmin.inbox.openCount, "item")} waiting`}
+              <ArrowRight className="ml-auto h-3.5 w-3.5" aria-hidden />
+            </Link>
+          </SectionCard>
+
           <div className="grid gap-6 md:grid-cols-2">
             <SectionCard
               title="Consistency"
@@ -416,10 +508,112 @@ export default async function DashboardPage() {
               />
             </div>
           </SectionCard>
+
+          <SectionCard
+            title="Money"
+            icon={Wallet}
+            accent="text-domain-finance"
+            action={
+              <Button asChild variant="ghost" size="sm">
+                <Link href="/finance">
+                  Finance <ArrowRight />
+                </Link>
+              </Button>
+            }
+          >
+            {!lifeAdmin.finance.hasAccounts ? (
+              <p className="text-sm text-muted-foreground">
+                Accounts, bills and savings goals — entered by hand, private by design.{" "}
+                <Link href="/finance" className="font-medium text-foreground underline-offset-2 hover:underline">
+                  Set up Finance
+                </Link>
+                .
+              </p>
+            ) : (
+              <div className="space-y-3">
+                <div>
+                  <div className="flex items-baseline justify-between text-sm">
+                    <span className="text-muted-foreground">Net balance</span>
+                    <span className="tabular font-semibold">
+                      {formatMoney(lifeAdmin.finance.net[0]?.net ?? 0, lifeAdmin.finance.net[0]?.currency)}
+                    </span>
+                  </div>
+                  {lifeAdmin.finance.net.length > 1 && (
+                    <p className="mt-0.5 text-[10px] uppercase tracking-wide text-muted-foreground">
+                      +{lifeAdmin.finance.net.length - 1} more{" "}
+                      {pluralize(lifeAdmin.finance.net.length - 1, "currency", "currencies")}
+                    </p>
+                  )}
+                </div>
+                <div className="grid grid-cols-2 gap-2 text-center">
+                  <MiniStat
+                    label="In · month"
+                    value={formatMoney(lifeAdmin.finance.month.income)}
+                  />
+                  <MiniStat
+                    label="Out · month"
+                    value={formatMoney(lifeAdmin.finance.month.spending)}
+                  />
+                </div>
+                {lifeAdmin.finance.billsDueSoon.length === 0 ? (
+                  <p className="text-xs text-muted-foreground">
+                    No bills due in the next two weeks.
+                  </p>
+                ) : (
+                  <div className="space-y-1.5">
+                    {lifeAdmin.finance.billsDueSoon.map((bill) => (
+                      <div key={bill.id} className="flex items-baseline gap-2 text-sm">
+                        <span className="min-w-0 flex-1 truncate">{bill.name}</span>
+                        <span
+                          className={cn(
+                            "shrink-0 text-xs",
+                            bill.bucket === "overdue"
+                              ? "text-red-700 dark:text-red-400"
+                              : bill.bucket === "today"
+                                ? "text-amber-800 dark:text-amber-400"
+                                : "text-muted-foreground",
+                          )}
+                        >
+                          {describeDueDistance(bill.nextDueDate, date)}
+                        </span>
+                        <span className="tabular shrink-0 text-xs font-medium">
+                          {formatMoney(bill.amount)}
+                        </span>
+                      </div>
+                    ))}
+                    {lifeAdmin.finance.billsDueSoonCount > lifeAdmin.finance.billsDueSoon.length && (
+                      <p className="text-xs text-muted-foreground">
+                        {lifeAdmin.finance.billsDueSoonCount - lifeAdmin.finance.billsDueSoon.length}{" "}
+                        more due within two weeks ·{" "}
+                        {formatMoney(lifeAdmin.finance.billsDueSoonTotal)} in total.
+                      </p>
+                    )}
+                  </div>
+                )}
+              </div>
+            )}
+          </SectionCard>
         </div>
       </div>
     </div>
   );
+}
+
+function taskLine(tasks: {
+  overdueCount: number;
+  dueTodayCount: number;
+  openCount: number;
+  activeProjects: number;
+}): string {
+  const parts: string[] = [];
+  if (tasks.overdueCount > 0) parts.push(`${tasks.overdueCount} overdue`);
+  if (tasks.dueTodayCount > 0) parts.push(`${tasks.dueTodayCount} due today`);
+  if (parts.length === 0) {
+    return tasks.openCount === 0
+      ? "No open tasks yet"
+      : `${tasks.openCount} open · ${tasks.activeProjects} active ${pluralize(tasks.activeProjects, "project")}`;
+  }
+  return parts.join(" · ");
 }
 
 function MiniStat({ label, value, hint }: { label: string; value: string; hint?: string }) {

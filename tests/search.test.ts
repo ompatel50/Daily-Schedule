@@ -44,6 +44,15 @@ describe("global search hits", () => {
         foods: [{ id: "f", name: "Oats", brand: null, category: "grain", calories: 389 }],
         mealTemplates: [{ id: "mt", name: "Standard breakfast", mealType: "breakfast" }],
         journal: [{ id: "j", title: null, content: "Long day but good.", date: "2026-07-29" }],
+        tasks: [{ id: "t", title: "Renew passport", status: "open", dueDate: "2026-07-30" }],
+        projects: [{ id: "p", name: "Move apartments", status: "active" }],
+        inboxItems: [{ id: "x", title: "Call the dentist back", status: "open" }],
+        accounts: [{ id: "acc", name: "Everyday checking", type: "checking", archived: false, currency: "USD" }],
+        transactions: [
+          { id: "tx", payee: "Grocer", category: "groceries", date: "2026-07-29", amount: -42.5, currency: "USD" },
+        ],
+        bills: [{ id: "bl", name: "Rent", kind: "bill", amount: 1800, nextDueDate: "2026-08-01" }],
+        savingsGoals: [{ id: "sg", name: "Emergency fund", targetAmount: 10000, currentAmount: 2500 }],
       }),
       REF,
     );
@@ -58,9 +67,43 @@ describe("global search hits", () => {
     expect(byGroup.get("Foods")?.href).toBe("/nutrition");
     expect(byGroup.get("Meal templates")?.href).toBe("/nutrition");
     expect(byGroup.get("Journal")?.href).toBe("/today?date=2026-07-29");
+    expect(byGroup.get("Tasks")?.href).toBe("/tasks");
+    expect(byGroup.get("Projects")?.href).toBe("/tasks");
+    expect(byGroup.get("Inbox")?.href).toBe("/inbox");
+    expect(byGroup.get("Accounts")?.href).toBe("/finance");
+    expect(byGroup.get("Transactions")?.href).toBe("/finance");
+    expect(byGroup.get("Bills")?.href).toBe("/finance");
+    expect(byGroup.get("Savings goals")?.href).toBe("/finance");
     // every declared group appeared, and ids are namespaced uniquely
     expect(new Set(hits.map((hit) => hit.group)).size).toBe(SEARCH_GROUPS.length);
     expect(new Set(hits.map((hit) => hit.id)).size).toBe(hits.length);
+  });
+
+  it("describes the new entities usefully", () => {
+    const hits = buildSearchHits(
+      rows({
+        tasks: [
+          { id: "t1", title: "Overdue thing", status: "open", dueDate: "2026-07-28" },
+          { id: "t2", title: "Finished thing", status: "done", dueDate: null },
+        ],
+        bills: [{ id: "b1", name: "Rent", kind: "bill", amount: 1800, nextDueDate: "2026-07-30" }],
+        transactions: [
+          { id: "tx", payee: null, category: "groceries", date: "2026-07-30", amount: -42.5, currency: "USD" },
+        ],
+        savingsGoals: [{ id: "sg", name: "Fund", targetAmount: 10000, currentAmount: 2500 }],
+        accounts: [{ id: "a", name: "Old card", type: "credit_card", archived: true, currency: "USD" }],
+      }),
+      REF,
+    );
+    const byId = new Map(hits.map((hit) => [hit.id, hit]));
+    expect(byId.get("task-t1")?.subtitle).toBe("2 days overdue");
+    expect(byId.get("task-t2")?.subtitle).toBe("Done");
+    expect(byId.get("bill-b1")?.subtitle).toBe("Bill · $1,800 · Due today");
+    // A payee-less transaction titles itself from its category, not an empty string.
+    expect(byId.get("txn-tx")?.title).toBe("Groceries");
+    expect(byId.get("txn-tx")?.subtitle).toContain("$42.50");
+    expect(byId.get("sg-sg")?.subtitle).toBe("$2,500 of $10,000 saved");
+    expect(byId.get("acct-a")?.subtitle).toBe("Credit card · archived");
   });
 
   it("orders groups by declaration order, keeping within-group order stable", () => {

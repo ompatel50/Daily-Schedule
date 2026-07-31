@@ -37,6 +37,8 @@
     --domain-workout: 262 83% 58%;
     --domain-habit: 160 84% 39%;
     --domain-health: 199 89% 48%;
+    --domain-task: 239 84% 67%;
+    --domain-finance: 173 80% 40%;
 
     --radius: 0.7rem;
   }
@@ -75,6 +77,8 @@
     --domain-workout: 258 90% 72%;
     --domain-habit: 158 64% 52%;
     --domain-health: 199 89% 60%;
+    --domain-task: 234 89% 74%;
+    --domain-finance: 172 66% 50%;
   }
 }
 

@@ -1,7 +1,7 @@
 "use client";
 
 import Link from "next/link";
-import { Apple, Dumbbell, LineChart, NotebookPen, Plus, Repeat } from "lucide-react";
+import { Apple, CheckSquare, Dumbbell, Inbox, NotebookPen, Plus } from "lucide-react";
 
 import { SectionCard } from "@/components/shared/section-card";
 import { useUIStore } from "@/store/ui-store";
@@ -23,6 +23,8 @@ export function DashboardQuickActions({ date }: { date: string }) {
       accent: "text-domain-planner",
       onClick: () => openQuickAdd(date),
     },
+    { label: "New task", hint: "Tasks", icon: CheckSquare, accent: "text-domain-task", href: "/tasks?new=1" },
+    { label: "Capture to inbox", hint: "Inbox", icon: Inbox, accent: "text-amber-500", href: "/inbox" },
     { label: "Log food", hint: "Nutrition", icon: Apple, accent: "text-domain-nutrition", href: "/nutrition" },
     {
       label: "Log workout",
@@ -31,8 +33,6 @@ export function DashboardQuickActions({ date }: { date: string }) {
       accent: "text-domain-workout",
       href: "/workouts?new=1",
     },
-    { label: "Check habits", hint: "Habits", icon: Repeat, accent: "text-domain-habit", href: "/habits" },
-    { label: "Weekly review", hint: "Insights", icon: LineChart, accent: "text-domain-health", href: "/insights" },
     {
       label: "Search everything",
       hint: "⌘K",

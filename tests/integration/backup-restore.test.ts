@@ -208,6 +208,60 @@ function syntheticBackup(): Record<string, unknown> {
       favorites: [
         { id: "fav1", userId: "old-local-user", kind: "food", refId: "food-custom", label: "My shake" },
       ],
+      projects: [{ id: "proj1", userId: "old-local-user", name: "Home renovation", color: "amber" }],
+      tasks: [
+        {
+          id: "task1",
+          userId: "old-local-user",
+          projectId: "proj1",
+          title: "Paint hallway",
+          priority: "high",
+          dueDate: D2,
+        },
+        {
+          id: "task1-sub",
+          userId: "old-local-user",
+          parentId: "task1",
+          title: "Buy paint",
+        },
+      ],
+      financeAccounts: [
+        { id: "acct1", userId: "old-local-user", name: "Checking", openingBalance: 500 },
+      ],
+      bills: [
+        {
+          id: "bill1",
+          userId: "old-local-user",
+          name: "Rent",
+          amount: 1200,
+          category: "housing",
+          accountId: "acct1",
+          anchorDate: D1,
+          nextDueDate: D1,
+        },
+      ],
+      financeTransactions: [
+        {
+          id: "txn1",
+          userId: "old-local-user",
+          accountId: "acct1",
+          billId: "bill1",
+          date: D1,
+          amount: -1200,
+          category: "housing",
+          payee: "Landlord",
+        },
+      ],
+      savingsGoals: [
+        {
+          id: "sg1",
+          userId: "old-local-user",
+          name: "Emergency fund",
+          targetAmount: 5000,
+          currentAmount: 750,
+        },
+      ],
+      inboxItems: [{ id: "inbox1", userId: "old-local-user", title: "Renew passport" }],
       seedBatches: [],
       seedRecords: [],
     },
@@ -307,6 +361,53 @@ describe("importing a local backup into an empty hosted account", () => {
     expect(result.data.verification.habits).toBe(1);
   });
 
+  it("remaps the life-admin tables — projects, tasks, finance, inbox — with every link intact", async () => {
+    const result = await importBackup(syntheticBackup(), "merge");
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+
+    const id = (oldId: string) => remapId(alice.id, oldId);
+
+    // Project → task → subtask chain, remapped end to end.
+    const project = await prisma.project.findUniqueOrThrow({ where: { id: id("proj1") } });
+    expect(project.userId).toBe(alice.id);
+    expect(project.name).toBe("Home renovation");
+
+    const task = await prisma.task.findUniqueOrThrow({ where: { id: id("task1") } });
+    expect(task.userId).toBe(alice.id);
+    expect(task.projectId).toBe(id("proj1"));
+
+    const subtask = await prisma.task.findUniqueOrThrow({ where: { id: id("task1-sub") } });
+    expect(subtask.userId).toBe(alice.id);
+    expect(subtask.parentId).toBe(id("task1"));
+
+    // Account → bill → transaction chain: the ledger row carries both links.
+    const account = await prisma.financeAccount.findUniqueOrThrow({ where: { id: id("acct1") } });
+    expect(account.userId).toBe(alice.id);
+
+    const bill = await prisma.bill.findUniqueOrThrow({ where: { id: id("bill1") } });
+    expect(bill.userId).toBe(alice.id);
+    expect(bill.accountId).toBe(id("acct1"));
+
+    const transaction = await prisma.financeTransaction.findUniqueOrThrow({
+      where: { id: id("txn1") },
+    });
+    expect(transaction.userId).toBe(alice.id);
+    expect(transaction.accountId).toBe(id("acct1"));
+    expect(transaction.billId).toBe(id("bill1"));
+
+    // The standalone rows landed under alice too.
+    const savings = await prisma.savingsGoal.findUniqueOrThrow({ where: { id: id("sg1") } });
+    expect(savings.userId).toBe(alice.id);
+    const inboxItem = await prisma.inboxItem.findUniqueOrThrow({ where: { id: id("inbox1") } });
+    expect(inboxItem.userId).toBe(alice.id);
+
+    // And the report counts them.
+    expect(result.data.verification.projects).toBe(1);
+    expect(result.data.verification.tasks).toBe(2);
+    expect(result.data.verification.financeTransactions).toBe(1);
+  });
+
   it("re-importing the same file creates nothing new", async () => {
     const first = await importBackup(syntheticBackup(), "merge");
     expect(first.ok).toBe(true);
@@ -317,6 +418,10 @@ describe("importing a local backup into an empty hosted account", () => {
     if (!second.ok) return;
     expect(second.data.totalCreated).toBe(0);
     expect(await prisma.scheduleItem.count({ where: { userId: alice.id } })).toBe(countAfterFirst);
+    // The life-admin tables are idempotent under the same deterministic ids.
+    expect(await prisma.task.count({ where: { userId: alice.id } })).toBe(2);
+    expect(await prisma.financeTransaction.count({ where: { userId: alice.id } })).toBe(1);
+    expect(await prisma.inboxItem.count({ where: { userId: alice.id } })).toBe(1);
   });
 });
 
@@ -329,6 +434,55 @@ describe("replacement into an existing account", () => {
 
     const names = (await prisma.habit.findMany({ where: { userId: alice.id } })).map((h) => h.name);
     expect(names).toEqual(["Read"]);
+  });
+
+  it("replace clears the account's previous life-admin records too", async () => {
+    // Pre-existing rows across the new modules, fully linked.
+    const project = await prisma.project.create({ data: { userId: alice.id, name: "Old project" } });
+    await prisma.task.create({
+      data: { userId: alice.id, title: "Old task", projectId: project.id },
+    });
+    const account = await prisma.financeAccount.create({
+      data: { userId: alice.id, name: "Old account" },
+    });
+    const bill = await prisma.bill.create({
+      data: { userId: alice.id, name: "Old bill", amount: 10, anchorDate: D1, nextDueDate: D1, accountId: account.id },
+    });
+    await prisma.financeTransaction.create({
+      data: { userId: alice.id, accountId: account.id, billId: bill.id, date: D1, amount: -10 },
+    });
+    await prisma.savingsGoal.create({
+      data: { userId: alice.id, name: "Old goal", targetAmount: 100 },
+    });
+    await prisma.inboxItem.create({ data: { userId: alice.id, title: "Old note" } });
+
+    const result = await importBackup(syntheticBackup(), "replace");
+    expect(result.ok).toBe(true);
+
+    // Only the file's rows survive — the "Old *" rows are gone.
+    const tasks = (await prisma.task.findMany({ where: { userId: alice.id } })).map((t) => t.title);
+    expect(tasks.sort()).toEqual(["Buy paint", "Paint hallway"]);
+    const accounts = (await prisma.financeAccount.findMany({ where: { userId: alice.id } })).map(
+      (a) => a.name,
+    );
+    expect(accounts).toEqual(["Checking"]);
+    const bills = (await prisma.bill.findMany({ where: { userId: alice.id } })).map((b) => b.name);
+    expect(bills).toEqual(["Rent"]);
+    const transactions = await prisma.financeTransaction.findMany({
+      where: { userId: alice.id },
+    });
+    expect(transactions.map((t) => t.payee)).toEqual(["Landlord"]);
+    const goals = (await prisma.savingsGoal.findMany({ where: { userId: alice.id } })).map(
+      (g) => g.name,
+    );
+    expect(goals).toEqual(["Emergency fund"]);
+    const inbox = (await prisma.inboxItem.findMany({ where: { userId: alice.id } })).map(
+      (i) => i.title,
+    );
+    expect(inbox).toEqual(["Renew passport"]);
+    expect(
+      (await prisma.project.findMany({ where: { userId: alice.id } })).map((p) => p.name),
+    ).toEqual(["Home renovation"]);
   });
 
   it("merge keeps the account's previous records", async () => {
@@ -428,6 +582,34 @@ describe("cross-user safety", () => {
       ? result.data.perTable.find((t) => t.table === "mealEntries")
       : null;
     expect(entryOutcome?.dropped).toBe(1);
+  });
+
+  it("a ledger row pointing at an account that is not in the file is dropped, not attached", async () => {
+    const bobAccount = await prisma.financeAccount.create({
+      data: { userId: bob.id, name: "Bob's checking" },
+    });
+
+    const file = syntheticBackup();
+    const data = (file as { data: Record<string, unknown[]> }).data;
+    // The account is NOT in the file — the transaction dangles toward bob's
+    // real row. (The bill loses its optional account link the same way.)
+    data.financeAccounts = [];
+    (data.financeTransactions[0] as Record<string, unknown>).accountId = bobAccount.id;
+
+    const result = await importBackup(file, "merge");
+    expect(result.ok).toBe(true);
+
+    expect(await prisma.financeTransaction.count({ where: { accountId: bobAccount.id } })).toBe(0);
+    expect(await prisma.financeTransaction.count({ where: { userId: alice.id } })).toBe(0);
+    const outcome = result.ok
+      ? result.data.perTable.find((t) => t.table === "financeTransactions")
+      : null;
+    expect(outcome?.dropped).toBe(1);
+    // The bill still imports — its account link is optional and was unlinked.
+    const bill = await prisma.bill.findUniqueOrThrow({
+      where: { id: remapId(alice.id, "bill1") },
+    });
+    expect(bill.accountId).toBeNull();
   });
 
   it("global bundled foods that already exist are reused, never modified", async () => {

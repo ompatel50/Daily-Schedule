@@ -104,6 +104,13 @@ model User {
   healthImportSessions HealthImportSession[]
   pushSubscriptions PushSubscription[]
   recoveryCodes     RecoveryCode[]
+  projects          Project[]
+  tasks             Task[]
+  financeAccounts   FinanceAccount[]
+  financeTransactions FinanceTransaction[]
+  bills             Bill[]
+  savingsGoals      SavingsGoal[]
+  inboxItems        InboxItem[]
 
   // --- day score configuration ----------------------------------------------
   /// JSON map of category → weight, e.g. {"planner":30,"habits":30,"goals":40}.
@@ -1217,6 +1224,269 @@ model PushSubscription {
   lastSeenAt DateTime @default(now())
 
   @@index([userId])
+}
+
+// ---------------------------------------------------------------------------
+// Tasks & projects
+// ---------------------------------------------------------------------------
+
+/// A container for related tasks. Deliberately light: grouping, a colour and a
+/// lifecycle — structure lives on the tasks themselves. Deleting a project
+/// never deletes its tasks (they fall back to standalone), because a task you
+/// wrote down is yours even after the project around it dissolves.
+model Project {
+  id     String @id @default(cuid())
+  userId String
+  user   User   @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  name        String
+  description String?
+  color       String @default("slate")
+
+  /// active | completed | archived (validated in src/lib/enums.ts)
+  status      String    @default("active")
+  completedAt DateTime?
+
+  sortOrder Int @default(0)
+
+  tasks Task[]
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([userId, status])
+}
+
+/// One actionable item. Distinct from a planner ScheduleItem on purpose: a
+/// schedule item occupies a slot in a day; a task is an obligation that may
+/// have a due date but no slot. The two systems stay separate so neither
+/// inherits the other's semantics (recurrence-by-materialisation, day scores).
+model Task {
+  id     String @id @default(cuid())
+  userId String
+  user   User   @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  projectId String?
+  project   Project? @relation(fields: [projectId], references: [id], onDelete: SetNull)
+
+  /// Subtasks: one level in the UI, enforced in the action layer rather than
+  /// the schema (the column supports deeper nesting if a later phase wants it).
+  parentId String?
+  parent   Task?   @relation("Subtasks", fields: [parentId], references: [id], onDelete: Cascade)
+  subtasks Task[]  @relation("Subtasks")
+
+  title String
+  notes String?
+
+  /// open | done | dropped
+  status String @default("open")
+  /// low | medium | high | urgent — the planner's priority scale, reused.
+  priority String @default("medium")
+
+  dueDate     String? // YYYY-MM-DD
+  completedAt DateTime?
+
+  /// none | daily | weekly | monthly | yearly. Completing a repeating task
+  /// advances `dueDate` to the next occurrence instead of closing the row.
+  repeat      String @default("none")
+  /// Repeat every N units (every 2 weeks = weekly / 2).
+  repeatEvery Int    @default(1)
+  /// The due date the repeat was configured against. Advancing generates
+  /// occurrences from this anchor, so "monthly on the 31st" clamps to short
+  /// months without drifting to the 28th forever.
+  repeatAnchor String?
+
+  /// Opt-in per task: remind on the due date (see src/lib/logic/reminders.ts).
+  reminderEnabled Boolean @default(false)
+
+  sortOrder Int @default(0)
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([userId, status])
+  @@index([userId, dueDate])
+  @@index([projectId])
+  @@index([parentId])
+}
+
+// ---------------------------------------------------------------------------
+// Finance — manual-first: accounts, a signed transaction ledger, bills,
+// savings goals. No bank sync, no third-party integration, by design.
+// ---------------------------------------------------------------------------
+
+/// A place money lives. `type` covers debt too: a credit_card or loan account
+/// simply carries a negative balance — one model, one net-worth sum.
+model FinanceAccount {
+  id     String @id @default(cuid())
+  userId String
+  user   User   @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  name String
+  /// checking | savings | cash | credit_card | investment | loan | other
+  type String @default("checking")
+  /// ISO 4217 code, display-only — the app never converts between currencies.
+  currency String @default("USD")
+
+  /// Balance before the first recorded transaction. The current balance is
+  /// always `openingBalance + sum(transactions)` — computed, never stored, so
+  /// it cannot drift from the ledger. "Set balance" writes an adjustment
+  /// transaction rather than editing this.
+  openingBalance Float @default(0)
+
+  notes      String?
+  archivedAt DateTime?
+  sortOrder  Int       @default(0)
+
+  transactions FinanceTransaction[]
+  bills        Bill[]
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([userId])
+}
+
+/// One ledger entry. `amount` is signed: positive is money in, negative is
+/// money out. Summaries derive income/spending from the sign, so there is no
+/// separate "type" column to disagree with it.
+model FinanceTransaction {
+  id     String @id @default(cuid())
+  userId String
+  user   User   @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  accountId String
+  account   FinanceAccount @relation(fields: [accountId], references: [id], onDelete: Cascade)
+
+  /// Set when this payment settled a bill occurrence — the bill's payment
+  /// history without a second bookkeeping table.
+  billId String?
+  bill   Bill?   @relation(fields: [billId], references: [id], onDelete: SetNull)
+
+  date   String // YYYY-MM-DD
+  amount Float // signed; never zero (validated in the action layer)
+
+  /// Merchant / counterparty, free text. What a future CSV import maps its
+  /// description column onto.
+  payee    String?
+  /// See FINANCE_CATEGORIES in src/lib/enums.ts.
+  category String  @default("other")
+  notes    String?
+
+  /// Future CSV import identity: a deterministic hash of the imported row so
+  /// re-importing the same file upserts instead of duplicating. Null for
+  /// manual entries (NULLS DISTINCT — they never collide).
+  importKey String?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@unique([userId, importKey])
+  @@index([userId, date])
+  @@index([accountId, date])
+  @@index([billId])
+}
+
+/// A recurring obligation — a bill or a subscription (`kind` separates the
+/// two in the UI; they behave identically). `nextDueDate` is the one field
+/// due-detection reads; marking a payment advances it along the recurrence
+/// generated from `anchorDate`, which is what keeps "monthly on the 31st"
+/// clamping to short months instead of drifting.
+model Bill {
+  id     String @id @default(cuid())
+  userId String
+  user   User   @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  name   String
+  /// The expected amount per occurrence; the actual paid amount lives on the
+  /// linked transaction.
+  amount Float
+
+  /// bill | subscription
+  kind     String @default("bill")
+  /// See FINANCE_CATEGORIES in src/lib/enums.ts.
+  category String @default("utilities")
+
+  /// The account this is usually paid from. Optional, informational.
+  accountId String?
+  account   FinanceAccount? @relation(fields: [accountId], references: [id], onDelete: SetNull)
+
+  /// once | weekly | monthly | quarterly | yearly
+  recurrence String @default("monthly")
+  /// First due date the recurrence generates from. Never edited by payments.
+  anchorDate String // YYYY-MM-DD
+  /// The next unpaid occurrence. Everything that asks "what is due?" reads
+  /// this one column.
+  nextDueDate String // YYYY-MM-DD
+  /// A `once` bill that has been paid: nothing further is due, row kept for
+  /// history.
+  settledAt DateTime?
+
+  autoPay Boolean @default(false)
+
+  reminderEnabled     Boolean @default(true)
+  /// Also remind this many days before the due date (0 = only on the day).
+  reminderDaysBefore  Int     @default(3)
+
+  lastPaidDate String?
+  notes        String?
+  archivedAt   DateTime?
+
+  payments FinanceTransaction[]
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([userId, nextDueDate])
+  @@index([accountId])
+}
+
+/// Money being put aside toward something. `currentAmount` is maintained by
+/// its own add/withdraw actions — deliberately not derived from the ledger,
+/// so the goal works even for people who don't record transactions.
+model SavingsGoal {
+  id     String @id @default(cuid())
+  userId String
+  user   User   @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  name          String
+  targetAmount  Float
+  currentAmount Float   @default(0)
+  targetDate    String? // YYYY-MM-DD
+  notes         String?
+
+  archivedAt DateTime?
+  sortOrder  Int       @default(0)
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([userId])
+}
+
+// ---------------------------------------------------------------------------
+// Inbox — one catchall queue for life admin
+// ---------------------------------------------------------------------------
+
+/// A captured scrap that doesn't belong to a module yet: something to decide,
+/// follow up on, or file later. Deliberately not a second task system — no
+/// projects, no priorities, no recurrence. Open → done | archived, that's all.
+model InboxItem {
+  id     String @id @default(cuid())
+  userId String
+  user   User   @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  title String
+  notes String?
+
+  /// open | done | archived
+  status      String    @default("open")
+  completedAt DateTime?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([userId, status])
 }
 
 /// Generic "pin this" across domains — foods, workouts, templates, habits.
