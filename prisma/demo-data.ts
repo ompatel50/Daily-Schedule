@@ -25,9 +25,10 @@ import { hashPassword } from "../scripts/lib/password-hash.mjs";
 
 /** CLI-seed sign-in for local development; printed by `npm run db:seed`. */
 export const LOCAL_DEV_PASSWORD = "local-dev-password";
-import { addDays, format, subDays } from "date-fns";
+import { addDays, addMonths, format, startOfMonth, subDays, subMonths } from "date-fns";
 
 import { SEED_FOODS } from "../src/lib/data/foods";
+import { moneyRound } from "../src/lib/logic/finance";
 import { manualDailyFingerprint } from "../src/lib/logic/health-import/rollup";
 // The seed calls the app's real aggregation rather than keeping its own copy of
 // the scoring formula. It used to duplicate scoreDay() by hand, which meant
@@ -48,6 +49,9 @@ export interface SeedCounts {
   workouts: number;
   metrics: number;
   foods: number;
+  tasks: number;
+  transactions: number;
+  documents: number;
   seedRecords: number;
 }
 
@@ -158,6 +162,20 @@ export async function seedDemoData(
   // cascading from the goal/habit rows.
   await prisma.scheduleRule.deleteMany({ where: { userId: user.id } });
   await prisma.scheduleOverride.deleteMany({ where: { userId: user.id } });
+  // Life-admin modules: children before parents, so nothing is orphaned
+  // mid-wipe. (TaskTag also cascades from either end; deleting it explicitly
+  // keeps this list readable as "everything the generator writes".)
+  await prisma.taskTag.deleteMany({ where: { task: { userId: user.id } } });
+  await prisma.financeTransaction.deleteMany({ where: { userId: user.id } });
+  await prisma.bill.deleteMany({ where: { userId: user.id } });
+  await prisma.financeImportBatch.deleteMany({ where: { userId: user.id } });
+  await prisma.budget.deleteMany({ where: { userId: user.id } });
+  await prisma.savingsGoal.deleteMany({ where: { userId: user.id } });
+  await prisma.financeAccount.deleteMany({ where: { userId: user.id } });
+  await prisma.inboxItem.deleteMany({ where: { userId: user.id } });
+  await prisma.task.deleteMany({ where: { userId: user.id } });
+  await prisma.project.deleteMany({ where: { userId: user.id } });
+  await prisma.lifeDocument.deleteMany({ where: { userId: user.id } });
   await prisma.tag.deleteMany({ where: { userId: user.id } });
   await prisma.calendarDaySummary.deleteMany({ where: { userId: user.id } });
 
@@ -251,10 +269,14 @@ export async function seedDemoData(
   }
 
   // --- tags ----------------------------------------------------------------
-  const tagNames = ["deepwork", "errand", "family", "focus"];
+  // One vocabulary, shared by planner blocks and tasks — which is the whole
+  // point of tags living in their own table rather than on either model.
+  const tagNames = ["deepwork", "errand", "family", "focus", "admin", "money", "home"];
   const tags = await Promise.all(
     tagNames.map((name) => prisma.tag.create({ data: { userId: user.id, name, color: "slate" } })),
   );
+  const tagByName = new Map(tags.map((tag) => [tag.name, tag]));
+  const tagId = (name: string) => tagByName.get(name)!.id;
 
   // --- habits --------------------------------------------------------------
   const habitSeeds = [
@@ -945,6 +967,274 @@ export async function seedDemoData(
     },
   });
 
+  // --- projects, tasks & task tags -----------------------------------------
+  console.log("  · projects, tasks and tags");
+  const projectSeeds = [
+    { name: "Apartment move", description: "Everything between now and the handover.", color: "blue", status: "active" },
+    { name: "Learn Spanish", description: "30 minutes a day, B1 by spring.", color: "violet", status: "active" },
+    { name: "Taxes 2025", description: "Filed and done.", color: "amber", status: "completed" },
+  ];
+  const projects = [];
+  for (const [index, seed] of projectSeeds.entries()) {
+    projects.push(
+      await prisma.project.create({
+        data: {
+          userId: user.id,
+          name: seed.name,
+          description: seed.description,
+          color: seed.color,
+          status: seed.status,
+          completedAt: seed.status === "completed" ? subDays(new Date(), 21) : null,
+          sortOrder: index,
+        },
+      }),
+    );
+  }
+  const [moveProject, spanishProject, taxProject] = projects;
+
+  const taskSeeds: Array<{
+    title: string;
+    notes?: string;
+    projectId?: string | null;
+    priority: string;
+    dueOffset: number | null;
+    status?: string;
+    repeat?: string;
+    reminder?: boolean;
+    tags: string[];
+    subtasks?: string[];
+  }> = [
+    // Overdue, due today and upcoming, so every bucket on /tasks has content.
+    { title: "Renew the parking permit", priority: "high", dueOffset: -2, tags: ["admin", "errand"] },
+    { title: "Book the movers", notes: "Two quotes in, waiting on the third.", projectId: moveProject.id, priority: "urgent", dueOffset: 0, reminder: true, tags: ["home", "admin"], subtasks: ["Compare the three quotes", "Confirm the date"] },
+    { title: "Send the deposit", projectId: moveProject.id, priority: "high", dueOffset: 3, tags: ["home", "money"] },
+    { title: "Cancel the old internet plan", projectId: moveProject.id, priority: "medium", dueOffset: 9, tags: ["home", "admin"] },
+    { title: "Weekly budget review", priority: "medium", dueOffset: 2, repeat: "weekly", reminder: true, tags: ["money", "focus"] },
+    { title: "Spanish: unit 6 vocabulary", projectId: spanishProject.id, priority: "low", dueOffset: 1, tags: ["deepwork"] },
+    { title: "Spanish: book a conversation session", projectId: spanishProject.id, priority: "low", dueOffset: 21, tags: ["deepwork"] },
+    { title: "Replace the smoke alarm batteries", priority: "low", dueOffset: null, tags: ["home"] },
+    { title: "Read the pension statement", priority: "low", dueOffset: null, tags: ["money", "admin"] },
+    { title: "File the return", projectId: taxProject.id, priority: "high", dueOffset: -24, status: "done", tags: ["money", "admin"] },
+    { title: "Collect the receipts", projectId: taxProject.id, priority: "medium", dueOffset: -30, status: "done", tags: ["money"] },
+  ];
+
+  for (const [index, seed] of taskSeeds.entries()) {
+    const dueDate = seed.dueOffset === null ? null : day(seed.dueOffset);
+    const task = await prisma.task.create({
+      data: {
+        userId: user.id,
+        projectId: seed.projectId ?? null,
+        title: seed.title,
+        notes: seed.notes ?? null,
+        status: seed.status ?? "open",
+        priority: seed.priority,
+        dueDate,
+        completedAt: seed.status === "done" ? subDays(new Date(), 20 + index) : null,
+        repeat: seed.repeat ?? "none",
+        repeatAnchor: seed.repeat ? dueDate : null,
+        reminderEnabled: seed.reminder ?? false,
+        sortOrder: index,
+        tags: { create: seed.tags.map((name) => ({ tagId: tagId(name) })) },
+      },
+    });
+
+    for (const [subIndex, title] of (seed.subtasks ?? []).entries()) {
+      await prisma.task.create({
+        data: {
+          userId: user.id,
+          parentId: task.id,
+          projectId: seed.projectId ?? null,
+          title,
+          status: subIndex === 0 ? "done" : "open",
+          completedAt: subIndex === 0 ? subDays(new Date(), 1) : null,
+          priority: "medium",
+          sortOrder: subIndex,
+        },
+      });
+    }
+  }
+
+  // --- inbox ---------------------------------------------------------------
+  console.log("  · inbox captures");
+  const convertedTask = await prisma.task.create({
+    data: {
+      userId: user.id,
+      title: "Ask the dentist about the night guard",
+      status: "open",
+      priority: "medium",
+      dueDate: day(6),
+      sortOrder: taskSeeds.length,
+      tags: { create: [{ tagId: tagId("admin") }] },
+    },
+  });
+
+  const inboxSeeds: Array<{ title: string; notes?: string; status?: string; taskId?: string }> = [
+    { title: "Look into a better travel card", notes: "The current one charges abroad." },
+    { title: "That podcast episode on index funds" },
+    { title: "Photo backup — is it actually running?" },
+    { title: "Ask the dentist about the night guard", status: "archived", taskId: convertedTask.id },
+    { title: "Return the blue jacket", status: "done" },
+  ];
+  for (const seed of inboxSeeds) {
+    await prisma.inboxItem.create({
+      data: {
+        userId: user.id,
+        title: seed.title,
+        notes: seed.notes ?? null,
+        status: seed.status ?? "open",
+        completedAt: seed.status === "done" ? subDays(new Date(), 2) : null,
+        taskId: seed.taskId ?? null,
+      },
+    });
+  }
+
+  // --- finance -------------------------------------------------------------
+  console.log("  · accounts, ledger, bills, budgets");
+  const checking = await prisma.financeAccount.create({
+    data: { userId: user.id, name: "Everyday checking", type: "checking", openingBalance: 2400, lowBalanceThreshold: 500, sortOrder: 0 },
+  });
+  const savings = await prisma.financeAccount.create({
+    data: { userId: user.id, name: "Emergency savings", type: "savings", openingBalance: 6100, sortOrder: 1 },
+  });
+  const card = await prisma.financeAccount.create({
+    data: { userId: user.id, name: "Rewards card", type: "credit_card", openingBalance: -320, sortOrder: 2 },
+  });
+
+  const spendSeeds: Array<{ payee: string; category: string; min: number; max: number; chance: number }> = [
+    { payee: "Corner Market", category: "groceries", min: 18, max: 74, chance: 0.5 },
+    { payee: "Cafe Luna", category: "dining", min: 6, max: 28, chance: 0.35 },
+    { payee: "Metro Transit", category: "transport", min: 3, max: 14, chance: 0.4 },
+    { payee: "Pharmacy", category: "health", min: 8, max: 45, chance: 0.08 },
+    { payee: "Bookshop", category: "shopping", min: 12, max: 60, chance: 0.1 },
+  ];
+
+  for (let offset = -HISTORY_DAYS; offset <= 0; offset += 1) {
+    const date = day(offset);
+    for (const seed of spendSeeds) {
+      if (!chance(seed.chance)) continue;
+      await prisma.financeTransaction.create({
+        data: {
+          userId: user.id,
+          accountId: seed.category === "groceries" || seed.category === "dining" ? card.id : checking.id,
+          date,
+          amount: -moneyRound(between(seed.min, seed.max)),
+          payee: seed.payee,
+          category: seed.category,
+        },
+      });
+    }
+    // Salary on the 1st and 15th, and a standing transfer to savings after it.
+    const dayOfMonth = Number(date.slice(8, 10));
+    if (dayOfMonth === 1 || dayOfMonth === 15) {
+      await prisma.financeTransaction.create({
+        data: { userId: user.id, accountId: checking.id, date, amount: 2150, payee: "Acme Corp", category: "income" },
+      });
+      const transferGroupId = `demo-transfer-${date}`;
+      await prisma.financeTransaction.createMany({
+        data: [
+          { userId: user.id, accountId: checking.id, date, amount: -400, payee: "Transfer to Emergency savings", category: "transfer", transferGroupId },
+          { userId: user.id, accountId: savings.id, date, amount: 400, payee: "Transfer from Everyday checking", category: "transfer", transferGroupId },
+        ],
+      });
+    }
+  }
+
+  // A CSV import batch with its rows still linked — so "undo this import" has
+  // something real to demonstrate on a fresh account.
+  const importBatch = await prisma.financeImportBatch.create({
+    data: {
+      userId: user.id,
+      accountId: checking.id,
+      fileName: "checking-statement.csv",
+      rowCount: 4,
+      createdCount: 3,
+      skippedCount: 1,
+      rejectedCount: 0,
+    },
+  });
+  const importedRows = [
+    { date: day(-5), amount: -42.18, payee: "Hardware Store", category: "shopping" },
+    { date: day(-4), amount: -16.4, payee: "Corner Market", category: "groceries" },
+    { date: day(-3), amount: -9.75, payee: "Metro Transit", category: "transport" },
+  ];
+  for (const row of importedRows) {
+    await prisma.financeTransaction.create({
+      data: {
+        userId: user.id,
+        accountId: checking.id,
+        date: row.date,
+        amount: row.amount,
+        payee: row.payee,
+        category: row.category,
+        importBatchId: importBatch.id,
+        // The identity the parser would have written for this row — so the
+        // demo batch undoes (and re-imports) exactly like a real one.
+        importKey: `v1|${checking.id}|${row.date}|${row.amount}|${row.payee.toLowerCase()}|0`,
+      },
+    });
+  }
+
+  const billSeeds = [
+    { name: "Rent", amount: 1650, category: "housing", recurrence: "monthly", dayOfMonth: 1, accountId: checking.id },
+    { name: "Internet", amount: 62, category: "utilities", recurrence: "monthly", dayOfMonth: 12, accountId: checking.id },
+    { name: "Phone", amount: 38, category: "utilities", recurrence: "monthly", dayOfMonth: 20, accountId: checking.id },
+    { name: "Streaming", amount: 15.99, category: "entertainment", recurrence: "monthly", dayOfMonth: 8, accountId: card.id, kind: "subscription" },
+  ];
+  for (const seed of billSeeds) {
+    // Anchor three months back on the seed's day-of-month, then walk forward a
+    // month at a time to the first occurrence that is not already past.
+    const anchor = subMonths(startOfMonth(new Date()), 3);
+    anchor.setDate(seed.dayOfMonth);
+    const anchorDate = format(anchor, "yyyy-MM-dd");
+    let cursor = anchor;
+    while (format(cursor, "yyyy-MM-dd") < day(0)) cursor = addMonths(cursor, 1);
+    const nextDueDate = format(cursor, "yyyy-MM-dd");
+    await prisma.bill.create({
+      data: {
+        userId: user.id,
+        name: seed.name,
+        amount: seed.amount,
+        kind: seed.kind ?? "bill",
+        category: seed.category,
+        accountId: seed.accountId,
+        recurrence: seed.recurrence,
+        anchorDate,
+        nextDueDate,
+        reminderEnabled: true,
+        reminderDaysBefore: 3,
+      },
+    });
+  }
+
+  await prisma.savingsGoal.createMany({
+    data: [
+      { userId: user.id, name: "Moving costs", targetAmount: 3000, currentAmount: 1850, targetDate: day(45), sortOrder: 0 },
+      { userId: user.id, name: "New laptop", targetAmount: 1800, currentAmount: 620, sortOrder: 1 },
+    ],
+  });
+
+  // One monthly budget with a threshold alert, one weekly budget, one plain —
+  // enough for the finance page to show all three states at a glance.
+  await prisma.budget.createMany({
+    data: [
+      { userId: user.id, category: "groceries", amount: 520, period: "monthly", alertThresholdPercent: 75 },
+      { userId: user.id, category: "dining", amount: 60, period: "weekly", alertThresholdPercent: 90 },
+      { userId: user.id, category: "transport", amount: 120, period: "monthly" },
+    ],
+  });
+
+  // --- documents & renewals ------------------------------------------------
+  console.log("  · documents and renewals");
+  await prisma.lifeDocument.createMany({
+    data: [
+      { userId: user.id, name: "Passport", kind: "id", issuer: "State Department", expiryDate: day(148), reminderDaysBefore: 90 },
+      { userId: user.id, name: "Apartment lease", kind: "lease", issuer: "Brightwater Properties", expiryDate: day(24), reminderDaysBefore: 30, notes: "Renew or give notice 30 days out." },
+      { userId: user.id, name: "Car insurance", kind: "insurance", issuer: "Northline Mutual", expiryDate: day(41), reminderDaysBefore: 30 },
+      { userId: user.id, name: "Laptop warranty", kind: "warranty", issuer: "Acme Devices", expiryDate: day(-12), reminderDaysBefore: 30 },
+      { userId: user.id, name: "Gym membership", kind: "membership", expiryDate: day(96), reminderEnabled: false, reminderDaysBefore: 14 },
+    ],
+  });
+
   // --- register everything as demo data ------------------------------------
   // The generator is the only writer for this user during a seed (the wipe just
   // emptied the tables), so "everything the user owns right now" is exactly
@@ -964,6 +1254,9 @@ export async function seedDemoData(
     workouts: await prisma.workout.count({ where: { userId: user.id } }),
     metrics: await prisma.healthMetric.count({ where: { userId: user.id } }),
     foods: await prisma.foodItem.count(),
+    tasks: await prisma.task.count({ where: { userId: user.id } }),
+    transactions: await prisma.financeTransaction.count({ where: { userId: user.id } }),
+    documents: await prisma.lifeDocument.count({ where: { userId: user.id } }),
     seedRecords,
   };
 
@@ -984,6 +1277,19 @@ export const DEMO_MODEL_ORDER = [
   "HabitLog",
   "GoalEntry",
   "ScheduleItem",
+  // Life-admin, children first: ledger rows reference accounts, bills and
+  // import batches; inbox captures and planner blocks reference tasks; tasks
+  // reference projects. `TaskTag` cascades from either end and is not listed.
+  "FinanceTransaction",
+  "Bill",
+  "FinanceImportBatch",
+  "Budget",
+  "SavingsGoal",
+  "FinanceAccount",
+  "InboxItem",
+  "Task",
+  "Project",
+  "LifeDocument",
   "Meal",
   "MealTemplate",
   "Workout",
@@ -1010,6 +1316,16 @@ async function recordSeedBatch(prisma: DbClient, userId: string): Promise<number
     ["HabitLog", await prisma.habitLog.findMany(owned)],
     ["GoalEntry", await prisma.goalEntry.findMany(owned)],
     ["ScheduleItem", await prisma.scheduleItem.findMany(owned)],
+    ["FinanceTransaction", await prisma.financeTransaction.findMany(owned)],
+    ["Bill", await prisma.bill.findMany(owned)],
+    ["FinanceImportBatch", await prisma.financeImportBatch.findMany(owned)],
+    ["Budget", await prisma.budget.findMany(owned)],
+    ["SavingsGoal", await prisma.savingsGoal.findMany(owned)],
+    ["FinanceAccount", await prisma.financeAccount.findMany(owned)],
+    ["InboxItem", await prisma.inboxItem.findMany(owned)],
+    ["Task", await prisma.task.findMany(owned)],
+    ["Project", await prisma.project.findMany(owned)],
+    ["LifeDocument", await prisma.lifeDocument.findMany(owned)],
     ["Meal", await prisma.meal.findMany(owned)],
     ["MealTemplate", await prisma.mealTemplate.findMany(owned)],
     ["Workout", await prisma.workout.findMany(owned)],

@@ -642,6 +642,8 @@ export async function searchEverything(query: string, limit = 8): Promise<Search
     bills,
     budgets,
     savingsGoals,
+    documents,
+    tags,
   ] = await Promise.all([
       prisma.scheduleItem.findMany({
         where: { userId: user.id, title: { contains: term, mode: "insensitive" } },
@@ -741,6 +743,26 @@ export async function searchEverything(query: string, limit = 8): Promise<Search
         where: { userId: user.id, archivedAt: null, name: { contains: term, mode: "insensitive" } },
         take: limit,
       }),
+      prisma.lifeDocument.findMany({
+        where: {
+          userId: user.id,
+          archivedAt: null,
+          OR: [
+            { name: { contains: term, mode: "insensitive" } },
+            { issuer: { contains: term, mode: "insensitive" } },
+          ],
+        },
+        orderBy: { expiryDate: "asc" },
+        take: limit,
+      }),
+      // Tags carry a count so a hit reads "3 tasks" rather than just a word;
+      // the count is grouped, never a task scan.
+      prisma.tag.findMany({
+        where: { userId: user.id, name: { contains: term, mode: "insensitive" } },
+        include: { _count: { select: { tasks: true, scheduleItems: true } } },
+        orderBy: { name: "asc" },
+        take: limit,
+      }),
     ]);
 
   return {
@@ -767,6 +789,13 @@ export async function searchEverything(query: string, limit = 8): Promise<Search
     bills,
     budgets,
     savingsGoals,
+    documents,
+    tags: tags.map((tag) => ({
+      id: tag.id,
+      name: tag.name,
+      taskCount: tag._count.tasks,
+      plannerCount: tag._count.scheduleItems,
+    })),
   };
 }
 

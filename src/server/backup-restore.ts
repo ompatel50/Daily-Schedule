@@ -77,6 +77,7 @@ const MODEL_BY_TABLE: Record<BackupTable, string> = {
   favorites: "FavoriteItem",
   projects: "Project",
   tasks: "Task",
+  taskTags: "TaskTag",
   financeAccounts: "FinanceAccount",
   financeImportBatches: "FinanceImportBatch",
   bills: "Bill",
@@ -84,6 +85,7 @@ const MODEL_BY_TABLE: Record<BackupTable, string> = {
   savingsGoals: "SavingsGoal",
   budgets: "Budget",
   inboxItems: "InboxItem",
+  documents: "LifeDocument",
   seedBatches: "SeedBatch",
   seedRecords: "SeedRecord",
 };
@@ -457,6 +459,13 @@ export async function restoreBackupForUser(
     return own(mapped);
   });
 
+  // A tag link only survives when BOTH ends travelled in the same file — the
+  // same rule the planner's tag join has always used.
+  prepare("taskTags", (row) => {
+    if (!inFile("tasks", row.taskId) || !inFile("tags", row.tagId)) return null;
+    return { taskId: map(row.taskId), tagId: map(row.tagId) };
+  });
+
   prepare("scheduleItems", (row) => {
     const mapped = withId(row);
     if (!mapped) return null;
@@ -665,6 +674,11 @@ export async function restoreBackupForUser(
     return own(mapped);
   });
 
+  prepare("documents", (row) => {
+    const mapped = withId(row);
+    return mapped ? own(mapped) : null;
+  });
+
   prepare("seedBatches", (row) => {
     const mapped = withId(row);
     return mapped ? own(mapped) : null;
@@ -848,6 +862,8 @@ export async function restoreBackupForUser(
     savingsGoals: await prisma.savingsGoal.count({ where: { userId } }),
     budgets: await prisma.budget.count({ where: { userId } }),
     inboxItems: await prisma.inboxItem.count({ where: { userId } }),
+    taskTags: await prisma.taskTag.count({ where: { task: { userId } } }),
+    documents: await prisma.lifeDocument.count({ where: { userId } }),
   };
 
   const report: ImportReport = {

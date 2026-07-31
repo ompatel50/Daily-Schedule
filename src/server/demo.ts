@@ -41,6 +41,17 @@ async function countUserRecords(userId: string): Promise<number> {
     prisma.journalEntry.count({ where: { userId } }),
     prisma.scheduleTemplate.count({ where: { userId } }),
     prisma.workoutTemplate.count({ where: { userId } }),
+    // The life-admin modules count too: an account with a ledger but no
+    // planner history is not "empty enough" to have demo data poured into it.
+    prisma.task.count({ where: { userId } }),
+    prisma.project.count({ where: { userId } }),
+    prisma.inboxItem.count({ where: { userId } }),
+    prisma.financeAccount.count({ where: { userId } }),
+    prisma.financeTransaction.count({ where: { userId } }),
+    prisma.bill.count({ where: { userId } }),
+    prisma.budget.count({ where: { userId } }),
+    prisma.savingsGoal.count({ where: { userId } }),
+    prisma.lifeDocument.count({ where: { userId } }),
   ]);
   return counts.reduce((sum, count) => sum + count, 0);
 }
@@ -131,6 +142,16 @@ const DELETE_BY_MODEL: Record<DemoModel, (ids: string[]) => Promise<unknown>> = 
   HabitLog: (ids) => prisma.habitLog.deleteMany({ where: { id: { in: ids } } }),
   GoalEntry: (ids) => prisma.goalEntry.deleteMany({ where: { id: { in: ids } } }),
   ScheduleItem: (ids) => prisma.scheduleItem.deleteMany({ where: { id: { in: ids } } }),
+  FinanceTransaction: (ids) => prisma.financeTransaction.deleteMany({ where: { id: { in: ids } } }),
+  Bill: (ids) => prisma.bill.deleteMany({ where: { id: { in: ids } } }),
+  FinanceImportBatch: (ids) => prisma.financeImportBatch.deleteMany({ where: { id: { in: ids } } }),
+  Budget: (ids) => prisma.budget.deleteMany({ where: { id: { in: ids } } }),
+  SavingsGoal: (ids) => prisma.savingsGoal.deleteMany({ where: { id: { in: ids } } }),
+  FinanceAccount: (ids) => prisma.financeAccount.deleteMany({ where: { id: { in: ids } } }),
+  InboxItem: (ids) => prisma.inboxItem.deleteMany({ where: { id: { in: ids } } }),
+  Task: (ids) => prisma.task.deleteMany({ where: { id: { in: ids } } }),
+  Project: (ids) => prisma.project.deleteMany({ where: { id: { in: ids } } }),
+  LifeDocument: (ids) => prisma.lifeDocument.deleteMany({ where: { id: { in: ids } } }),
   Meal: (ids) => prisma.meal.deleteMany({ where: { id: { in: ids } } }),
   MealTemplate: (ids) => prisma.mealTemplate.deleteMany({ where: { id: { in: ids } } }),
   Workout: (ids) => prisma.workout.deleteMany({ where: { id: { in: ids } } }),

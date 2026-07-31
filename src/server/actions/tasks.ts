@@ -70,11 +70,57 @@ export async function deleteProject(id: string): Promise<ActionResult<null>> {
 
 // --- tasks -------------------------------------------------------------------
 
+/**
+ * Resolve tag NAMES to the caller's own tag rows, creating any that are new.
+ *
+ * Tags are created by typing them — there is no separate "manage tags" step —
+ * and they share the planner's vocabulary, so `#admin` on a task and `#admin`
+ * on a planner block are the same tag. Every row is written with the caller's
+ * `userId`, so a name can only ever resolve inside their own account.
+ */
+async function resolveTagIds(userId: string, names: string[]): Promise<string[]> {
+  if (names.length === 0) return [];
+  const existing = await prisma.tag.findMany({
+    where: { userId, name: { in: names } },
+    select: { id: true, name: true },
+  });
+  const byName = new Map(existing.map((tag) => [tag.name, tag.id]));
+
+  for (const name of names) {
+    if (byName.has(name)) continue;
+    // Upsert, not create: two tabs adding the same new tag race down to one row
+    // rather than one of them failing on the (userId, name) unique.
+    const tag = await prisma.tag.upsert({
+      where: { userId_name: { userId, name } },
+      create: { userId, name },
+      update: {},
+      select: { id: true },
+    });
+    byName.set(name, tag.id);
+  }
+
+  return names.map((name) => byName.get(name)).filter((id): id is string => Boolean(id));
+}
+
+/** Replace a task's tag set with exactly `tagIds`, inside the caller's scope. */
+async function syncTaskTags(
+  db: Pick<typeof prisma, "taskTag">,
+  taskId: string,
+  tagIds: string[],
+): Promise<void> {
+  await db.taskTag.deleteMany({ where: { taskId, tagId: { notIn: tagIds } } });
+  if (tagIds.length === 0) return;
+  await db.taskTag.createMany({
+    data: tagIds.map((tagId) => ({ taskId, tagId })),
+    skipDuplicates: true,
+  });
+}
+
 export async function saveTask(input: unknown): Promise<ActionResult<{ id: string }>> {
   const parsed = taskSchema.safeParse(input);
   if (!parsed.success) return fromZod(parsed.error);
   const user = await getCurrentUser();
-  const { id, projectId, parentId, ...data } = parsed.data;
+  const { id, projectId, parentId, tags, ...data } = parsed.data;
 
   // Client-supplied references must belong to the caller.
   if (projectId) {
@@ -101,10 +147,15 @@ export async function saveTask(input: unknown): Promise<ActionResult<{ id: strin
     repeatAnchor: data.repeat === "none" ? null : (data.dueDate ?? null),
   };
 
+  const tagIds = await resolveTagIds(user.id, tags);
+
   if (id) {
     const existing = await prisma.task.findFirst({ where: { id, userId: user.id } });
     if (!existing) return fail("Task not found");
-    await prisma.task.update({ where: { id }, data: payload });
+    await prisma.$transaction(async (db) => {
+      await db.task.update({ where: { id }, data: payload });
+      await syncTaskTags(db, id, tagIds);
+    });
     revalidateAll();
     return succeed({ id });
   }
@@ -114,6 +165,7 @@ export async function saveTask(input: unknown): Promise<ActionResult<{ id: strin
       ...payload,
       userId: user.id,
       sortOrder: await prisma.task.count({ where: { userId: user.id, status: "open" } }),
+      tags: tagIds.length ? { create: tagIds.map((tagId) => ({ tagId })) } : undefined,
     },
   });
   revalidateAll();

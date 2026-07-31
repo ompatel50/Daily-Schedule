@@ -3187,3 +3187,258 @@ Phase 33 candidates, in rough order of user value: import undo via the
 batch link, document-expiry reminders on the due-reminder foundation,
 budget-threshold reminders using the low-balance shape, weekly budget
 periods, demo/starter data for finance/tasks/inbox, and task tags/labels.
+
+## Phase 33 — Cleanup & follow-up completion: import undo, document expiry, budget thresholds, weekly budgets, demo data, task tags
+
+The six items Phase 32 recorded as its exact next step, finished — nothing new
+invented alongside them. Every addition rides the established patterns
+(user-scoped Prisma models, pure logic under `lib/logic`, `ActionResult`
+actions, bounded read models, the one reminder ledger, backup versioning), and
+nothing from the foundation or from Phase 32 was recreated or undone.
+
+### Schema (migration `20260731040537_phase3_undo_documents_budgets_tags` — additive only)
+
+Two new tables and five new columns, all user-scoped, no drops, no rewrites of
+existing rows:
+
+* `TaskTag` — the join that puts tasks on the existing `Tag` vocabulary
+  (`@@id([taskId, tagId])`, index on `tagId`), the same shape
+  `ScheduleItemTag` already had. Both ends are user-scoped, so a join row can
+  never bridge two accounts.
+* `LifeDocument` — name, kind, optional issuer, `expiryDate`, notes,
+  `reminderEnabled` / `reminderDaysBefore`, `archivedAt`. Indexed on
+  `(userId, expiryDate)` and `(userId, archivedAt)`. No file storage: it
+  records *when* something runs out, not the thing itself.
+* `Budget.alertThresholdPercent` (nullable) + an index on
+  `(userId, alertThresholdPercent)`; `Budget.period` now genuinely holds
+  `monthly | weekly` (the column already existed, validation only allowed
+  `monthly`). The `(userId, category)` unique is unchanged — the category is
+  still the whole identity, and the period is a property of that one budget
+  rather than a second axis.
+* `FinanceImportBatch.undoneAt` / `undoneCount` / `keptCount` — the undo stamp.
+
+`prisma validate` clean; the migration applied from zero on the disposable
+test database on every integration run, and against the dev database.
+
+### 1) Import undo via the batch link
+
+* **The rule, decided rather than guessed.** Undo removes only rows that
+  `importBatchId` still links to the batch **and** that still say what the
+  import wrote. "Still says" is decided by rebuilding the import key from the
+  row's *current* account, date, amount and payee (reusing the occurrence the
+  stored key ends with) and comparing — so re-categorising or annotating a row
+  leaves it removable (category and notes are outside the import identity
+  exactly as they are for duplicate detection), while changing its date,
+  amount, payee or account keeps it. A row since linked to a bill payment or a
+  transfer is kept too: removing it would corrupt the record it is now part
+  of. A row with no key, or a key in an unrecognised format, is kept — undo
+  never deletes what it cannot positively identify.
+* **Never deletes the audit record.** The batch row survives, stamped
+  `undoneAt` / `undoneCount` / `keptCount`, and that stamp is what refuses a
+  second undo — otherwise a re-run could reach rows a *later* import created.
+* **Transactional and scoped.** One `$transaction`: re-read the rows under the
+  caller's own id (the preview may be seconds stale), delete only the planned
+  ids bounded by `userId` AND `importBatchId`, then stamp the batch. A guessed
+  batch id finds nothing.
+* **Idempotency preserved.** A removed row takes its `importKey` with it, so
+  re-importing the same file recreates exactly what was removed; a kept row
+  keeps its key, so its file row is skipped as a duplicate rather than
+  double-written.
+* **UI.** A "CSV imports" card on `/finance` lists the last 10 runs with file
+  name, account, counts and a live remaining-rows count; an undone batch stays
+  listed with an "Undone" badge. **Undo** opens a preview — how many rows will
+  go, how many will be kept and why, and a sample of what is about to be
+  deleted — before anything is removed. The import report inside the dialog
+  points at that card.
+
+### 2) Document-expiry reminders
+
+* `LifeDocument` is the smallest model an expiry reminder needs. Kinds: ID &
+  travel, insurance, lease & housing, warranty, licence, membership, other.
+* Reminders reuse the **existing due-date resolver** rather than growing a
+  second engine: `DueReminderKind` gained `"document"`, and a small phrasing
+  table words it as an expiry ("Expires in 12 days") instead of a debt ("Bill
+  due …"). Same window maths, same `:ahead` key, same ledger.
+* Renewal is an edit: moving `expiryDate` forward changes the key, which arms
+  the next occurrence on its own — exactly how paying a bill advances the next
+  one. Silent when archived, disabled, or already expired (the page carries
+  that state; a daily nag would train people to dismiss it).
+* Lives on `/inbox`, the app's life-admin surface, as a "Renewals & documents"
+  card — no new route, no fourteenth nav item. Each row shows the distance,
+  the kind, a "Reminding" badge while today is inside its own run-up window,
+  "Expired" once past, and "No reminder" when switched off.
+* Searchable by name and issuer; archived rather than deleted by default.
+
+### 3) Budget-threshold reminders
+
+* `alertThresholdPercent` ∈ {50, 75, 90, 100}, or null for no alert. A
+  free-form number would let people configure alerts that never fire or fire
+  on every purchase.
+* Delivery key: `budget:<id>:<periodStart>:<threshold>` — one alert per budget
+  per period per threshold. Crossing 75 % says so on the day it happens and
+  then stays quiet; the next month (or week) arms it again; changing the
+  threshold deliberately arms a new alert, because it is a different question.
+* The feed adds at most **one grouped query per period actually in use** (two
+  today), each filtered to that period's window, that period's categories and
+  money-out rows only — skipped entirely when no budget has a threshold.
+* Visible without waiting for a notification: an amber "Past 75 %" badge and an
+  amber bar on the budget card, and a one-line dashboard callout when nothing
+  is over budget but something is past its line.
+
+### 4) Weekly budget periods
+
+* `budgetPeriodWindow` / `budgetWindows` / `budgetFetchRange` in the pure
+  finance module: monthly is the calendar month, weekly is the user's own week
+  (their `weekStartsOn` — the same convention every week view and the
+  low-balance key already use). An unknown period string falls back to monthly
+  rather than blanking the page.
+* `budgetProgress` now takes the windows and filters **per budget**, one pass
+  per period rather than per budget. The finance page and the dashboard fetch
+  **one** ledger slice spanning month ∪ week ∪ rolling-7-days and slice it
+  three ways — which actually *removes* the old conditional second query for
+  the week card. A week that spills into the next month is measured whole.
+* Existing monthly budgets are untouched: same numbers, same sort, same
+  over-budget colouring, asserted by the pre-existing tests running through
+  the monthly window unchanged.
+
+### 5) Demo data for the new modules
+
+The generator now covers everything: three projects (one completed), 12 tagged
+tasks across every due-date bucket with subtasks and a repeating one, five
+inbox captures (one already converted into a task), three finance accounts,
+~10 weeks of ledger history with salary, standing transfers and category
+spending, four bills, two savings goals, three budgets (monthly + weekly, one
+with a 75 % alert), **a CSV import batch whose rows are still linked** so undo
+has something real to demonstrate, and five documents spanning upcoming,
+imminent, reminder-disabled and already-lapsed.
+
+* Every row is registered in the existing `SeedBatch`, so removal deletes
+  exactly what was seeded — `DEMO_MODEL_ORDER`, `recordSeedBatch` and
+  `DELETE_BY_MODEL` grew the new models, children before parents.
+* `countUserRecords` now counts the life-admin modules too: an account with a
+  ledger but no planner history is no longer "empty enough" to have demo data
+  poured into it.
+* Production is unchanged: the CLI seed still refuses non-local databases, and
+  the in-app path is still an explicit choice offered only to an empty account.
+* **Fixed along the way:** `npm run db:seed` had been broken since the
+  password-auth phase — the seed reaches the real aggregation through
+  `@/server/summaries`, which imported the client from `@/lib/db`, which
+  re-exports `getCurrentUser`, which imports `server-only`, which throws under
+  plain `tsx`. The six computation modules now import `@/lib/prisma` directly
+  (import specifier only; no behaviour change), which is what that module's own
+  header comment always claimed.
+
+### 6) Task tags
+
+* `TaskTag` over the existing `Tag` rows — one vocabulary shared with the
+  planner, not a parallel list. Cap of 8 per task, names normalised (trimmed,
+  lower-cased, single-spaced, 30 chars), so "Admin" and "admin" can never
+  become two tags.
+* Created by typing: `taskSchema.tags` takes **names**, the action resolves
+  them to the caller's own rows (upsert, so two tabs adding the same new tag
+  race down to one row) and syncs the join inside a transaction.
+* Filter chips above the task list, counted from rows already in hand (no
+  extra query). Stacking narrows (AND), and the filter lives in the URL
+  (`/tasks?tag=admin`) so it is linkable — which is what lets a **Tags** search
+  hit be a filter rather than a record.
+* Deliberately not a second project system: no colours in the task UI, no
+  hierarchy, no per-tag pages. Deleting a tag removes its links and leaves
+  every task standing.
+
+### Backup format v6
+
+`documents` and `taskTags` added to `BACKUP_TABLES` (tags and tasks both
+precede the join, so a link only survives when both ends travelled together),
+plus the new budget and import-batch columns, which ride the schema-driven
+sanitiser without special cases. A v1–v5 file still restores unchanged.
+
+### Verification (all executed this session, in order)
+
+* `npm run lint` — clean. `npm run typecheck` — clean.
+* `npm test` — **903/903** (was 837; +66: `documents.test.ts` 12 new,
+  `finance-import.test.ts` +11 undo classification, `reminders.test.ts` +18
+  document-expiry and budget-threshold, `finance-logic.test.ts` +14 budget
+  windows/periods/thresholds, `tasks-logic.test.ts` +12 tag helpers,
+  `search.test.ts` +3, `backup.test.ts` +2 v6 pins).
+* `npm run test:integration` — **228/228** on real PostgreSQL (was 190; +38 in
+  `phase3-followups.test.ts`: undo scope / kept-edited / kept-linked /
+  re-categorise-still-removed / audit stamp / second-undo refusal /
+  re-import-after-undo / kept-row-not-duplicated / cross-user denial; document
+  CRUD, feed eligibility, dedup, renewal re-arming, cross-user denial, search;
+  budget weekly vs monthly windows, month-boundary spill, monthly regression,
+  threshold once-per-period, weekly keying, threshold clearing,
+  income/transfer exclusion, cross-user; task tag creation/reuse/replacement/
+  cap/deletion/two-user separation/search; a v6 backup round-trip landing
+  documents and tag links in the *importing* account; demo data seeding and
+  removing every new module without touching another account).
+* `npm run build` — clean; `/finance` 208 kB, `/tasks` 200 kB, `/inbox` 198 kB
+  first-load (from 206 / 199 / 194), middleware unchanged.
+* Playwright e2e — **32 passed / 1 skipped** in the documented no-fixture mode
+  (`CI_SKIP_SEEDED=1`), identical to the Phase-32 baseline. Without that flag
+  the pre-seeded Apple Health spec fails, as it has since it was written: the
+  demo seed has never produced a `HealthImportBatch`, which is why the flag
+  exists.
+* **Browser verification (production build, real Chromium): 30/30 checks, zero
+  page errors, zero real failed requests** — tag entry normalising "Verify
+  Alpha" → `#verify alpha`, chips on the task row, chip-click filtering putting
+  `?tag=` in the URL, stacked tags emptying the list (AND), a linkable tag URL
+  filtering on load, the palette finding the tag under **Tags**; the Renewals &
+  documents card, a new document reading "Expires in 12 days" with a
+  "Reminding" badge, the demo warranty reading "Expired", renewing pushing it
+  out of the window; a weekly budget with its period badge, window dates and
+  "alerts at 50 %", and the "Past 75 %" badge appearing after a purchase
+  crossed the line; CSV preview → commit → the batch in history → editing one
+  imported row → the undo preview correctly offering "2 will be removed, 1 will
+  be kept (edited since the import)" → the removal leaving the edited row
+  standing and the batch marked Undone; all 13 routes 200; 0 px horizontal
+  overflow at 900 px on `/tasks`, `/inbox`, `/finance`.
+* The only console noise is the pre-existing `/_vercel/insights/script.js` 404
+  that occurs whenever the app runs outside the Vercel platform; all 29
+  "failed" requests are `net::ERR_ABORTED` prefetches cancelled by the script
+  navigating faster than Next can prefetch.
+
+### Performance notes
+
+* The finance page and the dashboard now issue **one** ledger query instead of
+  one-or-two: the union of month, current week and rolling-7-days is fetched
+  once and sliced. Adding weekly budgets cost zero queries.
+* `budgetProgress` walks the ledger once per *period* in play, not once per
+  budget — a hundred budgets cost the same two passes as two do.
+* The reminder feed adds two bounded loads (documents inside a 365-day horizon,
+  `take 200`; threshold-bearing budgets, `take 100`) and at most one grouped
+  spending query per period, all skipped when nothing is configured.
+* Import undo re-reads at most 5 000 rows (the parser's own cap), plans in
+  memory, and deletes in chunks of 500 inside one transaction.
+* Tag facets are computed from the open-task rows already loaded; the tag
+  filter is client-side over that bounded list. Search adds two `take 8`
+  indexed queries (documents, tags) — 19 per keystroke batch, still one round
+  trip.
+
+### Deliberately not implemented (recorded so nothing reads as forgotten)
+
+* **Undo of an undo.** Rolling a batch back is one-way; the safe path back is
+  re-importing the file, which is exactly what the removed rows' freed import
+  keys allow.
+* **Per-row undo.** Undo is batch-shaped. Deleting a single imported row is
+  already the transaction row menu's job.
+* **Document attachments.** No file storage, no document numbers — the model
+  records dates, deliberately.
+* **Per-document reminder times** (all due-date reminders still fire at 09:00
+  local) and **multiple thresholds per budget** (one threshold, one alert).
+* **Budget rollover** between periods, and periods beyond monthly/weekly.
+* **Tag colours in the task UI, tag rename, per-tag pages.** Tags carry a
+  colour column (shared with the planner) that the task chips ignore; renaming
+  is not offered because it would silently rewrite planner history too.
+* **Tags on inbox items.** The inbox is a catchall queue on purpose; adding a
+  second axis to it would start the second-task-system slide.
+* **Demo data on hosted sign-up.** Still an explicit, empty-account-only
+  choice — never automatic.
+
+### Exact next step
+
+Phase 34 candidates, in rough order of user value: a documents surface of its
+own once the inbox card outgrows one section (with kind filtering and an
+archive view), tag rename/merge with a preview of what else it touches,
+per-item reminder times on the due-date foundation, budget rollover, and a
+"needs attention" digest that folds overdue bills, expiring documents,
+over-budget categories and low balances into one dashboard block.

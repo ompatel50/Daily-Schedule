@@ -4,7 +4,7 @@ import { cache } from "react";
 
 import { getCurrentUser, prisma } from "@/lib/db";
 import { shiftDay, type DayKey } from "@/lib/date";
-import { bucketTasks, projectProgress, tasksDueNow } from "@/lib/logic/tasks";
+import { bucketTasks, projectProgress, tagUsage, tasksDueNow } from "@/lib/logic/tasks";
 import { scheduleSettingsFor } from "@/server/schedule";
 
 /**
@@ -34,6 +34,11 @@ async function openTasksImpl(userId: string, today: DayKey) {
         select: { id: true, date: true, status: true },
         orderBy: { date: "asc" },
         take: 3,
+      },
+      // Tags are capped per task in the action layer, so this include can
+      // never widen a row unboundedly.
+      tags: {
+        select: { tag: { select: { id: true, name: true, color: true } } },
       },
     },
     orderBy: [{ dueDate: { sort: "asc", nulls: "last" } }, { sortOrder: "asc" }],
@@ -99,6 +104,9 @@ export async function getTaskBoard() {
       progress: projectProgress(countsByProject.get(project.id) ?? []),
     })),
     recentlyDone,
+    // The tag filter offers exactly the tags the open list actually carries —
+    // computed from rows already in hand, so no extra query.
+    tags: tagUsage(openTasks.map((task) => ({ tags: task.tags.map((row) => row.tag.name) }))),
   };
 }
 

@@ -19,6 +19,7 @@ import {
   Pencil,
   Plus,
   Repeat2,
+  Tag as TagIcon,
   Trash2,
   Undo2,
   type LucideIcon,
@@ -48,7 +49,7 @@ import { TaskDialog, blankTask, type TaskDraft } from "@/components/tasks/task-d
 import { formatDay } from "@/lib/date";
 import { PRIORITY_META, PROJECT_STATUS_META, type Priority, type ProjectStatus } from "@/lib/enums";
 import { describeDueDistance, isOverdue } from "@/lib/logic/due";
-import { describeRepeat } from "@/lib/logic/tasks";
+import { describeRepeat, filterByTags } from "@/lib/logic/tasks";
 import { cn, pluralize } from "@/lib/utils";
 import {
   completeTask,
@@ -98,11 +99,18 @@ export interface DoneTaskItem {
   completedDay: string | null;
 }
 
+export interface TagFacet {
+  name: string;
+  count: number;
+}
+
 export interface TaskBoardData {
   today: string;
   buckets: Record<BucketKey, TaskItem[]>;
   projects: ProjectItem[];
   recentlyDone: DoneTaskItem[];
+  /** Tags in use across the open list, most-used first. */
+  tags: TagFacet[];
 }
 
 const BUCKET_META: Array<{ key: BucketKey; title: string; icon: LucideIcon; accent: string }> = [
@@ -134,6 +142,39 @@ export function TaskBoard({ board }: { board: TaskBoardData }) {
   const [scheduling, setScheduling] = React.useState<ScheduleSource | null>(null);
   const [completing, setCompleting] = React.useState<Record<string, boolean>>({});
   const [expanded, setExpanded] = React.useState<Record<string, boolean>>({});
+
+  // The tag filter lives in the URL, so a filtered list is linkable and the
+  // command palette can land straight on one (`/tasks?tag=admin`).
+  const activeTags = React.useMemo(
+    () => searchParams.getAll("tag").map((value) => value.toLowerCase()).filter(Boolean),
+    [searchParams],
+  );
+
+  function toggleTag(name: string) {
+    const next = new URLSearchParams(searchParams);
+    const current = next.getAll("tag").map((value) => value.toLowerCase());
+    next.delete("tag");
+    const updated = current.includes(name)
+      ? current.filter((value) => value !== name)
+      : [...current, name];
+    for (const value of updated) next.append("tag", value);
+    const query = next.toString();
+    router.replace(query ? `${pathname}?${query}` : pathname, { scroll: false });
+  }
+
+  const buckets = React.useMemo(() => {
+    if (activeTags.length === 0) return board.buckets;
+    const filtered = {} as Record<BucketKey, TaskItem[]>;
+    for (const [key, tasks] of Object.entries(board.buckets) as Array<[BucketKey, TaskItem[]]>) {
+      filtered[key] = filterByTags(tasks, activeTags);
+    }
+    return filtered;
+  }, [board.buckets, activeTags]);
+
+  const filteredCount = React.useMemo(
+    () => Object.values(buckets).reduce((total, tasks) => total + tasks.length, 0),
+    [buckets],
+  );
 
   // Optimistic checkmarks are cleared once fresh data arrives.
   React.useEffect(() => setCompleting({}), [board]);
@@ -199,6 +240,7 @@ export function TaskBoard({ board }: { board: TaskBoardData }) {
       repeat: task.repeat,
       repeatEvery: task.repeatEvery,
       reminderEnabled: task.reminderEnabled,
+      tags: task.tags,
     });
     setParentTitle(null);
     setTaskDialogOpen(true);
@@ -220,7 +262,7 @@ export function TaskBoard({ board }: { board: TaskBoardData }) {
     setProjectDialogOpen(true);
   }
 
-  const nothingDueNow = board.buckets.overdue.length === 0 && board.buckets.today.length === 0;
+  const nothingDueNow = buckets.overdue.length === 0 && buckets.today.length === 0;
   const projects = [...board.projects].sort(
     (a, b) => (PROJECT_STATUS_RANK[a.status] ?? 9) - (PROJECT_STATUS_RANK[b.status] ?? 9),
   );
@@ -228,7 +270,53 @@ export function TaskBoard({ board }: { board: TaskBoardData }) {
   return (
     <div className="grid gap-6 lg:grid-cols-3">
       <div className="space-y-6 lg:col-span-2">
-        {nothingDueNow && (
+        {board.tags.length > 0 && (
+          <div className="flex flex-wrap items-center gap-1.5" role="group" aria-label="Filter by tag">
+            <TagIcon className="h-3.5 w-3.5 text-muted-foreground" aria-hidden="true" />
+            {board.tags.map((tag) => {
+              const active = activeTags.includes(tag.name);
+              return (
+                <button
+                  key={tag.name}
+                  type="button"
+                  aria-pressed={active}
+                  onClick={() => toggleTag(tag.name)}
+                  className={cn(
+                    "rounded-full border px-2 py-0.5 text-xs transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring",
+                    active
+                      ? "border-domain-task/40 bg-domain-task/10 font-medium text-domain-task"
+                      : "text-muted-foreground hover:text-foreground",
+                  )}
+                >
+                  #{tag.name}
+                  <span className="tabular ml-1 opacity-60">{tag.count}</span>
+                </button>
+              );
+            })}
+            {activeTags.length > 0 && (
+              <button
+                type="button"
+                onClick={() => router.replace(pathname, { scroll: false })}
+                className="rounded-full px-2 py-0.5 text-xs text-muted-foreground underline-offset-2 hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+              >
+                Clear
+              </button>
+            )}
+          </div>
+        )}
+
+        {activeTags.length > 0 && filteredCount === 0 && (
+          <SectionCard title="Filtered" icon={TagIcon} accent="text-domain-task">
+            <EmptyState
+              icon={TagIcon}
+              title={`No open tasks tagged ${activeTags.map((tag) => `#${tag}`).join(" + ")}`}
+              description="Clear the filter, or tag a task from its edit dialog."
+              className="py-6"
+            />
+          </SectionCard>
+        )}
+
+        {activeTags.length === 0 && nothingDueNow && (
           <SectionCard title="Today" icon={CalendarCheck2} accent="text-domain-task">
             <EmptyState
               icon={CheckCircle2}
@@ -240,7 +328,7 @@ export function TaskBoard({ board }: { board: TaskBoardData }) {
         )}
 
         {BUCKET_META.map(({ key, title, icon, accent }) => {
-          const tasks = board.buckets[key];
+          const tasks = buckets[key];
           if (tasks.length === 0) return null;
           return (
             <SectionCard
@@ -372,6 +460,7 @@ export function TaskBoard({ board }: { board: TaskBoardData }) {
         task={editingTask}
         parentTitle={parentTitle}
         projects={board.projects}
+        tagSuggestions={board.tags.map((tag) => tag.name)}
       />
       <ProjectDialog
         open={projectDialogOpen}
@@ -465,6 +554,14 @@ function TaskRow({
                 {priorityMeta?.label}
               </Badge>
             )}
+            {task.tags.map((tag) => (
+              <span
+                key={tag}
+                className="rounded-full border bg-muted/50 px-1.5 py-0.5 text-[10px] text-muted-foreground"
+              >
+                #{tag}
+              </span>
+            ))}
           </div>
 
           {(task.dueDate || task.repeat !== "none" || countable.length > 0 || nextPlanned) && (

@@ -6,12 +6,17 @@ import type { AccountView } from "@/components/finance/account-dialog";
 import { AddTransactionButton } from "@/components/finance/add-transaction-button";
 import type { BillRowView } from "@/components/finance/bill-dialog";
 import type { BudgetView } from "@/components/finance/budget-dialog";
-import { FinanceBoard, type CategoryTotalView } from "@/components/finance/finance-board";
+import {
+  FinanceBoard,
+  type CategoryTotalView,
+  type ImportBatchView,
+} from "@/components/finance/finance-board";
 import type { SavingsGoalView } from "@/components/finance/savings-goal-dialog";
 import type { TransactionView } from "@/components/finance/transaction-dialog";
 import { PageHeader } from "@/components/shared/page-header";
 import { StatCard } from "@/components/shared/stat-card";
 import { Skeleton } from "@/components/ui/skeleton";
+import { toDayKey } from "@/lib/date";
 import { formatMoney } from "@/lib/logic/finance";
 import { pluralize } from "@/lib/utils";
 import { BILL_SOON_DAYS, getFinanceOverview } from "@/server/finance";
@@ -63,10 +68,29 @@ export default async function FinancePage() {
     category: view.budget.category,
     label: view.label,
     amount: view.budget.amount,
+    period: view.period,
+    threshold: view.threshold,
+    thresholdReached: view.thresholdReached,
     spent: view.spent,
     remaining: view.remaining,
     percent: view.percent,
     over: view.over,
+    windowStart: view.window.start,
+    windowEnd: view.window.end,
+  }));
+
+  const importBatches: ImportBatchView[] = overview.importBatches.map((batch) => ({
+    id: batch.id,
+    fileName: batch.fileName,
+    accountName: batch.account?.name ?? null,
+    importedDay: toDayKey(batch.createdAt),
+    createdCount: batch.createdCount,
+    skippedCount: batch.skippedCount,
+    rejectedCount: batch.rejectedCount,
+    remainingCount: batch._count.transactions,
+    undone: batch.undoneAt !== null,
+    undoneCount: batch.undoneCount,
+    keptCount: batch.keptCount,
   }));
 
   const bills: BillRowView[] = overview.bills.map(({ bill, bucket, daysUntilDue }) => ({
@@ -174,6 +198,7 @@ export default async function FinancePage() {
           bills={bills}
           goals={goals}
           budgets={budgets}
+          importBatches={importBatches}
           byCategory={byCategory}
           today={overview.today}
           primaryCurrency={primaryCurrency}

@@ -7,8 +7,14 @@
  * and future CLI tooling call the *real* aggregation instead of maintaining a
  * hand-copied duplicate of the formula, which is precisely the drift this
  * upgrade set out to remove.
+ *
+ * For the same reason this chain imports the client from `@/lib/prisma`
+ * directly rather than from `@/lib/db`: the latter also re-exports
+ * `getCurrentUser`, which pulls `server-only` in transitively and would break
+ * the seed CLI the moment it loaded. Anything here that needs a *user* takes
+ * a userId argument — resolving "who is asking" is the caller's job.
  */
-import { prisma } from "@/lib/db";
+import { prisma } from "@/lib/prisma";
 import { type DayKey, dayRange, daysBetween, shiftDay, weekRange } from "@/lib/date";
 import { aggregateDayAll } from "@/lib/logic/health";
 import { round, sum } from "@/lib/utils";

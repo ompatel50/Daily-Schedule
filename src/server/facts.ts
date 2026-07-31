@@ -8,7 +8,7 @@
  * hand-copied duplicate of the formula, which is precisely the drift this
  * upgrade set out to remove.
  */
-import { prisma } from "@/lib/db";
+import { prisma } from "@/lib/prisma";
 import { type DayKey, dayRange, daysBetween } from "@/lib/date";
 import { emptyFacts, type GoalFacts } from "@/lib/logic/goals";
 import { aggregateDayAll } from "@/lib/logic/health";

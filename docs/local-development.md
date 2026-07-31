@@ -51,6 +51,22 @@ just to poke at it before deploying.
    it re-seeds the demo dataset. The seed refuses to run against anything
    that isn't a local database, so it can never hit production by accident.
 
+   The demo dataset covers every module, so a fresh install has something to
+   look at everywhere: ~10 weeks of planner / habit / nutrition / workout /
+   health history, plus projects and tagged tasks, inbox captures (one of them
+   already converted into a task), three finance accounts with a ledger,
+   recurring bills, savings goals, monthly **and** weekly budgets (one with an
+   alert threshold), a CSV import batch whose rows are still linked — so "undo
+   this import" has something real to demonstrate — and documents with
+   upcoming, imminent and already-lapsed expiry dates.
+
+   Demo data is never mixed into a real account. Every row the generator
+   writes is registered in a `SeedBatch`, which is what lets **Settings →
+   Sample data → Remove** delete exactly what was seeded and nothing else; the
+   in-app "Start with sample data" button is offered only while the account is
+   empty (finance, tasks, inbox and documents all count toward "empty"), and
+   the CLI seed refuses non-local databases outright.
+
 5. Start the dev server:
 
    ```bash

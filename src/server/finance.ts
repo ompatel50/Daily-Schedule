@@ -6,6 +6,8 @@ import { getCurrentUser, prisma } from "@/lib/db";
 import { monthRange, shiftDay, type DayKey } from "@/lib/date";
 import {
   accountBalances,
+  budgetFetchRange,
+  budgetWindows,
   billsByUrgency,
   budgetProgress,
   moneyRound,
@@ -14,6 +16,7 @@ import {
   summarizeTransactions,
   upcomingBillsTotal,
   type AccountBalance,
+  type BudgetWindow,
 } from "@/lib/logic/finance";
 import { scheduleSettingsFor } from "@/server/schedule";
 
@@ -149,6 +152,34 @@ export async function getBudgets() {
 
 export type BudgetRow = Awaited<ReturnType<typeof budgetsImpl>>[number];
 
+// --- CSV import batches ------------------------------------------------------
+
+/** How many import runs the finance page lists — an audit trail, not a log. */
+export const IMPORT_BATCH_LIMIT = 10;
+
+async function importBatchesImpl(userId: string, limit: number) {
+  return prisma.financeImportBatch.findMany({
+    where: { userId },
+    include: {
+      account: { select: { id: true, name: true } },
+      // A live count, not the stored one: it is what undo can still reach.
+      _count: { select: { transactions: true } },
+    },
+    orderBy: { createdAt: "desc" },
+    take: limit,
+  });
+}
+
+const importBatchesMemo = cache(importBatchesImpl);
+
+/** Recent CSV imports, newest first — the surface the undo action hangs off. */
+export async function getImportBatches(limit = IMPORT_BATCH_LIMIT) {
+  const user = await getCurrentUser();
+  return importBatchesMemo(user.id, limit);
+}
+
+export type ImportBatchRow = Awaited<ReturnType<typeof importBatchesImpl>>[number];
+
 // --- savings goals -----------------------------------------------------------
 
 export async function getSavingsGoals(includeArchived = false) {
@@ -165,30 +196,61 @@ export type SavingsGoalWithProgress = Awaited<ReturnType<typeof getSavingsGoals>
 
 // --- page + dashboard aggregates --------------------------------------------
 
+/**
+ * The one ledger window a finance surface needs: the calendar month (what the
+ * month card and monthly budgets measure), the rolling last-7-days the week
+ * card shows, and the user's current calendar week (what weekly budgets
+ * measure). Fetched once, sliced three ways — a weekly budget must never cost
+ * a second query, and the three views must never disagree about a row.
+ */
+function financeWindows(today: DayKey, weekStartsOn: 0 | 1) {
+  const month = monthRange(today);
+  const windows = budgetWindows(today, weekStartsOn);
+  const rollingWeekStart = shiftDay(today, -6);
+  const budgetRange = budgetFetchRange(windows) ?? month;
+  const fetch: BudgetWindow = {
+    start: [month.start, budgetRange.start, rollingWeekStart].reduce((min, day) =>
+      day < min ? day : min,
+    ),
+    end: [month.end, budgetRange.end].reduce((max, day) => (day > max ? day : max)),
+  };
+  return { month, windows, rollingWeekStart, fetch };
+}
+
+/** Rows inside `[start, end]` — every slice below comes from the one fetch. */
+function slice<T extends { date: DayKey }>(rows: T[], window: BudgetWindow): T[] {
+  return rows.filter((row) => row.date >= window.start && row.date <= window.end);
+}
+
 /** Everything the finance page renders, in one round of bounded queries. */
 export async function getFinanceOverview() {
   const user = await getCurrentUser();
   const settings = scheduleSettingsFor(user);
   const today = settings.today;
-  const month = monthRange(today);
-  const weekAgo = shiftDay(today, -6);
+  const { month, windows, rollingWeekStart, fetch } = financeWindows(today, settings.weekStartsOn);
 
-  const [balances, bills, monthTransactions, recentTransactions, savingsGoals, budgets] =
-    await Promise.all([
-      accountBalancesMemo(user.id),
-      billViewsMemo(user.id, today),
-      getTransactionsBetween(month.start, month.end),
-      getRecentTransactions(50),
-      getSavingsGoals(),
-      budgetsMemo(user.id),
-    ]);
+  const [
+    balances,
+    bills,
+    ledger,
+    recentTransactions,
+    savingsGoals,
+    budgets,
+    importBatches,
+  ] = await Promise.all([
+    accountBalancesMemo(user.id),
+    billViewsMemo(user.id, today),
+    getTransactionsBetween(fetch.start, fetch.end),
+    getRecentTransactions(50),
+    getSavingsGoals(),
+    budgetsMemo(user.id),
+    importBatchesMemo(user.id, IMPORT_BATCH_LIMIT),
+  ]);
 
-  // Bounded on BOTH sides so this reuse path computes the same weekAgo..today
-  // window as the fallback fetch below — a future-dated entry (rent typed in
-  // ahead of time) must not inflate "the last 7 days".
-  const weekTransactions = monthTransactions.filter(
-    (transaction) => transaction.date >= weekAgo && transaction.date <= today,
-  );
+  const monthTransactions = slice(ledger, month);
+  // Bounded on BOTH sides so a future-dated entry (rent typed in ahead of
+  // time) cannot inflate "the last 7 days".
+  const weekTransactions = slice(ledger, { start: rollingWeekStart, end: today });
 
   return {
     today,
@@ -200,18 +262,14 @@ export async function getFinanceOverview() {
       ...summarizeTransactions(monthTransactions),
       byCategory: spendingByCategory(monthTransactions),
     },
-    // The week card reuses the month fetch when the week fits inside it; the
-    // few days of a week that spill into the previous month are fetched only
-    // then — a summary card does not justify a second full query every render.
-    week:
-      weekAgo >= month.start
-        ? summarizeTransactions(weekTransactions)
-        : summarizeTransactions(await getTransactionsBetween(weekAgo, today)),
+    week: summarizeTransactions(weekTransactions),
     recentTransactions,
     savingsGoals,
-    // Budgets read the month fetch that is already in hand — no extra ledger
-    // query for the progress bars.
-    budgets: budgetProgress(budgets, monthTransactions),
+    // Budgets read the fetch already in hand and each filters to its own
+    // period window — no extra ledger query for the progress bars.
+    budgets: budgetProgress(budgets, ledger, windows),
+    budgetWindows: windows,
+    importBatches,
   };
 }
 
@@ -221,18 +279,21 @@ export type FinanceOverview = Awaited<ReturnType<typeof getFinanceOverview>>;
 export async function getFinanceSummary() {
   const user = await getCurrentUser();
   const settings = scheduleSettingsFor(user);
-  const month = monthRange(settings.today);
+  const { month, windows, fetch } = financeWindows(settings.today, settings.weekStartsOn);
 
-  const [balances, bills, monthTransactions, budgets] = await Promise.all([
+  const [balances, bills, ledger, budgets] = await Promise.all([
     accountBalancesMemo(user.id),
     billViewsMemo(user.id, settings.today),
-    getTransactionsBetween(month.start, month.end),
+    getTransactionsBetween(fetch.start, fetch.end),
     budgetsMemo(user.id),
   ]);
 
+  const monthTransactions = slice(ledger, month);
   const dueSoon = bills.filter((view) => view.daysUntilDue <= BILL_SOON_DAYS);
-  const budgetViews = budgetProgress(budgets, monthTransactions);
+  const budgetViews = budgetProgress(budgets, ledger, windows);
   const overBudget = budgetViews.filter((view) => view.over);
+  // Under target but past its own alert line — worth one dashboard word.
+  const atThreshold = budgetViews.filter((view) => view.thresholdReached && !view.over);
 
   return {
     hasAccounts: balances.length > 0,
@@ -252,10 +313,17 @@ export async function getFinanceSummary() {
     budgets: {
       count: budgetViews.length,
       overCount: overBudget.length,
+      atThresholdCount: atThreshold.length,
       /** The most-over budget, for the one-line dashboard callout. */
       worst: overBudget[0]
-        ? { label: overBudget[0].label, percent: overBudget[0].percent }
-        : null,
+        ? { label: overBudget[0].label, percent: overBudget[0].percent, period: overBudget[0].period }
+        : atThreshold[0]
+          ? {
+              label: atThreshold[0].label,
+              percent: atThreshold[0].percent,
+              period: atThreshold[0].period,
+            }
+          : null,
     },
   };
 }

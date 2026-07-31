@@ -492,6 +492,26 @@ export const BUDGETABLE_CATEGORIES = FINANCE_CATEGORIES.filter(
   (category) => category !== "income" && !isBookkeepingCategory(category),
 );
 
+/** The windows a budget can be measured over. */
+export const BUDGET_PERIODS = ["monthly", "weekly"] as const;
+export type BudgetPeriod = (typeof BUDGET_PERIODS)[number];
+
+export const BUDGET_PERIOD_META: Record<
+  BudgetPeriod,
+  { label: string; adjective: string; short: string }
+> = {
+  monthly: { label: "Monthly", adjective: "this month", short: "mo" },
+  weekly: { label: "Weekly", adjective: "this week", short: "wk" },
+};
+
+/**
+ * The shares of a budget worth warning about. A single threshold per budget,
+ * picked from this list — a free-form number would let people configure alerts
+ * that never fire (0 %) or fire on every purchase (1 %).
+ */
+export const BUDGET_ALERT_THRESHOLDS = [50, 75, 90, 100] as const;
+export type BudgetAlertThreshold = (typeof BUDGET_ALERT_THRESHOLDS)[number];
+
 export const BILL_KINDS = ["bill", "subscription"] as const;
 export type BillKind = (typeof BILL_KINDS)[number];
 
@@ -510,6 +530,50 @@ export const BILL_RECURRENCE_META: Record<BillRecurrence, { label: string }> = {
 
 export const INBOX_STATUSES = ["open", "done", "archived"] as const;
 export type InboxStatus = (typeof INBOX_STATUSES)[number];
+
+// --- documents & renewals ----------------------------------------------------
+
+export const DOCUMENT_KINDS = [
+  "id",
+  "insurance",
+  "lease",
+  "warranty",
+  "licence",
+  "membership",
+  "other",
+] as const;
+export type DocumentKind = (typeof DOCUMENT_KINDS)[number];
+
+export const DOCUMENT_KIND_META: Record<DocumentKind, { label: string; chip: string }> = {
+  id: {
+    label: "ID & travel",
+    chip: "bg-sky-500/10 text-sky-700 dark:text-sky-400 border-sky-500/20",
+  },
+  insurance: {
+    label: "Insurance",
+    chip: "bg-emerald-500/10 text-emerald-700 dark:text-emerald-400 border-emerald-500/20",
+  },
+  lease: {
+    label: "Lease & housing",
+    chip: "bg-amber-500/10 text-amber-800 dark:text-amber-400 border-amber-500/20",
+  },
+  warranty: {
+    label: "Warranty",
+    chip: "bg-violet-500/10 text-violet-700 dark:text-violet-400 border-violet-500/20",
+  },
+  licence: {
+    label: "Licence",
+    chip: "bg-blue-500/10 text-blue-700 dark:text-blue-400 border-blue-500/20",
+  },
+  membership: {
+    label: "Membership",
+    chip: "bg-rose-500/10 text-rose-700 dark:text-rose-400 border-rose-500/20",
+  },
+  other: {
+    label: "Other",
+    chip: "bg-slate-500/10 text-slate-700 dark:text-slate-300 border-slate-500/20",
+  },
+};
 
 /** Narrow an untrusted string to a known enum member, else fall back. */
 export function coerceEnum<T extends string>(

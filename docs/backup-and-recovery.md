@@ -29,8 +29,10 @@ workouts, sets and workout templates, health metrics and the record of each
 health import batch, goals and their schedules, journal entries, reminders,
 favourites, tasks and projects, finance accounts with their transaction
 ledger (transfer pairings and CSV import identities included), bills and
-subscriptions, savings goals, budgets, CSV import batch records, inbox items
-(with their converted-to-task links), and the sample-data registry. It also carries a safe subset of
+subscriptions, savings goals, budgets (their period and alert threshold
+included), CSV import batch records (including whether one has been undone),
+inbox items (with their converted-to-task links), task tags, documents and
+renewals, and the sample-data registry. It also carries a safe subset of
 your settings — name, timezone, units, week start, day window and score
 settings — plus a format version and a checksum so a damaged file is
 detected rather than half-imported.
@@ -65,8 +67,20 @@ Either way, three protections always apply:
 
 Imports are idempotent (importing the same file twice creates nothing the
 second time), and every imported record is re-identified into *your* account
-— a file can never touch another account's data. The mechanics are described
-in [`migrating-from-local.md`](migrating-from-local.md).
+— a file can never touch another account's data. Links that reference a row
+the file did not carry are dropped rather than pointed at a stranger's id: a
+task tag survives only when both the task and the tag travelled together, and
+the same rule covers planner tags, bill payments and import-batch links. The
+mechanics are described in
+[`migrating-from-local.md`](migrating-from-local.md).
+
+### Format versions
+
+The current format is **v6**. Older files import unchanged — a v1–v5 backup
+simply has no rows for tables that did not exist yet, and columns added since
+take their defaults (a v5 budget arrives as the monthly, alert-free budget it
+was). A file written by a *newer* app version is refused rather than
+half-understood, because this app cannot know what its tables mean.
 
 ## The verification report
 

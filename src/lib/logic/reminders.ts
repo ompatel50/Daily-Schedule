@@ -34,7 +34,15 @@ export type ReminderSuppression =
 export interface ReminderOccurrence {
   /** Stable identity for exactly-once delivery, e.g. `habit:<id>:<date>`. */
   key: string;
-  kind: "reminder" | "habit" | "goal" | "bill" | "task" | "low_balance";
+  kind:
+    | "reminder"
+    | "habit"
+    | "goal"
+    | "bill"
+    | "task"
+    | "document"
+    | "low_balance"
+    | "budget";
   title: string;
   message: string | null;
   /**
@@ -185,23 +193,28 @@ export function resolveScheduleReminder(
   };
 }
 
-// --- due-date reminders (bills & tasks — the shared foundation) --------------
+// --- due-date reminders (bills, tasks & documents — the shared foundation) ---
 
 /**
- * When a due-date reminder fires, minutes from midnight. Bills and tasks have
- * a due *day* rather than a time; one fixed morning hour keeps the behaviour
- * predictable until per-item times are worth their settings surface.
+ * When a due-date reminder fires, minutes from midnight. Bills, tasks and
+ * documents have a due *day* rather than a time; one fixed morning hour keeps
+ * the behaviour predictable until per-item times are worth their settings
+ * surface.
  */
 export const DUE_REMINDER_MINUTE = 9 * 60;
 
+/** Everything that reminds from a single future date on the one resolver. */
+export type DueReminderKind = "bill" | "task" | "document";
+
 /**
  * Keys for due-date occurrences. The due date rides inside the key, so paying
- * a bill (which advances `nextDueDate`) automatically arms the next
- * occurrence, and the single `ahead` key makes the whole run-up window fire at
- * most once — whichever day a tab or the push runner first sees it.
+ * a bill (which advances `nextDueDate`) — or renewing a document, which moves
+ * its expiry date — automatically arms the next occurrence, and the single
+ * `ahead` key makes the whole run-up window fire at most once, whichever day a
+ * tab or the push runner first sees it.
  */
 export function dueReminderKey(
-  kind: "bill" | "task",
+  kind: DueReminderKind,
   ownerId: string,
   dueDate: DayKey,
   ahead = false,
@@ -209,8 +222,19 @@ export function dueReminderKey(
   return `${kind}:${ownerId}:${dueDate}${ahead ? ":ahead" : ""}`;
 }
 
+/**
+ * How each kind words its occurrence. A bill is "due"; a passport "expires" —
+ * same arithmetic, different sentence, and the difference lives here rather
+ * than in three copies of the resolver.
+ */
+const DUE_PHRASING: Record<DueReminderKind, { onDay: string; ahead: (when: string) => string }> = {
+  bill: { onDay: "Bill due today", ahead: (when) => `Bill due ${when}` },
+  task: { onDay: "Task due today", ahead: (when) => `Task due ${when}` },
+  document: { onDay: "Expires today", ahead: (when) => `Expires ${when}` },
+};
+
 export interface DueReminderInput {
-  kind: "bill" | "task";
+  kind: DueReminderKind;
   ownerId: string;
   name: string;
   dueDate: DayKey;
@@ -229,10 +253,11 @@ export interface DueReminderInput {
 }
 
 /**
- * A due-date occurrence for one bill or task, or the reason it stays silent.
- * Fires on the due day itself, and once during the `daysBefore` run-up window.
- * Deliberately silent for an overdue item: the dashboard and the owning page
- * carry overdue state, and a daily nag would train people to dismiss it.
+ * A due-date occurrence for one bill, task or document, or the reason it stays
+ * silent. Fires on the due day itself, and once during the `daysBefore` run-up
+ * window. Deliberately silent for an overdue (or already-expired) item: the
+ * dashboard and the owning page carry that state, and a daily nag would train
+ * people to dismiss it.
  */
 export function resolveDueReminder(
   input: DueReminderInput,
@@ -249,10 +274,10 @@ export function resolveDueReminder(
   const key = dueReminderKey(input.kind, input.ownerId, input.dueDate, !dueToday);
   if (input.deliveredKeys.has(key)) return { ok: false, reason: "delivered" };
 
-  const noun = input.kind === "bill" ? "Bill" : "Task";
+  const phrasing = DUE_PHRASING[input.kind];
   const duePhrase = dueToday
-    ? `${noun} due today`
-    : `${noun} due ${untilDue === 1 ? "tomorrow" : `in ${untilDue} days`}`;
+    ? phrasing.onDay
+    : phrasing.ahead(untilDue === 1 ? "tomorrow" : `in ${untilDue} days`);
 
   return {
     ok: true,
@@ -316,6 +341,73 @@ export function resolveLowBalanceReminder(
       kind: "low_balance",
       title: `${input.accountName} is low`,
       message: input.detail ?? "Balance is below your alert level",
+      fireAt: minuteToWallClock(input.today, DUE_REMINDER_MINUTE),
+      reminderId: null,
+    },
+  };
+}
+
+// --- budget-threshold reminders (finance) ------------------------------------
+
+/**
+ * The delivery key embeds the budget, the PERIOD START and the threshold, so a
+ * budget warns at most once per period per threshold: crossing 75 % on a
+ * Tuesday says so once, every further purchase that month stays quiet, and the
+ * next month (or next week, for a weekly budget) arms it again. Changing the
+ * threshold arms a new alert deliberately — the user asked a different
+ * question.
+ */
+export function budgetThresholdReminderKey(
+  budgetId: string,
+  periodStart: DayKey,
+  threshold: number,
+): string {
+  return `budget:${budgetId}:${periodStart}:${threshold}`;
+}
+
+export interface BudgetThresholdReminderInput {
+  budgetId: string;
+  /** Display label, e.g. "Groceries". */
+  label: string;
+  /** The window's first day — what makes the key per-period. */
+  periodStart: DayKey;
+  /** Money out in the category over the period, as a positive number. */
+  spent: number;
+  /** The budget's target for the period. */
+  target: number;
+  /** Null = this budget has no threshold alert configured. */
+  threshold: number | null;
+  today: DayKey;
+  /** Extra context for the message, e.g. formatted spent-of-target. */
+  detail: string | null;
+  deliveredKeys: ReadonlySet<string>;
+}
+
+/** A budget-threshold occurrence, or the reason it stays silent. */
+export function resolveBudgetThresholdReminder(
+  input: BudgetThresholdReminderInput,
+): { ok: true; occurrence: ReminderOccurrence } | { ok: false; reason: ReminderSuppression } {
+  if (input.threshold === null) return { ok: false, reason: "disabled" };
+  // A zero (or negative) target measures nothing — every purchase would be
+  // "over", which is noise rather than news.
+  if (input.target <= 0) return { ok: false, reason: "disabled" };
+
+  const percent = Math.round((input.spent / input.target) * 100);
+  if (percent < input.threshold) return { ok: false, reason: "not_scheduled" };
+
+  const key = budgetThresholdReminderKey(input.budgetId, input.periodStart, input.threshold);
+  if (input.deliveredKeys.has(key)) return { ok: false, reason: "delivered" };
+
+  return {
+    ok: true,
+    occurrence: {
+      key,
+      kind: "budget",
+      title:
+        percent >= 100
+          ? `${input.label} budget is spent`
+          : `${input.label} budget at ${percent}%`,
+      message: input.detail ?? `You have used ${percent}% of this budget`,
       fireAt: minuteToWallClock(input.today, DUE_REMINDER_MINUTE),
       reminderId: null,
     },

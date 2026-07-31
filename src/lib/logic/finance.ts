@@ -1,5 +1,5 @@
-import type { DayKey } from "@/lib/date";
-import type { AccountType, BillRecurrence, FinanceCategory } from "@/lib/enums";
+import { monthRange, weekRange, type DayKey } from "@/lib/date";
+import type { AccountType, BillRecurrence, BudgetPeriod, FinanceCategory } from "@/lib/enums";
 import { ACCOUNT_TYPE_META, FINANCE_CATEGORY_META, isBookkeepingCategory } from "@/lib/enums";
 import {
   dueBucketOf,
@@ -239,10 +239,62 @@ export function upcomingBillsTotal(views: BillDueView[], soonDays = 14): number 
 
 // --- budgets -----------------------------------------------------------------
 
+export interface BudgetWindow {
+  start: DayKey;
+  end: DayKey;
+}
+
+/**
+ * The window one budget period covers *right now*. Monthly is the calendar
+ * month; weekly is the user's own week (their `weekStartsOn` convention — the
+ * same one the low-balance reminder and every week view already use), so
+ * "this week" means the same seven days everywhere in the app.
+ *
+ * Unknown period strings fall back to monthly rather than throwing: a budget
+ * row written by a newer version must still render, not blank the page.
+ */
+export function budgetPeriodWindow(
+  period: string,
+  today: DayKey,
+  weekStartsOn: 0 | 1 = 1,
+): BudgetWindow {
+  return period === "weekly" ? weekRange(today, weekStartsOn) : monthRange(today);
+}
+
+/** Both windows at once — what a page fetching one ledger slice needs. */
+export function budgetWindows(
+  today: DayKey,
+  weekStartsOn: 0 | 1 = 1,
+): Record<BudgetPeriod, BudgetWindow> {
+  return {
+    monthly: budgetPeriodWindow("monthly", today, weekStartsOn),
+    weekly: budgetPeriodWindow("weekly", today, weekStartsOn),
+  };
+}
+
+/** The union of every budget window — the one ledger range a caller must load. */
+export function budgetFetchRange(windows: Record<string, BudgetWindow>): BudgetWindow | null {
+  const values = Object.values(windows);
+  if (values.length === 0) return null;
+  return {
+    start: values.reduce((min, window) => (window.start < min ? window.start : min), values[0].start),
+    end: values.reduce((max, window) => (window.end > max ? window.end : max), values[0].end),
+  };
+}
+
 export interface BudgetLike {
   id: string;
   category: string;
   amount: number;
+  /** monthly | weekly — anything else is treated as monthly. */
+  period: string;
+  /** Warn once per period at this share of the target; null = no alert. */
+  alertThresholdPercent?: number | null;
+}
+
+/** A ledger row as budget arithmetic needs it: an amount, a category, a day. */
+export interface DatedTransactionLike extends TransactionLike {
+  date: DayKey;
 }
 
 export interface BudgetProgress<B extends BudgetLike = BudgetLike> {
@@ -255,38 +307,76 @@ export interface BudgetProgress<B extends BudgetLike = BudgetLike> {
   /** Spent ÷ target, uncapped and rounded — 130 means 30% over. */
   percent: number;
   over: boolean;
+  /** The period this budget measures, normalised. */
+  period: BudgetPeriod;
+  /** The days that period currently covers. */
+  window: BudgetWindow;
+  /** The configured alert share, or null when the budget has no alert. */
+  threshold: number | null;
+  /** True once `percent` has reached that share — what the UI badges. */
+  thresholdReached: boolean;
+}
+
+/** Normalise a stored period string to a period the app understands. */
+export function budgetPeriodOf(period: string): BudgetPeriod {
+  return period === "weekly" ? "weekly" : "monthly";
 }
 
 /**
- * Each budget against the window's transactions — the caller passes the slice
- * that matches the budget period (a calendar month today). Spending only:
- * income never offsets a budget, and bookkeeping rows never count against one.
- * Most-spent-first, with anything over budget surfaced to the top.
+ * Each budget against its OWN window. The caller passes one transaction slice
+ * covering every window in play (see `budgetFetchRange`) plus the window per
+ * period; each budget filters to the days it actually measures, so a weekly
+ * and a monthly budget can be computed from a single ledger fetch without
+ * either borrowing the other's days.
+ *
+ * Spending only: income never offsets a budget, and bookkeeping rows never
+ * count against one. Most-spent-first, with anything over budget on top.
  */
 export function budgetProgress<B extends BudgetLike>(
   budgets: B[],
-  transactions: TransactionLike[],
+  transactions: DatedTransactionLike[],
+  windows: Record<string, BudgetWindow>,
 ): BudgetProgress<B>[] {
-  const spentByCategory = new Map<string, number>();
-  for (const transaction of transactions) {
-    if (transaction.amount >= 0 || isBookkeepingCategory(transaction.category)) continue;
-    spentByCategory.set(
-      transaction.category,
-      (spentByCategory.get(transaction.category) ?? 0) - transaction.amount,
-    );
-  }
+  // One pass over the ledger per period in play, not per budget — a hundred
+  // budgets cost the same two passes as two do.
+  const spentByPeriod = new Map<string, Map<string, number>>();
+  const spentFor = (period: BudgetPeriod): Map<string, number> => {
+    const cached = spentByPeriod.get(period);
+    if (cached) return cached;
+    const window = windows[period] ?? windows.monthly;
+    const totals = new Map<string, number>();
+    if (window) {
+      for (const transaction of transactions) {
+        if (transaction.amount >= 0 || isBookkeepingCategory(transaction.category)) continue;
+        if (transaction.date < window.start || transaction.date > window.end) continue;
+        totals.set(
+          transaction.category,
+          (totals.get(transaction.category) ?? 0) - transaction.amount,
+        );
+      }
+    }
+    spentByPeriod.set(period, totals);
+    return totals;
+  };
 
   return budgets
     .map((budget) => {
-      const spent = moneyRound(spentByCategory.get(budget.category) ?? 0);
+      const period = budgetPeriodOf(budget.period);
+      const spent = moneyRound(spentFor(period).get(budget.category) ?? 0);
       const target = Math.max(0, budget.amount);
+      const percent = target <= 0 ? (spent > 0 ? 999 : 0) : Math.round((spent / target) * 100);
+      const threshold = budget.alertThresholdPercent ?? null;
       return {
         budget,
         label: FINANCE_CATEGORY_META[budget.category as FinanceCategory]?.label ?? budget.category,
         spent,
         remaining: moneyRound(Math.max(0, target - spent)),
-        percent: target <= 0 ? (spent > 0 ? 999 : 0) : Math.round((spent / target) * 100),
+        percent,
         over: spent > target,
+        period,
+        window: windows[period] ?? windows.monthly,
+        threshold,
+        thresholdReached: threshold !== null && target > 0 && percent >= threshold,
       };
     })
     .sort(

@@ -5,6 +5,7 @@ import { useRouter } from "next/navigation";
 import {
   Archive,
   ArrowLeftRight,
+  BellRing,
   CalendarClock,
   FileUp,
   Landmark,
@@ -50,6 +51,7 @@ import {
   type TransactionView,
 } from "@/components/finance/transaction-dialog";
 import { TransferDialog } from "@/components/finance/transfer-dialog";
+import { UndoImportDialog } from "@/components/finance/undo-import-dialog";
 import { formatDay } from "@/lib/date";
 import {
   ACCOUNT_TYPE_META,
@@ -80,6 +82,22 @@ export interface CategoryTotalView {
   total: number;
 }
 
+/** One CSV import run, as the page serialises it for the history list. */
+export interface ImportBatchView {
+  id: string;
+  fileName: string;
+  accountName: string | null;
+  importedDay: string;
+  createdCount: number;
+  skippedCount: number;
+  rejectedCount: number;
+  /** Ledger rows still linked to this batch right now. */
+  remainingCount: number;
+  undone: boolean;
+  undoneCount: number;
+  keptCount: number;
+}
+
 /** How urgent a due date reads: overdue red, this fortnight amber, later quiet. */
 const DUE_CLASSES: Record<BillRowView["bucket"], string> = {
   overdue: "font-medium text-red-700 dark:text-red-400",
@@ -94,6 +112,7 @@ export function FinanceBoard({
   bills,
   goals,
   budgets,
+  importBatches,
   byCategory,
   today,
   primaryCurrency,
@@ -103,6 +122,7 @@ export function FinanceBoard({
   bills: BillRowView[];
   goals: SavingsGoalView[];
   budgets: BudgetView[];
+  importBatches: ImportBatchView[];
   byCategory: CategoryTotalView[];
   today: string;
   /** Currency of the largest account group — used where no account is linked. */
@@ -121,6 +141,7 @@ export function FinanceBoard({
   const [goalEditing, setGoalEditing] = React.useState<SavingsGoalView | null>(null);
   const [budgetOpen, setBudgetOpen] = React.useState(false);
   const [budgetEditing, setBudgetEditing] = React.useState<BudgetView | null>(null);
+  const [undoBatch, setUndoBatch] = React.useState<ImportBatchView | null>(null);
   const [transferOpen, setTransferOpen] = React.useState(false);
   const [importOpen, setImportOpen] = React.useState(false);
   const [balanceAccount, setBalanceAccount] = React.useState<AccountView | null>(null);
@@ -447,7 +468,7 @@ export function FinanceBoard({
           title="Budgets"
           icon={Target}
           accent="text-domain-finance"
-          description="Monthly targets per category"
+          description="Monthly or weekly targets per category"
           action={
             <Button
               size="sm"
@@ -465,7 +486,7 @@ export function FinanceBoard({
             <EmptyState
               icon={Target}
               title="No budgets yet"
-              description="Set a monthly target for a category and watch spending against it."
+              description="Set a monthly or weekly target for a category and watch spending against it."
               className="py-6"
             />
           ) : (
@@ -480,6 +501,32 @@ export function FinanceBoard({
                     setBudgetOpen(true);
                   }}
                   onDelete={() => run(() => deleteBudget(budget.id), "Budget deleted")}
+                />
+              ))}
+            </div>
+          )}
+        </SectionCard>
+
+        <SectionCard
+          title="CSV imports"
+          icon={FileUp}
+          accent="text-domain-finance"
+          description="Every import run, and how to roll one back"
+        >
+          {importBatches.length === 0 ? (
+            <EmptyState
+              icon={FileUp}
+              title="No imports yet"
+              description="Import a CSV from an account's menu — you can undo it here afterwards."
+              className="py-6"
+            />
+          ) : (
+            <div className="space-y-2">
+              {importBatches.map((batch) => (
+                <ImportBatchRow
+                  key={batch.id}
+                  batch={batch}
+                  onUndo={() => setUndoBatch(batch)}
                 />
               ))}
             </div>
@@ -532,6 +579,7 @@ export function FinanceBoard({
         budget={budgetEditing}
         takenCategories={budgets.map((budget) => budget.category)}
       />
+      <UndoImportDialog batch={undoBatch} onClose={() => setUndoBatch(null)} />
       <TransferDialog
         open={transferOpen}
         onOpenChange={setTransferOpen}
@@ -617,16 +665,28 @@ function BudgetRow({
   onEdit: () => void;
   onDelete: () => void;
 }) {
+  const periodLabel = budget.period === "weekly" ? "Weekly" : "Monthly";
   return (
     <div className="rounded-lg border px-3 py-2.5">
       <div className="flex items-center gap-1">
         <p className="min-w-0 flex-1 truncate text-sm font-medium">{budget.label}</p>
-        {budget.over && (
+        <Badge variant="muted" className="text-[10px]">
+          {periodLabel}
+        </Badge>
+        {budget.over ? (
           <Badge variant="outline" className="gap-1 border-red-500/30 text-[10px] text-red-700 dark:text-red-400">
             <TriangleAlert className="h-2.5 w-2.5" aria-hidden="true" />
             Over by {formatMoney(budget.spent - budget.amount, currency)}
           </Badge>
-        )}
+        ) : budget.thresholdReached ? (
+          <Badge
+            variant="outline"
+            className="gap-1 border-amber-500/30 text-[10px] text-amber-800 dark:text-amber-400"
+          >
+            <BellRing className="h-2.5 w-2.5" aria-hidden="true" />
+            Past {budget.threshold}%
+          </Badge>
+        ) : null}
         <RowMenu
           label={`Actions for the ${budget.label} budget`}
           items={[{ label: "Edit", icon: Pencil, onClick: onEdit }]}
@@ -636,7 +696,9 @@ function BudgetRow({
       <Progress
         value={Math.min(100, budget.percent)}
         className="mt-2 h-1.5"
-        indicatorClassName={budget.over ? "bg-red-500" : "bg-domain-finance"}
+        indicatorClassName={
+          budget.over ? "bg-red-500" : budget.thresholdReached ? "bg-amber-500" : "bg-domain-finance"
+        }
       />
       <div className="mt-1.5 flex items-center justify-between gap-2 text-xs text-muted-foreground">
         <span className="tabular">
@@ -646,6 +708,54 @@ function BudgetRow({
           {budget.over ? `${budget.percent}% spent` : `${formatMoney(budget.remaining, currency)} left`}
         </span>
       </div>
+      <p className="mt-1 text-[11px] text-muted-foreground">
+        {budget.period === "weekly" ? "This week" : "This month"} ·{" "}
+        {formatDay(budget.windowStart, "MMM d")} – {formatDay(budget.windowEnd, "MMM d")}
+        {budget.threshold !== null ? ` · alerts at ${budget.threshold}%` : ""}
+      </p>
+    </div>
+  );
+}
+
+/**
+ * The CSV import history — the surface undo hangs off. Bounded to the most
+ * recent runs; an import that has been rolled back stays listed (as an audit
+ * record) rather than disappearing.
+ */
+function ImportBatchRow({
+  batch,
+  onUndo,
+}: {
+  batch: ImportBatchView;
+  onUndo: () => void;
+}) {
+  return (
+    <div className="flex items-center gap-3 rounded-lg border px-3 py-2">
+      <div className="min-w-0 flex-1">
+        <div className="flex flex-wrap items-center gap-2">
+          <p className="truncate text-sm font-medium">{batch.fileName}</p>
+          {batch.undone && (
+            <Badge variant="muted" className="gap-1 text-[10px]">
+              <Undo2 className="h-2.5 w-2.5" aria-hidden="true" />
+              Undone
+            </Badge>
+          )}
+        </div>
+        <p className="mt-0.5 text-xs text-muted-foreground">
+          {formatDay(batch.importedDay)}
+          {batch.accountName ? ` · ${batch.accountName}` : ""} · {batch.createdCount} imported
+          {batch.skippedCount > 0 ? `, ${batch.skippedCount} skipped` : ""}
+          {batch.rejectedCount > 0 ? `, ${batch.rejectedCount} rejected` : ""}
+          {batch.undone
+            ? ` · ${batch.undoneCount} removed${batch.keptCount > 0 ? `, ${batch.keptCount} kept` : ""}`
+            : ""}
+        </p>
+      </div>
+      {!batch.undone && batch.remainingCount > 0 && (
+        <Button size="sm" variant="outline" onClick={onUndo}>
+          <Undo2 /> Undo
+        </Button>
+      )}
     </div>
   );
 }

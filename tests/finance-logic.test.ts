@@ -6,7 +6,11 @@ import {
   billCadence,
   billIsActive,
   billsByUrgency,
+  budgetFetchRange,
+  budgetPeriodOf,
+  budgetPeriodWindow,
   budgetProgress,
+  budgetWindows,
   formatMoney,
   moneyRound,
   netBalance,
@@ -368,12 +372,35 @@ describe("savingsProgress", () => {
 });
 
 describe("budgetProgress", () => {
-  const budget = (category: string, amount: number, id = category) => ({ id, category, amount });
+  // Every budget test that predates weekly periods runs through the monthly
+  // window, unchanged — that IS the monthly regression.
+  const MONTH = { start: "2026-07-01", end: "2026-07-31" };
+  const WEEK = { start: "2026-07-27", end: "2026-08-02" };
+  const WINDOWS = { monthly: MONTH, weekly: WEEK };
+
+  const budget = (
+    category: string,
+    amount: number,
+    extra: { period?: string; alertThresholdPercent?: number | null; id?: string } = {},
+  ) => ({
+    id: extra.id ?? category,
+    category,
+    amount,
+    period: extra.period ?? "monthly",
+    alertThresholdPercent: extra.alertThresholdPercent ?? null,
+  });
+
+  /** A dated ledger row; the default day sits inside BOTH windows above. */
+  const dtx = (amount: number, category = "other", date = "2026-07-29") => ({
+    ...tx(amount, category),
+    date,
+  });
 
   it("counts only spending in the budget's category", () => {
     const [view] = budgetProgress(
       [budget("dining", 200)],
-      [tx(-50, "dining"), tx(-30, "groceries"), tx(20, "dining")],
+      [dtx(-50, "dining"), dtx(-30, "groceries"), dtx(20, "dining")],
+      WINDOWS,
     );
     expect(view.spent).toBe(50);
     expect(view.remaining).toBe(150);
@@ -385,27 +412,29 @@ describe("budgetProgress", () => {
   it("income never offsets a budget, and bookkeeping rows never count", () => {
     const [view] = budgetProgress(
       [budget("dining", 100)],
-      [tx(-80, "dining"), tx(500, "dining"), tx(-40, "transfer"), tx(-40, "adjustment")],
+      [dtx(-80, "dining"), dtx(500, "dining"), dtx(-40, "transfer"), dtx(-40, "adjustment")],
+      WINDOWS,
     );
     expect(view.spent).toBe(80);
   });
 
   it("flags over-budget with the uncapped percentage", () => {
-    const [view] = budgetProgress([budget("dining", 100)], [tx(-130, "dining")]);
+    const [view] = budgetProgress([budget("dining", 100)], [dtx(-130, "dining")], WINDOWS);
     expect(view.over).toBe(true);
     expect(view.percent).toBe(130);
     expect(view.remaining).toBe(0);
   });
 
   it("a budget with no spending reads as untouched", () => {
-    const [view] = budgetProgress([budget("travel", 300)], []);
+    const [view] = budgetProgress([budget("travel", 300)], [], WINDOWS);
     expect(view).toMatchObject({ spent: 0, remaining: 300, percent: 0, over: false });
   });
 
   it("sorts over-budget first, then by percentage", () => {
     const views = budgetProgress(
       [budget("dining", 100), budget("groceries", 100), budget("travel", 100)],
-      [tx(-150, "groceries"), tx(-90, "travel"), tx(-10, "dining")],
+      [dtx(-150, "groceries"), dtx(-90, "travel"), dtx(-10, "dining")],
+      WINDOWS,
     );
     expect(views.map((view) => view.budget.category)).toEqual([
       "groceries",
@@ -415,10 +444,121 @@ describe("budgetProgress", () => {
   });
 
   it("exact-target spending is not over budget", () => {
-    const [view] = budgetProgress([budget("dining", 100)], [tx(-100, "dining")]);
+    const [view] = budgetProgress([budget("dining", 100)], [dtx(-100, "dining")], WINDOWS);
     expect(view.over).toBe(false);
     expect(view.percent).toBe(100);
     expect(view.remaining).toBe(0);
+  });
+
+  // --- windows -------------------------------------------------------------
+
+  it("a monthly budget ignores rows outside the month", () => {
+    const [view] = budgetProgress(
+      [budget("dining", 200)],
+      [dtx(-50, "dining", "2026-07-02"), dtx(-70, "dining", "2026-06-30"), dtx(-30, "dining", "2026-08-01")],
+      WINDOWS,
+    );
+    expect(view.spent).toBe(50);
+    expect(view.period).toBe("monthly");
+    expect(view.window).toEqual(MONTH);
+  });
+
+  it("a weekly budget measures only its own week", () => {
+    const [view] = budgetProgress(
+      [budget("dining", 60, { period: "weekly" })],
+      [
+        dtx(-20, "dining", "2026-07-28"), // inside the week
+        dtx(-15, "dining", "2026-08-01"), // inside the week, next month
+        dtx(-90, "dining", "2026-07-10"), // same month, earlier week
+      ],
+      WINDOWS,
+    );
+    expect(view.spent).toBe(35);
+    expect(view.period).toBe("weekly");
+    expect(view.window).toEqual(WEEK);
+  });
+
+  it("weekly and monthly budgets read the same ledger without borrowing days", () => {
+    const ledger = [
+      dtx(-40, "dining", "2026-07-10"),
+      dtx(-25, "dining", "2026-07-28"),
+      dtx(-35, "groceries", "2026-07-05"),
+      dtx(-15, "groceries", "2026-07-29"),
+    ];
+    const views = budgetProgress(
+      [budget("dining", 100, { period: "weekly" }), budget("groceries", 200)],
+      ledger,
+      WINDOWS,
+    );
+    const byCategory = new Map(views.map((view) => [view.budget.category, view]));
+    expect(byCategory.get("dining")?.spent).toBe(25);
+    expect(byCategory.get("groceries")?.spent).toBe(50);
+  });
+
+  it("an unknown period string falls back to the monthly window", () => {
+    const [view] = budgetProgress(
+      [budget("dining", 100, { period: "fortnightly" })],
+      [dtx(-40, "dining", "2026-07-03")],
+      WINDOWS,
+    );
+    expect(view.period).toBe("monthly");
+    expect(view.spent).toBe(40);
+  });
+
+  // --- thresholds ----------------------------------------------------------
+
+  it("reports the configured threshold and whether it has been reached", () => {
+    const [under] = budgetProgress(
+      [budget("dining", 100, { alertThresholdPercent: 75 })],
+      [dtx(-70, "dining")],
+      WINDOWS,
+    );
+    expect(under).toMatchObject({ threshold: 75, thresholdReached: false });
+
+    const [at] = budgetProgress(
+      [budget("dining", 100, { alertThresholdPercent: 75 })],
+      [dtx(-75, "dining")],
+      WINDOWS,
+    );
+    expect(at).toMatchObject({ threshold: 75, thresholdReached: true });
+  });
+
+  it("a budget with no threshold never reads as reached, however overspent", () => {
+    const [view] = budgetProgress([budget("dining", 100)], [dtx(-400, "dining")], WINDOWS);
+    expect(view).toMatchObject({ threshold: null, thresholdReached: false, over: true });
+  });
+});
+
+describe("budget windows", () => {
+  it("monthly is the calendar month, weekly follows weekStartsOn", () => {
+    expect(budgetPeriodWindow("monthly", "2026-07-15")).toEqual({
+      start: "2026-07-01",
+      end: "2026-07-31",
+    });
+    // 2026-07-15 is a Wednesday.
+    expect(budgetPeriodWindow("weekly", "2026-07-15", 1)).toEqual({
+      start: "2026-07-13",
+      end: "2026-07-19",
+    });
+    expect(budgetPeriodWindow("weekly", "2026-07-15", 0)).toEqual({
+      start: "2026-07-12",
+      end: "2026-07-18",
+    });
+  });
+
+  it("budgetWindows returns both, and the fetch range spans them", () => {
+    const windows = budgetWindows("2026-07-30", 1);
+    expect(windows.monthly).toEqual({ start: "2026-07-01", end: "2026-07-31" });
+    expect(windows.weekly).toEqual({ start: "2026-07-27", end: "2026-08-02" });
+    // The week spills past the month end — the fetch must cover both.
+    expect(budgetFetchRange(windows)).toEqual({ start: "2026-07-01", end: "2026-08-02" });
+  });
+
+  it("budgetPeriodOf normalises anything that is not weekly to monthly", () => {
+    expect(budgetPeriodOf("weekly")).toBe("weekly");
+    expect(budgetPeriodOf("monthly")).toBe("monthly");
+    expect(budgetPeriodOf("")).toBe("monthly");
+    expect(budgetPeriodOf("quarterly")).toBe("monthly");
   });
 });
 

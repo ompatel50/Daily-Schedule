@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 
 import {
+  budgetThresholdReminderKey,
   classicReminderKey,
   DELIVERY_WINDOW_MS,
   DUE_REMINDER_MINUTE,
@@ -9,10 +10,12 @@ import {
   lowBalanceReminderKey,
   minuteToWallClock,
   occurrenceKey,
+  resolveBudgetThresholdReminder,
   resolveClassicReminder,
   resolveDueReminder,
   resolveLowBalanceReminder,
   resolveScheduleReminder,
+  type BudgetThresholdReminderInput,
   type ClassicReminderInput,
   type DueReminderInput,
   type LowBalanceReminderInput,
@@ -20,6 +23,13 @@ import {
 } from "@/lib/logic/reminders";
 
 const none = new Set<string>();
+
+/** Assert a due reminder resolved, and hand back the occurrence. */
+function resolveExpecting(input: DueReminderInput) {
+  const result = resolveDueReminder(input);
+  if (!result.ok) throw new Error(`expected an occurrence, got "${result.reason}"`);
+  return result;
+}
 
 function classic(partial: Partial<ClassicReminderInput> = {}): ClassicReminderInput {
   return {
@@ -359,6 +369,197 @@ describe("low-balance reminders", () => {
       ok: false,
       reason: "not_scheduled",
     });
+  });
+});
+
+describe("document-expiry reminders", () => {
+  function expiring(partial: Partial<DueReminderInput> = {}): DueReminderInput {
+    return {
+      kind: "document",
+      ownerId: "doc1",
+      name: "Passport",
+      dueDate: "2026-08-29",
+      today: "2026-07-30",
+      enabled: true,
+      completed: false,
+      inactive: false,
+      daysBefore: 30,
+      detail: null,
+      deliveredKeys: none,
+      ...partial,
+    };
+  }
+
+  it("fires inside the run-up window, worded as an expiry", () => {
+    const result = resolveExpecting(expiring());
+    expect(result.occurrence).toMatchObject({
+      key: "document:doc1:2026-08-29:ahead",
+      kind: "document",
+      title: "Passport",
+      message: "Expires in 30 days",
+      fireAt: minuteToWallClock("2026-07-30", DUE_REMINDER_MINUTE),
+    });
+  });
+
+  it("fires on the expiry day itself, on its own key", () => {
+    const result = resolveExpecting(expiring({ today: "2026-08-29" }));
+    expect(result.occurrence.key).toBe("document:doc1:2026-08-29");
+    expect(result.occurrence.message).toBe("Expires today");
+  });
+
+  it("appends the issuer as context when there is one", () => {
+    const result = resolveExpecting(expiring({ today: "2026-08-28", detail: "State Department" }));
+    expect(result.occurrence.message).toBe("Expires tomorrow · State Department");
+  });
+
+  it("stays silent outside the window, when disabled, and when archived", () => {
+    expect(resolveDueReminder(expiring({ today: "2026-07-01" }))).toEqual({
+      ok: false,
+      reason: "not_scheduled",
+    });
+    expect(resolveDueReminder(expiring({ enabled: false }))).toEqual({
+      ok: false,
+      reason: "disabled",
+    });
+    expect(resolveDueReminder(expiring({ inactive: true }))).toEqual({
+      ok: false,
+      reason: "inactive",
+    });
+  });
+
+  it("stays silent once expired — the page carries that state, not a daily nag", () => {
+    expect(resolveDueReminder(expiring({ today: "2026-09-01" }))).toEqual({
+      ok: false,
+      reason: "not_scheduled",
+    });
+  });
+
+  it("the whole run-up window fires at most once", () => {
+    const delivered = new Set([dueReminderKey("document", "doc1", "2026-08-29", true)]);
+    expect(resolveDueReminder(expiring({ deliveredKeys: delivered }))).toEqual({
+      ok: false,
+      reason: "delivered",
+    });
+    // …and the day itself is still its own occurrence.
+    expect(resolveDueReminder(expiring({ today: "2026-08-29", deliveredKeys: delivered })).ok).toBe(
+      true,
+    );
+  });
+
+  it("renewing re-arms it: a new expiry date is a new key", () => {
+    const delivered = new Set([dueReminderKey("document", "doc1", "2026-08-29", true)]);
+    const renewed = resolveDueReminder(
+      expiring({ dueDate: "2036-08-29", today: "2036-08-20", deliveredKeys: delivered }),
+    );
+    expect(renewed.ok).toBe(true);
+  });
+
+  it("a zero lead time reminds only on the day", () => {
+    expect(resolveDueReminder(expiring({ daysBefore: 0, today: "2026-08-28" }))).toEqual({
+      ok: false,
+      reason: "not_scheduled",
+    });
+    expect(resolveDueReminder(expiring({ daysBefore: 0, today: "2026-08-29" })).ok).toBe(true);
+  });
+});
+
+describe("budget-threshold reminders", () => {
+  function budget(
+    partial: Partial<BudgetThresholdReminderInput> = {},
+  ): BudgetThresholdReminderInput {
+    return {
+      budgetId: "b1",
+      label: "Groceries",
+      periodStart: "2026-07-01",
+      spent: 80,
+      target: 100,
+      threshold: 75,
+      today: "2026-07-30",
+      detail: null,
+      deliveredKeys: none,
+      ...partial,
+    };
+  }
+
+  it("fires once spending reaches the threshold", () => {
+    const result = resolveBudgetThresholdReminder(budget());
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.occurrence).toMatchObject({
+      key: "budget:b1:2026-07-01:75",
+      kind: "budget",
+      title: "Groceries budget at 80%",
+      fireAt: minuteToWallClock("2026-07-30", DUE_REMINDER_MINUTE),
+    });
+  });
+
+  it("exactly at the threshold counts as reached", () => {
+    expect(resolveBudgetThresholdReminder(budget({ spent: 75 })).ok).toBe(true);
+  });
+
+  it("stays quiet below the threshold", () => {
+    expect(resolveBudgetThresholdReminder(budget({ spent: 74 }))).toEqual({
+      ok: false,
+      reason: "not_scheduled",
+    });
+  });
+
+  it("a budget with no threshold, or no target, never fires", () => {
+    expect(resolveBudgetThresholdReminder(budget({ threshold: null }))).toEqual({
+      ok: false,
+      reason: "disabled",
+    });
+    expect(resolveBudgetThresholdReminder(budget({ target: 0, spent: 50 }))).toEqual({
+      ok: false,
+      reason: "disabled",
+    });
+  });
+
+  it("reads as spent, not as a percentage, once past the target", () => {
+    const result = resolveBudgetThresholdReminder(budget({ spent: 130, threshold: 100 }));
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.occurrence.title).toBe("Groceries budget is spent");
+  });
+
+  it("never repeats inside one period, and re-arms in the next", () => {
+    const delivered = new Set([budgetThresholdReminderKey("b1", "2026-07-01", 75)]);
+    expect(
+      resolveBudgetThresholdReminder(budget({ spent: 95, deliveredKeys: delivered })),
+    ).toEqual({ ok: false, reason: "delivered" });
+
+    const nextMonth = resolveBudgetThresholdReminder(
+      budget({ periodStart: "2026-08-01", today: "2026-08-02", spent: 90, deliveredKeys: delivered }),
+    );
+    expect(nextMonth.ok).toBe(true);
+  });
+
+  it("a weekly budget's key is its week — each week alerts once", () => {
+    const delivered = new Set([budgetThresholdReminderKey("b2", "2026-07-27", 90)]);
+    const sameWeek = resolveBudgetThresholdReminder(
+      budget({ budgetId: "b2", periodStart: "2026-07-27", threshold: 90, spent: 95, deliveredKeys: delivered }),
+    );
+    expect(sameWeek).toEqual({ ok: false, reason: "delivered" });
+
+    const nextWeek = resolveBudgetThresholdReminder(
+      budget({ budgetId: "b2", periodStart: "2026-08-03", threshold: 90, spent: 95, deliveredKeys: delivered }),
+    );
+    expect(nextWeek.ok).toBe(true);
+  });
+
+  it("changing the threshold arms a new alert — a different question", () => {
+    const delivered = new Set([budgetThresholdReminderKey("b1", "2026-07-01", 75)]);
+    expect(
+      resolveBudgetThresholdReminder(budget({ threshold: 90, spent: 95, deliveredKeys: delivered }))
+        .ok,
+    ).toBe(true);
+  });
+
+  it("carries the supplied detail through as the message", () => {
+    const result = resolveBudgetThresholdReminder(budget({ detail: "$80 of $100 this month" }));
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.occurrence.message).toBe("$80 of $100 this month");
   });
 });
 

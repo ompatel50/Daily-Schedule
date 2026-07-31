@@ -555,7 +555,7 @@ export default async function DashboardPage() {
                     value={formatMoney(lifeAdmin.finance.month.spending)}
                   />
                 </div>
-                {lifeAdmin.finance.budgets.overCount > 0 && (
+                {lifeAdmin.finance.budgets.overCount > 0 ? (
                   <p className="text-xs font-medium text-red-700 dark:text-red-400">
                     {lifeAdmin.finance.budgets.overCount} of {lifeAdmin.finance.budgets.count}{" "}
                     {pluralize(lifeAdmin.finance.budgets.count, "budget")} over
@@ -564,7 +564,15 @@ export default async function DashboardPage() {
                       : ""}
                     .
                   </p>
-                )}
+                ) : lifeAdmin.finance.budgets.atThresholdCount > 0 &&
+                  lifeAdmin.finance.budgets.worst ? (
+                  <p className="text-xs font-medium text-amber-800 dark:text-amber-400">
+                    {lifeAdmin.finance.budgets.worst.label} budget at{" "}
+                    {lifeAdmin.finance.budgets.worst.percent}% of its{" "}
+                    {lifeAdmin.finance.budgets.worst.period === "weekly" ? "weekly" : "monthly"}{" "}
+                    target.
+                  </p>
+                ) : null}
                 {lifeAdmin.finance.billsDueSoon.length === 0 ? (
                   <p className="text-xs text-muted-foreground">
                     No bills due in the next two weeks.

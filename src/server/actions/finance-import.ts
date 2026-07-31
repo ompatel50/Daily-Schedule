@@ -5,6 +5,7 @@ import { revalidatePath } from "next/cache";
 import { getCurrentUser, prisma } from "@/lib/db";
 import {
   parseFinanceCsv,
+  planImportUndo,
   type CsvDateOrder,
   type FinanceCsvMapping,
   type FinanceImportRow,
@@ -217,6 +218,166 @@ export async function commitFinanceCsvImport(
       createdCount,
       skippedCount,
       rejectedCount: parse.invalid.length,
+    };
+  });
+
+  revalidateAll();
+  return succeed(report);
+}
+
+// --- undo --------------------------------------------------------------------
+
+/**
+ * Undo removes exactly the ledger rows THIS batch created and still owns.
+ *
+ * "Still owns" is decided per row by `classifyImportUndoRow`: a row whose
+ * account, date, amount or payee has been edited since the import, and a row
+ * that has since been linked to a bill payment or a transfer, are KEPT — the
+ * undo would otherwise throw away work the user did after importing. Changing
+ * a row's category or notes is not an edit for this purpose (those fields are
+ * outside the import identity, exactly as they are for duplicate detection).
+ *
+ * The batch row itself is never deleted: it stays as the audit record, stamped
+ * `undoneAt` with what was removed and what was kept. That stamp is also what
+ * makes a second undo a no-op instead of a way to reach rows a later import
+ * created.
+ *
+ * Undoing restores importability: the removed rows take their `importKey` with
+ * them, so re-importing the same file creates them again rather than skipping
+ * them as duplicates. Kept rows keep their keys, so they are never duplicated.
+ */
+export interface ImportUndoPreview {
+  batchId: string;
+  fileName: string;
+  accountName: string | null;
+  importedAt: string;
+  createdCount: number;
+  /** Rows still linked to the batch right now. */
+  remainingCount: number;
+  /** Of those, how many the undo would delete … */
+  removableCount: number;
+  /** … and how many it would keep, split by why. */
+  keptEditedCount: number;
+  keptLinkedCount: number;
+  undoneAt: string | null;
+  /** A few of the rows that would be removed, to sanity-check the scope. */
+  sample: Array<{ id: string; date: string; amount: number; payee: string | null }>;
+}
+
+const UNDO_SAMPLE_SIZE = 6;
+/** A single import is capped at 5 000 rows, so this can never truncate one. */
+const UNDO_ROW_CAP = 5000;
+
+async function loadUndoCandidates(userId: string, batchId: string) {
+  return prisma.financeTransaction.findMany({
+    where: { userId, importBatchId: batchId },
+    select: {
+      id: true,
+      accountId: true,
+      date: true,
+      amount: true,
+      payee: true,
+      importKey: true,
+      billId: true,
+      transferGroupId: true,
+    },
+    orderBy: [{ date: "asc" }, { createdAt: "asc" }],
+    take: UNDO_ROW_CAP,
+  });
+}
+
+/** What an undo would do — reads only, writes nothing. */
+export async function previewFinanceImportUndo(
+  batchId: string,
+): Promise<ActionResult<ImportUndoPreview>> {
+  const user = await getCurrentUser();
+  const batch = await prisma.financeImportBatch.findFirst({
+    where: { id: batchId, userId: user.id },
+    include: { account: { select: { name: true } } },
+  });
+  if (!batch) return fail("Import not found");
+
+  const rows = await loadUndoCandidates(user.id, batch.id);
+  const plan = planImportUndo(rows);
+  const removable = new Set(plan.removeIds);
+
+  return succeed({
+    batchId: batch.id,
+    fileName: batch.fileName,
+    accountName: batch.account?.name ?? null,
+    importedAt: batch.createdAt.toISOString(),
+    createdCount: batch.createdCount,
+    remainingCount: rows.length,
+    removableCount: plan.removeCount,
+    keptEditedCount: plan.keptEdited,
+    keptLinkedCount: plan.keptLinked,
+    undoneAt: batch.undoneAt?.toISOString() ?? null,
+    sample: rows
+      .filter((row) => removable.has(row.id))
+      .slice(0, UNDO_SAMPLE_SIZE)
+      .map((row) => ({ id: row.id, date: row.date, amount: row.amount, payee: row.payee })),
+  });
+}
+
+export interface ImportUndoReport {
+  batchId: string;
+  removedCount: number;
+  keptEditedCount: number;
+  keptLinkedCount: number;
+}
+
+/**
+ * Roll the batch back. One transaction: re-read the rows under the user's own
+ * id, delete only the ids the plan approved (bounded by `importBatchId` AND
+ * `userId`, so no other account's rows are reachable even with a guessed batch
+ * id), then stamp the batch.
+ */
+export async function undoFinanceImport(batchId: string): Promise<ActionResult<ImportUndoReport>> {
+  const user = await getCurrentUser();
+  const batch = await prisma.financeImportBatch.findFirst({
+    where: { id: batchId, userId: user.id },
+  });
+  if (!batch) return fail("Import not found");
+  if (batch.undoneAt) return fail("This import has already been undone");
+
+  const report = await prisma.$transaction(async (db) => {
+    // Re-read inside the transaction: the preview the user saw may be seconds
+    // stale, and the delete must be planned from what is true now.
+    const rows = await db.financeTransaction.findMany({
+      where: { userId: user.id, importBatchId: batch.id },
+      select: {
+        id: true,
+        accountId: true,
+        date: true,
+        amount: true,
+        payee: true,
+        importKey: true,
+        billId: true,
+        transferGroupId: true,
+      },
+      take: UNDO_ROW_CAP,
+    });
+    const plan = planImportUndo(rows);
+
+    let removed = 0;
+    for (let index = 0; index < plan.removeIds.length; index += KEY_LOOKUP_CHUNK) {
+      const chunk = plan.removeIds.slice(index, index + KEY_LOOKUP_CHUNK);
+      const result = await db.financeTransaction.deleteMany({
+        where: { id: { in: chunk }, userId: user.id, importBatchId: batch.id },
+      });
+      removed += result.count;
+    }
+
+    await db.financeImportBatch.update({
+      where: { id: batch.id },
+      data: { undoneAt: new Date(), undoneCount: removed, keptCount: plan.keptCount },
+    });
+
+    return {
+      batchId: batch.id,
+      removedCount: removed,
+      keptEditedCount: plan.keptEdited,
+      keptLinkedCount: plan.keptLinked,
     };
   });
 

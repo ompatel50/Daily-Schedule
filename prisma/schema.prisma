@@ -113,6 +113,7 @@ model User {
   budgets           Budget[]
   financeImportBatches FinanceImportBatch[]
   inboxItems        InboxItem[]
+  documents         LifeDocument[]
 
   // --- day score configuration ----------------------------------------------
   /// JSON map of category → weight, e.g. {"planner":30,"habits":30,"goals":40}.
@@ -319,6 +320,7 @@ model Tag {
   createdAt DateTime @default(now())
 
   scheduleItems ScheduleItemTag[]
+  tasks         TaskTag[]
 
   @@unique([userId, name])
   @@index([userId])
@@ -332,6 +334,22 @@ model ScheduleItemTag {
   tag          Tag          @relation(fields: [tagId], references: [id], onDelete: Cascade)
 
   @@id([scheduleItemId, tagId])
+  @@index([tagId])
+}
+
+/// The same `Tag` rows, on tasks. Tags are labels, not containers: a task has
+/// exactly one project (the container) and any number of tags (the lenses),
+/// which is what keeps this from becoming a second project system. Both sides
+/// are user-scoped, so a join row can never bridge two accounts — the action
+/// layer verifies both ids belong to the caller before writing one.
+model TaskTag {
+  taskId String
+  tagId  String
+
+  task Task @relation(fields: [taskId], references: [id], onDelete: Cascade)
+  tag  Tag  @relation(fields: [tagId], references: [id], onDelete: Cascade)
+
+  @@id([taskId, tagId])
   @@index([tagId])
 }
 
@@ -1317,6 +1335,9 @@ model Task {
   scheduleItems ScheduleItem[]
   inboxItems    InboxItem[]
 
+  /// Free-form labels, shared with the planner's tag vocabulary.
+  tags TaskTag[]
+
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
@@ -1502,11 +1523,11 @@ model SavingsGoal {
   @@index([userId])
 }
 
-/// A monthly spending target for one category. Spending in the window counts
-/// against it; income, adjustments and transfers never do. One budget per
-/// category per user — the unique key below is the whole identity. `period`
-/// only ever holds `monthly` today; the column exists so other windows can
-/// arrive additively without a migration that reinterprets old rows.
+/// A spending target for one category over one window. Spending in the window
+/// counts against it; income, adjustments and transfers never do. One budget
+/// per category per user — the unique key below is the whole identity, and the
+/// period is a property of that one budget rather than a second axis, so
+/// "groceries" can never mean two contradictory targets at once.
 model Budget {
   id     String @id @default(cuid())
   userId String
@@ -1517,13 +1538,21 @@ model Budget {
   category String
   /// Target spend per period, in the user's primary currency.
   amount   Float
-  /// monthly (the only period so far)
+  /// monthly | weekly — the window spending is measured over. Weekly windows
+  /// follow the user's own weekStartsOn convention.
   period   String @default("monthly")
+
+  /// Remind once per period when spending crosses this share of the target
+  /// (50, 75, 90 …). Null = no threshold reminder. Delivery rides the one
+  /// reminder ledger, keyed on budget + period start + threshold — see
+  /// resolveBudgetThresholdReminder in src/lib/logic/reminders.ts.
+  alertThresholdPercent Int?
 
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
   @@unique([userId, category])
+  @@index([userId, alertThresholdPercent])
 }
 
 /// One CSV import run — the audit record behind "where did these rows come
@@ -1547,6 +1576,16 @@ model FinanceImportBatch {
   skippedCount  Int
   /// Rows that failed validation and were never written.
   rejectedCount Int
+
+  /// Set when the user undid this import. The batch row itself is never
+  /// deleted — an import that happened stays in the history, now labelled as
+  /// rolled back — and the stamp is what makes undo refuse to run twice.
+  undoneAt DateTime?
+  /// Rows the undo actually removed …
+  undoneCount Int @default(0)
+  /// … and rows it deliberately left in place because they had been edited
+  /// away from what the import wrote (see src/lib/logic/finance-import.ts).
+  keptCount   Int @default(0)
 
   transactions FinanceTransaction[]
 
@@ -1586,6 +1625,47 @@ model InboxItem {
 
   @@index([userId, status])
   @@index([taskId])
+}
+
+// ---------------------------------------------------------------------------
+// Documents & renewals — the life-admin things that expire
+// ---------------------------------------------------------------------------
+
+/// Something with an expiry or renewal date: a passport, an insurance policy,
+/// a lease, a warranty. Deliberately the smallest model that can carry an
+/// expiry reminder — no file storage, no attachments, no document numbers. It
+/// records *when* a thing runs out and reminds you before it does; the thing
+/// itself stays wherever you keep it.
+///
+/// Renewal is an edit: move `expiryDate` forward and the reminder re-arms on
+/// its own, because the delivery key embeds the date (exactly how a bill's
+/// nextDueDate behaves).
+model LifeDocument {
+  id     String @id @default(cuid())
+  userId String
+  user   User   @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  name String
+  /// id | insurance | lease | warranty | licence | membership | other
+  /// (validated in src/lib/enums.ts)
+  kind String @default("other")
+  /// Who issued or holds it — an insurer, a landlord, an agency. Optional.
+  issuer String?
+
+  expiryDate String // YYYY-MM-DD
+  notes      String?
+
+  reminderEnabled Boolean @default(true)
+  /// Remind this many days before the expiry date (0 = only on the day).
+  reminderDaysBefore Int @default(30)
+
+  archivedAt DateTime?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([userId, expiryDate])
+  @@index([userId, archivedAt])
 }
 
 /// Generic "pin this" across domains — foods, workouts, templates, habits.

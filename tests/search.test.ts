@@ -47,12 +47,16 @@ describe("global search hits", () => {
         tasks: [{ id: "t", title: "Renew passport", status: "open", dueDate: "2026-07-30" }],
         projects: [{ id: "p", name: "Move apartments", status: "active" }],
         inboxItems: [{ id: "x", title: "Call the dentist back", status: "open" }],
+        tags: [{ id: "tg", name: "admin", taskCount: 3, plannerCount: 1 }],
+        documents: [
+          { id: "d", name: "Passport", kind: "id", issuer: "State Dept", expiryDate: "2026-09-30" },
+        ],
         accounts: [{ id: "acc", name: "Everyday checking", type: "checking", archived: false, currency: "USD" }],
         transactions: [
           { id: "tx", payee: "Grocer", category: "groceries", date: "2026-07-29", amount: -42.5, currency: "USD" },
         ],
         bills: [{ id: "bl", name: "Rent", kind: "bill", amount: 1800, nextDueDate: "2026-08-01" }],
-        budgets: [{ id: "bu", category: "dining", amount: 250 }],
+        budgets: [{ id: "bu", category: "dining", amount: 250, period: "monthly" }],
         savingsGoals: [{ id: "sg", name: "Emergency fund", targetAmount: 10000, currentAmount: 2500 }],
       }),
       REF,
@@ -76,6 +80,8 @@ describe("global search hits", () => {
     expect(byGroup.get("Bills")?.href).toBe("/finance");
     expect(byGroup.get("Budgets")?.href).toBe("/finance");
     expect(byGroup.get("Savings goals")?.href).toBe("/finance");
+    expect(byGroup.get("Tags")?.href).toBe("/tasks?tag=admin");
+    expect(byGroup.get("Documents")?.href).toBe("/inbox");
     // every declared group appeared, and ids are namespaced uniquely
     expect(new Set(hits.map((hit) => hit.group)).size).toBe(SEARCH_GROUPS.length);
     expect(new Set(hits.map((hit) => hit.id)).size).toBe(hits.length);
@@ -106,6 +112,50 @@ describe("global search hits", () => {
     expect(byId.get("txn-tx")?.subtitle).toContain("$42.50");
     expect(byId.get("sg-sg")?.subtitle).toBe("$2,500 of $10,000 saved");
     expect(byId.get("acct-a")?.subtitle).toBe("Credit card · archived");
+  });
+
+  it("describes tags as filters and documents by their expiry", () => {
+    const hits = buildSearchHits(
+      rows({
+        tags: [
+          { id: "g1", name: "admin", taskCount: 3, plannerCount: 0 },
+          { id: "g2", name: "money", taskCount: 1, plannerCount: 2 },
+          { id: "g3", name: "unused", taskCount: 0, plannerCount: 0 },
+        ],
+        documents: [
+          { id: "d1", name: "Passport", kind: "id", issuer: "State Dept", expiryDate: "2026-08-30" },
+          { id: "d2", name: "Lease", kind: "lease", issuer: null, expiryDate: "2026-07-30" },
+        ],
+      }),
+      REF,
+    );
+    const byId = new Map(hits.map((hit) => [hit.id, hit]));
+
+    // A tag hit IS the filter — following it lands on the narrowed list.
+    expect(byId.get("tag-g1")?.title).toBe("#admin");
+    expect(byId.get("tag-g1")?.href).toBe("/tasks?tag=admin");
+    expect(byId.get("tag-g1")?.subtitle).toBe("3 tasks");
+    expect(byId.get("tag-g2")?.subtitle).toBe("1 task · 2 planner items");
+    expect(byId.get("tag-g3")?.subtitle).toBe("Tag · not used yet");
+
+    expect(byId.get("doc-d1")?.subtitle).toBe("State Dept · ID & travel · Expires in 31 days");
+    expect(byId.get("doc-d2")?.subtitle).toBe("Lease & housing · Expires today");
+  });
+
+  it("escapes a tag name that would otherwise break the filter link", () => {
+    const [hit] = buildSearchHits(
+      rows({ tags: [{ id: "g", name: "deep work", taskCount: 1, plannerCount: 0 }] }),
+      REF,
+    );
+    expect(hit.href).toBe("/tasks?tag=deep%20work");
+  });
+
+  it("labels a weekly budget as weekly", () => {
+    const [hit] = buildSearchHits(
+      rows({ budgets: [{ id: "bu", category: "dining", amount: 60, period: "weekly" }] }),
+      REF,
+    );
+    expect(hit.subtitle).toBe("$60 weekly");
   });
 
   it("orders groups by declaration order, keeping within-group order stable", () => {
