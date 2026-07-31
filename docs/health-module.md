@@ -314,6 +314,12 @@ a decade of data is a few hundred thousand small objects whether the file is 200
 Hitting a cap is reported, never silent: the import says what it kept and tells you to import
 again to continue.
 
+**On a hosting platform, the platform's own limits bind first.** Vercel caps a function's request
+body and its execution time by plan — the upload route asks for the 60 seconds every plan
+accepts, and a request body above the platform's limit is rejected before the app sees it. A
+self-hosted deployment (`npm start` behind your own proxy) has neither limit, which is the answer
+for an export large enough to hit them.
+
 **Measured.** A synthetic export of 60,000 records across 400 days parses in well under a second
 and produces 400 rows — one per day per device — with heap growth in the low tens of megabytes.
 That case is a committed test (`tests/health-archive.test.ts`), so the property is checked on

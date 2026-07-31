@@ -49,8 +49,20 @@ import { logRedactedError } from "@/server/safe-error";
 
 export const dynamic = "force-dynamic";
 export const runtime = "nodejs";
-/** A multi-gigabyte export legitimately takes minutes to stream and parse. */
-export const maxDuration = 800;
+/**
+ * Vercel-only hint, and deliberately conservative.
+ *
+ * A large export legitimately takes longer than a page render, so the default
+ * (10–15 s) is too short. But `maxDuration` is validated against the account's
+ * plan at deploy time — a value above the plan's ceiling fails the whole
+ * deployment rather than being clamped — and the ceiling is 60 s on Hobby.
+ * 60 is therefore the highest value every plan accepts, and it is ample: a
+ * 181 MB export.xml parses in about five seconds (docs/performance-measurement.md).
+ *
+ * Self-hosted deployments ignore this entirely — `npm start` has no such
+ * limit — which is the answer for an export large enough to need more.
+ */
+export const maxDuration = 60;
 
 class UploadTooLarge extends Error {}
 

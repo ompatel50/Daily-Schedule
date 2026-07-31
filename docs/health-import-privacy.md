@@ -123,5 +123,8 @@ only what is genuinely new. You never have to remember what you imported last.
   promise than that, and does not pretend to.
 * **A very large export takes minutes**, most of it streaming and parsing. The import page shows
   progress; the batch records how long it actually took.
+* **A hosting platform's own limits bind before this app's do.** Vercel caps request body size
+  and execution time per plan; a self-hosted deployment has neither cap. If an export is large
+  enough to be refused by the platform, self-hosting is the answer.
 * **An in-flight upload does not survive leaving the page.** Nothing partial is written; pick
   the file again.

@@ -3,6 +3,7 @@ import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { expect, test } from "@playwright/test";
+import type { Page } from "@playwright/test";
 
 import { STORAGE } from "./auth";
 
@@ -20,6 +21,9 @@ import { STORAGE } from "./auth";
 
 test.use({ storageState: STORAGE.alice });
 test.describe.configure({ mode: "serial" });
+// Uploading, parsing and writing a 30-day export, then undoing it, is more
+// than the suite's default 30 s allows on a cold CI runner.
+test.setTimeout(180_000);
 
 /** A minimal ZIP writer: deflate each member, then a central directory. */
 function buildZip(members: Array<{ name: string; content: string }>): Buffer {
@@ -150,11 +154,46 @@ test.afterAll(async () => {
   await rm(directory, { recursive: true, force: true });
 });
 
-async function upload(page: import("@playwright/test").Page) {
+async function upload(page: Page) {
   await page.goto("/health/import");
   await expect(page.getByRole("heading", { level: 2, name: "Import health data" })).toBeVisible();
   await page.setInputFiles('input[type="file"]', archivePath);
   await expect(page.getByRole("heading", { name: /Preview/ })).toBeVisible({ timeout: 120_000 });
+}
+
+/**
+ * Upload a file the importer must refuse, and assert the refusal.
+ *
+ * The assertion is on the **response**, not on the toast. A refusal for a tiny
+ * file is near-instant and the toast auto-dismisses a few seconds later, so
+ * asserting on the toast is a race that a slow runner loses — and it was
+ * losing it. Waiting for the response is set up *before* the upload starts, so
+ * it cannot be missed, and it checks the thing that actually matters: the
+ * server refused, said why in a readable way, and no preview opened.
+ */
+async function expectRefusal(page: Page, file: string, reason: RegExp) {
+  await page.goto("/health/import");
+  // Both waits are armed BEFORE the upload starts, which is the whole point:
+  // a refusal for a tiny file is near-instant, so anything set up afterwards
+  // is racing an outcome that has already happened.
+  const responded = page.waitForResponse((response) =>
+    response.url().includes("/api/health/import"),
+  );
+  const toasted = page.waitForSelector("[data-sonner-toast]", { state: "attached" });
+
+  await page.setInputFiles('input[type="file"]', file);
+
+  const response = await responded;
+  expect(response.status(), "a refused import must not answer 2xx").toBeGreaterThanOrEqual(400);
+
+  // The response body is deliberately not re-read here — the page has already
+  // consumed it, and Chromium evicts a consumed body from the inspector cache.
+  // What the user is told is the thing worth asserting anyway.
+  const toast = await toasted;
+  expect(await toast.textContent(), "the refusal must say why").toMatch(reason);
+
+  // Nothing was staged, so the preview never opens.
+  await expect(page.getByRole("heading", { name: /Preview/ })).toBeHidden();
 }
 
 test("imports an Apple Health export end to end, then undoes it", async ({ page }) => {
@@ -199,7 +238,10 @@ test("imports an Apple Health export end to end, then undoes it", async ({ page 
   await upload(page);
   const again = (await page.getByRole("dialog").textContent()) ?? "";
   expect(again).toContain("already present");
-  expect(again).not.toContain("new");
+  // No "<n> new" badge anywhere: every row the second file carries is one the
+  // first already wrote. Matched as the badge's own shape rather than the bare
+  // word, which could legitimately appear in a warning.
+  expect(again).not.toMatch(/\d+ new/);
   await page.getByRole("button", { name: /Cancel/ }).click();
 
   // --- undo ------------------------------------------------------------------
@@ -222,11 +264,7 @@ test("imports an Apple Health export end to end, then undoes it", async ({ page 
 test("refuses a file that is not a health export, and writes nothing", async ({ page }) => {
   const notAnExport = join(directory, "not-an-export.zip");
   await writeFile(notAnExport, buildZip([{ name: "notes.txt", content: "hello" }]));
-
-  await page.goto("/health/import");
-  await page.setInputFiles('input[type="file"]', notAnExport);
-  await expect(page.getByText(/no export\.xml/)).toBeVisible({ timeout: 60_000 });
-  await expect(page.getByRole("heading", { name: /Preview/ })).toBeHidden();
+  await expectRefusal(page, notAnExport, /no export\.xml/);
 });
 
 test("refuses malformed XML with a readable message", async ({ page }) => {
@@ -241,12 +279,7 @@ test("refuses malformed XML with a readable message", async ({ page }) => {
     ]),
   );
 
-  await page.goto("/health/import");
-  await page.setInputFiles('input[type="file"]', broken);
-  await expect(page.getByText(/Malformed XML|damaged|Nothing was imported/).first()).toBeVisible({
-    timeout: 60_000,
-  });
-  await expect(page.getByRole("heading", { name: /Preview/ })).toBeHidden();
+  await expectRefusal(page, broken, /Malformed XML|damaged/);
 });
 
 test("refuses an export that declares an XML entity", async ({ page }) => {
@@ -262,8 +295,5 @@ test("refuses an export that declares an XML entity", async ({ page }) => {
     ]),
   );
 
-  await page.goto("/health/import");
-  await page.setInputFiles('input[type="file"]', entity);
-  await expect(page.getByText(/entity/).first()).toBeVisible({ timeout: 60_000 });
-  await expect(page.getByRole("heading", { name: /Preview/ })).toBeHidden();
+  await expectRefusal(page, entity, /entity/);
 });
