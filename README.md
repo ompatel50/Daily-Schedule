@@ -366,6 +366,14 @@ project; one level of subtasks; and an opt-in reminder on its due date.
   archived). Deleting a project never deletes its tasks.
 * **Drop** is distinct from done: a deliberate "not doing this" that closes the task without
   pretending it happened.
+* **Tags** are labels, not containers: a task belongs to exactly one project and carries any
+  number of tags (up to eight). Type a name in the task dialog to create one — there is no
+  separate "manage tags" step — and it joins the same vocabulary the planner already uses, so
+  `#admin` on a task and `#admin` on a planner block are one tag. The tag strip above the list
+  filters it, stacking tags narrows (AND, never OR), and the filter lives in the URL
+  (`/tasks?tag=admin`), so a filtered list is linkable and the command palette can land straight
+  on one. Names are normalised — trimmed, lower-cased, single-spaced — so "Admin" and "admin"
+  can never become two tags. Deleting a tag removes its links and leaves every task standing.
 
 * **Add to planner**: any open task can block a day (all-day, or from a start time) — an
   ordinary planner item carrying the task's title and priority, linked back to the task. The two
@@ -416,10 +424,30 @@ Manual-first money tracking: no bank sync, no third-party integration, nothing l
   instead of creating them, while two genuinely identical purchases in one file both import. The
   commit is one transaction — a failure writes nothing — and an audit batch records file name and
   created/skipped/rejected counts. A template lives at `/finance-import-template.csv`.
-* **Budgets**: a monthly spending target per category, one budget per category. Progress bars
-  show spent / remaining against this month's ledger; over-budget states surface in red on the
-  finance page and as a one-line callout on the dashboard's Money card. Income, transfers and
-  adjustments never count against a budget.
+* **Undo an import**: every import run is listed under **CSV imports** on the finance page with
+  an **Undo** button. Undo previews first — how many rows it will remove, how many it will keep
+  and why — and then removes *only* the rows that batch created and still owns, in one
+  transaction. A row is kept when it has been **edited** since the import (its account, date,
+  amount or payee changed) or **linked** to something since (it settles a bill, or it is one leg
+  of a transfer); re-categorising or annotating a row is *not* an edit, because category and
+  notes sit outside the import identity exactly as they do for duplicate detection. The batch row
+  itself is never deleted — it stays in the history marked "Undone", which is also what stops a
+  second undo from reaching rows a later import created. Removing a row takes its import identity
+  with it, so re-importing the same file afterwards recreates exactly what was removed and still
+  skips what was kept.
+* **Budgets**: a spending target per category, one budget per category, measured over a
+  **monthly or weekly** window. Monthly is the calendar month; weekly is your own week (the same
+  `week starts on` convention every week view uses), and each budget card names the days it
+  currently covers. Progress bars show spent / remaining against that window; over-budget states
+  surface in red on the finance page and as a one-line callout on the dashboard's Money card.
+  Income, transfers and adjustments never count against a budget. The finance page and the
+  dashboard compute both windows from a **single** ledger fetch, so adding weekly budgets costs
+  no extra query.
+* **Budget alerts**: a budget can warn at 50 %, 75 %, 90 % or 100 % of its target. Crossing the
+  line reminds once — the delivery key is budget + period start + threshold, so the rest of that
+  month (or week) stays quiet, the next period arms it again, and changing the threshold
+  deliberately arms a new alert. The card shows a "Past 75 %" badge and an amber bar while it is
+  over the line but under target. Leave it on "No alert" for a budget you only want to look at.
 * **Savings goals**: target, saved-so-far, optional target date. Maintained by its own add /
   withdraw actions rather than derived from the ledger, so goals work even without transaction
   discipline.
@@ -430,18 +458,30 @@ Manual-first money tracking: no bank sync, no third-party integration, nothing l
 * Amounts are stored per account currency and never converted; net balance is reported **per
   currency** rather than pretending exchange rates don't exist.
 
+**Renewals & documents** live on `/inbox`, next to the capture queue — the same life-admin
+surface. A document is the smallest thing that can carry an expiry reminder: a name, a kind (ID,
+insurance, lease, warranty, licence, membership), an optional issuer, the date it runs out, and
+how far ahead to warn. There is no file storage and no document numbers — it records *when* a
+thing expires, not the thing itself. Each row shows how long is left, whether its reminder is
+currently armed, and whether it has already lapsed; renewing is an edit, so moving the date
+forward re-arms the reminder on its own, exactly how paying a bill advances the next one.
+Archive keeps a lapsed policy on the record without reminding about it.
+
 ### 13. Productivity layer
 
-* **Command palette** (`⌘K` / `Ctrl K`) — searches across schedule items, tasks, projects, inbox
-  items, bills, accounts, transactions, budgets, savings goals, workouts, foods, habits and
-  journal entries, plus actions and navigation.
+* **Command palette** (`⌘K` / `Ctrl K`) — searches across schedule items, tasks, projects, tags,
+  inbox items, documents, bills, accounts, transactions, budgets, savings goals, workouts, foods,
+  habits and journal entries, plus actions and navigation. A tag hit *is* a filter: following it
+  opens the task list already narrowed to that tag.
 * **Keyboard shortcuts**: `N` quick add · `/` search · `?` shortcuts · `G` then a letter to
   navigate · `J`/`K` previous/next day · `T` jump to today.
 * **Journal**: a note plus mood and energy on any day (which also feed the health charts).
 * **Export/import**: full JSON backup, per-table CSV export, and JSON restore in merge or replace
   mode.
 * **Dark mode**, following the system by default.
-* **Reminders**: desktop notifications and toasts while the app is open — and, when Web Push is
+* **Reminders**: bills and tasks on their due date, habits and goals on their schedule,
+  documents before they expire, accounts under a low-balance threshold and budgets past an alert
+  threshold — desktop notifications and toasts while the app is open — and, when Web Push is
   configured (`docs/web-push-setup.md`), real push notifications on opted-in devices with **no tab
   open at all**. Either way they are **schedule-aware**: nothing fires on a rest day, for something
   not scheduled today, for an archived habit, for an item already completed / excused / skipped, or
@@ -620,8 +660,9 @@ and the formula in words.
 `FoodItem`, `Meal`, `MealEntry`, `MealTemplate`, `MealTemplateItem`, `Workout`, `WorkoutSet`,
 `WorkoutTemplate`, `HealthMetric`, `Goal`, `GoalEntry`, `ScheduleRule`, `ScheduleRuleDay`,
 `ScheduleOverride`, `CalendarDaySummary`, `JournalEntry`, `Reminder`, `FavoriteItem`, `SeedBatch`,
-`SeedRecord` — plus the universal-OS foundation: `Project`, `Task`, `FinanceAccount`,
-`FinanceTransaction`, `Bill`, `SavingsGoal`, `Budget`, `FinanceImportBatch`, `InboxItem`.
+`SeedRecord` — plus the universal-OS foundation: `Project`, `Task`, `TaskTag`, `FinanceAccount`,
+`FinanceTransaction`, `Bill`, `SavingsGoal`, `Budget`, `FinanceImportBatch`, `InboxItem`,
+`LifeDocument`.
 
 **Tasks are not schedule items.** A `ScheduleItem` occupies a slot in a day; a `Task` is an
 obligation with an optional due date. Keeping them separate means neither inherits the other's
@@ -635,11 +676,24 @@ balance" writes an adjustment transaction instead of editing a number.
 `transferGroupId` and carry the `transfer` category, so summaries exclude them by construction
 and deleting one leg always removes both. Imported transactions carry a deterministic `importKey`
 (unique per user) so a re-imported file skips instead of duplicating, plus a link to the
-`FinanceImportBatch` that created them — the audit trail behind every import. A `Budget` is one
-row per `(user, category)` with a monthly target; progress is computed from the same month
-window the finance page already loads, never stored. `ScheduleItem.taskId` and `InboxItem.taskId`
-are optional SetNull links — "this block came from that task", "this capture became that task" —
-carrying no scheduling behaviour of their own.
+`FinanceImportBatch` that created them — the audit trail behind every import, which is also what
+makes undo possible: rolling one back stamps `undoneAt` / `undoneCount` / `keptCount` on the batch
+rather than deleting it, so an import that happened stays in the history and a second undo is
+refused. A `Budget` is one row per `(user, category)` — the category is the identity, and `period`
+(monthly | weekly) is a property of that one budget rather than a second axis, so a category can
+never mean two contradictory targets; progress is computed from the ledger window the finance page
+already loads, never stored, and `alertThresholdPercent` (null = no alert) is all a threshold
+reminder needs. `ScheduleItem.taskId` and `InboxItem.taskId` are optional SetNull links — "this
+block came from that task", "this capture became that task" — carrying no scheduling behaviour of
+their own.
+
+**Tags are one vocabulary, joined twice.** `TaskTag` is the same shape as `ScheduleItemTag` over
+the same user-scoped `Tag` rows, so a tag typed on a task is the tag already on a planner block
+rather than a parallel list. Both sides of a join are user-scoped, so a join row can never bridge
+two accounts, and the action layer verifies both ids before writing one. `LifeDocument` is the
+smallest model an expiry reminder needs — name, kind, expiry date, lead time — with no file
+storage: renewal is an edit to `expiryDate`, which re-arms the reminder because the delivery key
+embeds the date, exactly how `Bill.nextDueDate` behaves.
 
 **Scheduling is three shared tables, not two parallel families.** `ScheduleRule` is one
 effective-dated version owned by `(ownerType, ownerId)`; `ScheduleRuleDay` is one row per selected
@@ -702,7 +756,7 @@ npm run test:integration   # database-backed, against the disposable test databa
 npm run test:e2e       # Playwright browser suite (against a running production build)
 ```
 
-Three suites, each doing the job the others can't. The **unit suite** (837 tests) covers the pure
+Three suites, each doing the job the others can't. The **unit suite** (903 tests) covers the pure
 logic that would be expensive to get wrong:
 
 * **Scheduling** — every mode, both week-start settings, DST, leap years, month and year
@@ -725,14 +779,23 @@ logic that would be expensive to get wrong:
   correct decades past the anchor, and repeat advancement that never marches through missed
   weeks.
 * **Finance** — signed-ledger summaries with adjustments excluded, computed balances, bill
-  advancement chains, savings progress capping, and deterministic money formatting.
+  advancement chains, savings progress capping, deterministic money formatting, and budget
+  windows: a monthly budget ignoring rows outside its month, a weekly one measuring only its own
+  week (including the days that spill into the next month), and both reading one ledger slice
+  without borrowing each other's days.
+* **Import undo** — the classification behind "remove this row, keep that one": an untouched row
+  removed, an edited date/amount/payee/account kept, a re-categorised row still removed, a
+  bill-linked or transfer-linked row kept, and an unrecognisable key kept rather than guessed at.
+* **Reminders** — document expiry (fires once in the run-up window, once on the day, silent when
+  archived / disabled / already expired, re-armed by a renewal) and budget thresholds (fires at
+  the line, once per period per threshold, never for a zero target).
 * Plus nutrition serving maths, the natural-language quick-add parser, planner recurrence, and
   day-key/time handling including a DST boundary.
 
 The unit tests are pure — no database, no fixtures, no mocking — because all the logic they cover
 lives in `src/lib/logic`.
 
-The **integration suite** (190 tests) runs against a real PostgreSQL — always the disposable
+The **integration suite** (228 tests) runs against a real PostgreSQL — always the disposable
 `personal_os_test` database, reset and re-migrated from zero each run — and covers what pure tests
 cannot: unique constraints, transaction rollback, backup import isolation, health-import session
 ownership, the reminder exactly-once ledger, password verification with its lockout and
@@ -742,7 +805,14 @@ a cross-user suite asserting that every major operation against another account 
 *and* leaves the victim's row unchanged, and the life-OS foundation end to end: bill payment
 advancing the due pointer with its atomic ledger row, set-balance writing the exact adjustment,
 repeating-task completion, subtask depth limits, command-center assembly, and cross-user denial
-for every new finance/task/inbox action. The **e2e suite** drives the built app in a real
+for every new finance/task/inbox action. The Phase-3 follow-ups have their own suite: import undo
+(scope, kept rows, the audit stamp, refusing a second undo, re-importing after one, cross-user
+denial), document expiry end to end through the reminder ledger, budget thresholds and weekly
+periods against real ledger rows, task tags (creation by typing, vocabulary reuse, replacement on
+edit, the per-task cap, tag deletion leaving tasks standing, two users' identical tag names
+staying separate), a v6 backup round-trip that lands documents and tag links in the *importing*
+account, and a demo-data pass that seeds every new module and then removes exactly what it
+seeded. The **e2e suite** drives the built app in a real
 browser: signed-out redirects, password sign-in, the identical generic refusal for an unknown
 email and for a wrong password (so failed attempts reveal nothing about which emails exist), the
 full sign-up → recovery-codes → dashboard → sign-out → password-reset journey, surface postures,

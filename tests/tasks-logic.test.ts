@@ -4,9 +4,15 @@ import {
   bucketTasks,
   compareTasks,
   describeRepeat,
+  filterByTags,
   nextDueAfterCompletion,
+  normalizeTagName,
+  normalizeTagNames,
   projectProgress,
   repeatCadence,
+  tagUsage,
+  TASK_TAG_LIMIT,
+  TAG_NAME_MAX,
   tasksDueNow,
   type TaskLike,
 } from "@/lib/logic/tasks";
@@ -238,5 +244,80 @@ describe("projectProgress", () => {
   it("reaches 100 only when every countable task is done", () => {
     expect(projectProgress([{ status: "done" }, { status: "done" }]).percent).toBe(100);
     expect(projectProgress([{ status: "done" }, { status: "open" }]).percent).toBe(50);
+  });
+});
+
+describe("tag names", () => {
+  it("normalises to one spelling: trimmed, lower-case, single-spaced", () => {
+    expect(normalizeTagName("  Deep   Work ")).toBe("deep work");
+    expect(normalizeTagName("ADMIN")).toBe("admin");
+    expect(normalizeTagName("\n\ttidy\t")).toBe("tidy");
+  });
+
+  it("normalises to empty for anything with no content", () => {
+    expect(normalizeTagName("")).toBe("");
+    expect(normalizeTagName("   ")).toBe("");
+  });
+
+  it("truncates rather than rejecting an over-long name", () => {
+    expect(normalizeTagName("x".repeat(TAG_NAME_MAX + 20))).toHaveLength(TAG_NAME_MAX);
+  });
+
+  it("drops blanks and duplicates, keeping first-seen order", () => {
+    expect(normalizeTagNames(["Admin", "", "  ", "admin", "Home"])).toEqual(["admin", "home"]);
+  });
+
+  it("caps the list so tags stay labels, not a hierarchy", () => {
+    const many = Array.from({ length: TASK_TAG_LIMIT + 5 }, (_, index) => `tag${index}`);
+    expect(normalizeTagNames(many)).toHaveLength(TASK_TAG_LIMIT);
+  });
+});
+
+describe("filterByTags", () => {
+  const items = [
+    { id: "a", tags: ["admin", "money"] },
+    { id: "b", tags: ["admin"] },
+    { id: "c", tags: [] },
+    { id: "d", tags: ["money", "home"] },
+  ];
+
+  it("an empty selection filters nothing", () => {
+    expect(filterByTags(items, [])).toHaveLength(4);
+  });
+
+  it("one tag narrows to the items carrying it", () => {
+    expect(filterByTags(items, ["admin"]).map((item) => item.id)).toEqual(["a", "b"]);
+  });
+
+  it("two tags narrow further — AND, never OR", () => {
+    expect(filterByTags(items, ["admin", "money"]).map((item) => item.id)).toEqual(["a"]);
+  });
+
+  it("matches regardless of how the filter was typed", () => {
+    expect(filterByTags(items, [" ADMIN "]).map((item) => item.id)).toEqual(["a", "b"]);
+  });
+
+  it("an unknown tag matches nothing rather than everything", () => {
+    expect(filterByTags(items, ["nope"])).toEqual([]);
+  });
+});
+
+describe("tagUsage", () => {
+  it("counts each tag across the items, most-used first", () => {
+    expect(
+      tagUsage([
+        { tags: ["admin", "money"] },
+        { tags: ["admin"] },
+        { tags: ["home"] },
+      ]),
+    ).toEqual([
+      { name: "admin", count: 2 },
+      { name: "home", count: 1 },
+      { name: "money", count: 1 },
+    ]);
+  });
+
+  it("returns nothing when no item carries a tag", () => {
+    expect(tagUsage([{ tags: [] }, { tags: [] }])).toEqual([]);
   });
 });

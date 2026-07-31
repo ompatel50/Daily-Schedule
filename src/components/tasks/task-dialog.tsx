@@ -25,6 +25,7 @@ import {
 } from "@/components/ui/select";
 import { Switch } from "@/components/ui/switch";
 import { Textarea } from "@/components/ui/textarea";
+import { TagInput } from "@/components/shared/tag-input";
 import { projectColorDot } from "@/components/tasks/project-colors";
 import {
   PRIORITIES,
@@ -48,6 +49,8 @@ export interface TaskDraft {
   repeat: string;
   repeatEvery: number;
   reminderEnabled: boolean;
+  /** Tag names — a tag is created by typing it. */
+  tags: string[];
 }
 
 export interface ProjectOption {
@@ -68,6 +71,7 @@ export function blankTask(): TaskDraft {
     repeat: "none",
     repeatEvery: 1,
     reminderEnabled: false,
+    tags: [],
   };
 }
 
@@ -80,6 +84,7 @@ export function TaskDialog({
   task,
   parentTitle,
   projects,
+  tagSuggestions = [],
 }: {
   open: boolean;
   onOpenChange: (open: boolean) => void;
@@ -88,6 +93,8 @@ export function TaskDialog({
   /** Shown when creating a subtask so the parent is visible in the dialog. */
   parentTitle?: string | null;
   projects: ProjectOption[];
+  /** Tag names already in use, offered as completions. */
+  tagSuggestions?: string[];
 }) {
   const router = useRouter();
   const isEdit = Boolean(task?.id);
@@ -138,6 +145,7 @@ export function TaskDialog({
         repeatEvery: form.repeatEvery,
         // A reminder without a due date has nothing to fire on.
         reminderEnabled: form.dueDate ? form.reminderEnabled : false,
+        tags: form.tags,
       });
 
       if (result.ok) {
@@ -225,6 +233,22 @@ export function TaskDialog({
                 </Select>
               </div>
             )}
+
+            <div className="space-y-1.5">
+              <Label htmlFor="task-tags">Tags (optional)</Label>
+              <TagInput
+                id="task-tags"
+                value={form.tags}
+                onChange={(next) => set("tags", next)}
+                suggestions={tagSuggestions}
+                describedBy="task-tags-hint"
+              />
+              <p id="task-tags-hint" className="text-xs text-muted-foreground">
+                Labels for slicing the list — the project is where a task belongs, tags are how
+                you want to find it.
+              </p>
+              {errors.tags && <p className="text-xs text-destructive">{errors.tags[0]}</p>}
+            </div>
 
             <div className="grid gap-3 sm:grid-cols-2">
               <div className="space-y-1.5">

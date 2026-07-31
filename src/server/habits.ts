@@ -10,7 +10,7 @@
  */
 import { cache } from "react";
 
-import { prisma } from "@/lib/db";
+import { prisma } from "@/lib/prisma";
 import { type DayKey, dayRange, shiftDay } from "@/lib/date";
 import {
   calculateCompletionRate,

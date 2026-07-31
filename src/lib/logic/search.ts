@@ -6,6 +6,7 @@ import {
   type AccountType,
   type FinanceCategory,
 } from "@/lib/enums";
+import { describeExpiryDistance, documentKindLabel } from "@/lib/logic/documents";
 import { formatMoney } from "@/lib/logic/finance";
 import { describeDueDistance } from "@/lib/logic/due";
 
@@ -20,7 +21,9 @@ export const SEARCH_GROUPS = [
   "Planner",
   "Tasks",
   "Projects",
+  "Tags",
   "Inbox",
+  "Documents",
   "Routines",
   "Habits",
   "Goals",
@@ -57,7 +60,15 @@ export interface SearchRows {
   mealTemplates: Array<{ id: string; name: string; mealType: string }>;
   tasks: Array<{ id: string; title: string; status: string; dueDate: DayKey | null }>;
   projects: Array<{ id: string; name: string; status: string }>;
+  tags: Array<{ id: string; name: string; taskCount: number; plannerCount: number }>;
   inboxItems: Array<{ id: string; title: string; status: string }>;
+  documents: Array<{
+    id: string;
+    name: string;
+    kind: string;
+    issuer: string | null;
+    expiryDate: DayKey;
+  }>;
   accounts: Array<{ id: string; name: string; type: string; archived: boolean; currency: string }>;
   transactions: Array<{
     id: string;
@@ -68,7 +79,7 @@ export interface SearchRows {
     currency: string;
   }>;
   bills: Array<{ id: string; name: string; kind: string; amount: number; nextDueDate: DayKey }>;
-  budgets: Array<{ id: string; category: string; amount: number }>;
+  budgets: Array<{ id: string; category: string; amount: number; period: string }>;
   savingsGoals: Array<{ id: string; name: string; targetAmount: number; currentAmount: number }>;
 }
 
@@ -85,7 +96,9 @@ export function emptySearchRows(): SearchRows {
     mealTemplates: [],
     tasks: [],
     projects: [],
+    tags: [],
     inboxItems: [],
+    documents: [],
     accounts: [],
     transactions: [],
     bills: [],
@@ -138,12 +151,40 @@ export function buildSearchHits(rows: SearchRows, referenceDay: DayKey): SearchH
     });
   }
 
+  // A tag hit is a filter, not a record: following it opens the task list
+  // already narrowed to that tag.
+  for (const tag of rows.tags) {
+    const parts: string[] = [];
+    if (tag.taskCount > 0) parts.push(`${tag.taskCount} task${tag.taskCount === 1 ? "" : "s"}`);
+    if (tag.plannerCount > 0) {
+      parts.push(`${tag.plannerCount} planner item${tag.plannerCount === 1 ? "" : "s"}`);
+    }
+    hits.push({
+      id: `tag-${tag.id}`,
+      group: "Tags",
+      title: `#${tag.name}`,
+      subtitle: parts.length > 0 ? parts.join(" · ") : "Tag · not used yet",
+      href: `/tasks?tag=${encodeURIComponent(tag.name)}`,
+    });
+  }
+
   for (const item of rows.inboxItems) {
     hits.push({
       id: `inbox-${item.id}`,
       group: "Inbox",
       title: item.title,
       subtitle: item.status === "open" ? "In your inbox" : `Inbox · ${item.status}`,
+      href: "/inbox",
+    });
+  }
+
+  for (const document of rows.documents) {
+    const kindLabel = documentKindLabel(document.kind);
+    hits.push({
+      id: `doc-${document.id}`,
+      group: "Documents",
+      title: document.name,
+      subtitle: `${document.issuer ? `${document.issuer} · ` : ""}${kindLabel} · ${describeExpiryDistance(document.expiryDate, referenceDay)}`,
       href: "/inbox",
     });
   }
@@ -219,7 +260,7 @@ export function buildSearchHits(rows: SearchRows, referenceDay: DayKey): SearchH
       id: `budget-${budget.id}`,
       group: "Budgets",
       title: `${label} budget`,
-      subtitle: `${formatMoney(budget.amount)} monthly`,
+      subtitle: `${formatMoney(budget.amount)} ${budget.period === "weekly" ? "weekly" : "monthly"}`,
       href: "/finance",
     });
   }

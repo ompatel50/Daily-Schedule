@@ -52,6 +52,7 @@ export default async function TasksPage() {
       date: item.date,
       status: item.status,
     })),
+    tags: task.tags.map((row) => row.tag.name),
   });
 
   const boardData: TaskBoardData = {
@@ -76,6 +77,7 @@ export default async function TasksPage() {
       title: task.title,
       completedDay: task.completedAt ? toDayKey(task.completedAt) : null,
     })),
+    tags: board.tags,
   };
 
   const overdueCount = boardData.buckets.overdue.length;

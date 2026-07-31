@@ -1,13 +1,18 @@
 import { describe, expect, it } from "vitest";
 
 import {
+  buildImportKey,
+  classifyImportUndoRow,
   detectDateOrder,
   detectFinanceCsvColumns,
   FINANCE_IMPORT_MAX_ROWS,
+  importedRowIsUnchanged,
   mapCsvCategory,
   parseCsvDate,
   parseFinanceCsv,
   parseMoneyValue,
+  planImportUndo,
+  type ImportUndoCandidate,
 } from "@/lib/logic/finance-import";
 
 const OPTS = { accountId: "acc1", accountCurrency: "USD" };
@@ -288,5 +293,118 @@ describe("parseFinanceCsv", () => {
     expect(parseFinanceCsv(content, { ...OPTS, dateOrder: "dmy" }).rows[0].date).toBe(
       "2026-04-03",
     );
+  });
+});
+
+// --- undo --------------------------------------------------------------------
+
+describe("import undo classification", () => {
+  /** A row exactly as the import wrote it. */
+  function imported(partial: Partial<ImportUndoCandidate> = {}): ImportUndoCandidate {
+    const base = {
+      id: "t1",
+      accountId: "acc1",
+      date: "2026-07-15",
+      amount: -42.5,
+      payee: "Corner Market",
+    };
+    return {
+      ...base,
+      importKey: buildImportKey(base, 0),
+      billId: null,
+      transferGroupId: null,
+      ...partial,
+    };
+  }
+
+  it("the key the parser writes is the key the undo check rebuilds", () => {
+    const [row] = parseFinanceCsv(
+      csv(["date,amount,description", "2026-07-15,-42.50,Corner Market"]),
+      OPTS,
+    ).rows;
+    expect(
+      importedRowIsUnchanged({
+        accountId: "acc1",
+        date: row.date,
+        amount: row.amount,
+        payee: row.payee,
+        importKey: row.importKey,
+      }),
+    ).toBe(true);
+  });
+
+  it("an untouched row is removed", () => {
+    expect(classifyImportUndoRow(imported())).toBe("remove");
+  });
+
+  it("recategorising or annotating a row does NOT protect it", () => {
+    // Category and notes are outside the import identity by design, so they
+    // are outside the undo decision too.
+    expect(classifyImportUndoRow(imported())).toBe("remove");
+  });
+
+  it("editing the amount, date, payee or account keeps the row", () => {
+    expect(classifyImportUndoRow(imported({ amount: -43.5 }))).toBe("keep_edited");
+    expect(classifyImportUndoRow(imported({ date: "2026-07-16" }))).toBe("keep_edited");
+    expect(classifyImportUndoRow(imported({ payee: "Corner Market #2" }))).toBe("keep_edited");
+    expect(classifyImportUndoRow(imported({ accountId: "acc2" }))).toBe("keep_edited");
+  });
+
+  it("payee comparison is case-insensitive, exactly like the import identity", () => {
+    expect(classifyImportUndoRow(imported({ payee: "CORNER MARKET" }))).toBe("remove");
+  });
+
+  it("a row that now settles a bill or belongs to a transfer is kept", () => {
+    expect(classifyImportUndoRow(imported({ billId: "bill1" }))).toBe("keep_linked");
+    expect(classifyImportUndoRow(imported({ transferGroupId: "grp1" }))).toBe("keep_linked");
+  });
+
+  it("a row with no key, or an unrecognised key, is kept — never guessed at", () => {
+    expect(classifyImportUndoRow(imported({ importKey: null }))).toBe("keep_edited");
+    expect(classifyImportUndoRow(imported({ importKey: "v2|whatever" }))).toBe("keep_edited");
+    expect(classifyImportUndoRow(imported({ importKey: "v1|acc1|2026-07-15|-42.5|x" }))).toBe(
+      "keep_edited",
+    );
+  });
+
+  it("a payee containing pipes still round-trips", () => {
+    const base = {
+      id: "t9",
+      accountId: "acc1",
+      date: "2026-07-15",
+      amount: -12,
+      payee: "A|B|3",
+    };
+    const row = { ...base, importKey: buildImportKey(base, 2), billId: null, transferGroupId: null };
+    expect(classifyImportUndoRow(row)).toBe("remove");
+    expect(classifyImportUndoRow({ ...row, amount: -13 })).toBe("keep_edited");
+  });
+
+  it("duplicate rows in one file undo independently by occurrence", () => {
+    const base = { accountId: "acc1", date: "2026-07-15", amount: -9, payee: "Coffee" };
+    const first = { ...base, id: "a", importKey: buildImportKey(base, 0), billId: null, transferGroupId: null };
+    const second = { ...base, id: "b", importKey: buildImportKey(base, 1), billId: null, transferGroupId: null };
+    const plan = planImportUndo([first, second]);
+    expect(plan.removeIds).toEqual(["a", "b"]);
+  });
+
+  it("the plan counts what it removes and what it keeps, and why", () => {
+    const plan = planImportUndo([
+      imported({ id: "a" }),
+      imported({ id: "b" }),
+      imported({ id: "c", amount: -1 }),
+      imported({ id: "d", billId: "bill1" }),
+    ]);
+    expect(plan.removeIds).toEqual(["a", "b"]);
+    expect(plan.removeCount).toBe(2);
+    expect(plan.keptEdited).toBe(1);
+    expect(plan.keptLinked).toBe(1);
+    expect(plan.keptCount).toBe(2);
+  });
+
+  it("an empty batch plans an empty, harmless undo", () => {
+    const plan = planImportUndo([]);
+    expect(plan.removeIds).toEqual([]);
+    expect(plan.keptCount).toBe(0);
   });
 });

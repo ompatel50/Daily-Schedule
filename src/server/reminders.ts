@@ -1,9 +1,17 @@
 import { getCurrentUser, prisma } from "@/lib/db";
 import { shiftDay, weekRange } from "@/lib/date";
-import { formatMoney, moneyRound } from "@/lib/logic/finance";
+import { FINANCE_CATEGORY_META, type FinanceCategory } from "@/lib/enums";
 import {
+  budgetPeriodOf,
+  budgetPeriodWindow,
+  formatMoney,
+  moneyRound,
+} from "@/lib/logic/finance";
+import {
+  budgetThresholdReminderKey,
   dueReminderKey,
   lowBalanceReminderKey,
+  resolveBudgetThresholdReminder,
   resolveClassicReminder,
   resolveDueReminder,
   resolveLowBalanceReminder,
@@ -17,6 +25,10 @@ import { scheduleSettingsFor } from "@/server/schedule";
 /** The furthest ahead any bill's run-up reminder can start (validation caps
  *  `reminderDaysBefore` at 60), so the feed never scans past this horizon. */
 const BILL_REMINDER_HORIZON_DAYS = 60;
+
+/** The same bound for documents, whose lead time may be a whole year (a
+ *  passport renewal is worth six months' notice). */
+const DOCUMENT_REMINDER_HORIZON_DAYS = 365;
 
 /**
  * The reminder feed: every occurrence that is *allowed* to fire today, fully
@@ -45,7 +57,16 @@ export async function getReminderFeedFor(user: {
   const date = settings.today;
   const weekStart = weekRange(date, user.weekStartsOn === 0 ? 0 : 1).start;
 
-  const [reminders, habits, goals, dueBills, dueTasks, watchedAccounts] = await Promise.all([
+  const [
+    reminders,
+    habits,
+    goals,
+    dueBills,
+    dueTasks,
+    watchedAccounts,
+    expiringDocuments,
+    watchedBudgets,
+  ] = await Promise.all([
     prisma.reminder.findMany({
       where: { userId: user.id, enabled: true },
       include: { scheduleItem: { select: { status: true } } },
@@ -73,6 +94,24 @@ export async function getReminderFeedFor(user: {
       select: { id: true, name: true, currency: true, openingBalance: true, lowBalanceThreshold: true },
       take: 100,
     }),
+    // Documents whose expiry is inside the widest run-up any of them can ask
+    // for. Already-expired ones are deliberately outside the window: the
+    // resolver stays silent for them, and the page carries that state.
+    prisma.lifeDocument.findMany({
+      where: {
+        userId: user.id,
+        reminderEnabled: true,
+        archivedAt: null,
+        expiryDate: { gte: date, lte: shiftDay(date, DOCUMENT_REMINDER_HORIZON_DAYS) },
+      },
+      take: 200,
+    }),
+    // Budgets with a threshold alert configured. Spending for exactly these
+    // categories is summed below, and only when any exist.
+    prisma.budget.findMany({
+      where: { userId: user.id, alertThresholdPercent: { not: null } },
+      take: 100,
+    }),
   ]);
 
   const balanceByAccount = new Map<string, number>();
@@ -83,6 +122,45 @@ export async function getReminderFeedFor(user: {
       _sum: { amount: true },
     });
     for (const row of totals) balanceByAccount.set(row.accountId, row._sum.amount ?? 0);
+  }
+
+  // Budget spending: at most ONE grouped query per period actually in use
+  // (two, today), each filtered to that period's window, that period's
+  // categories and money-out rows only. A hundred budgets cost the same.
+  const budgetWindowByPeriod = new Map<string, { start: string; end: string }>();
+  const budgetSpentByPeriod = new Map<string, Map<string, number>>();
+  if (watchedBudgets.length > 0) {
+    const categoriesByPeriod = new Map<string, Set<string>>();
+    for (const budget of watchedBudgets) {
+      const period = budgetPeriodOf(budget.period);
+      if (!budgetWindowByPeriod.has(period)) {
+        budgetWindowByPeriod.set(
+          period,
+          budgetPeriodWindow(period, date, user.weekStartsOn === 0 ? 0 : 1),
+        );
+      }
+      const categories = categoriesByPeriod.get(period) ?? new Set<string>();
+      categories.add(budget.category);
+      categoriesByPeriod.set(period, categories);
+    }
+
+    for (const [period, categories] of categoriesByPeriod) {
+      const window = budgetWindowByPeriod.get(period)!;
+      const totals = await prisma.financeTransaction.groupBy({
+        by: ["category"],
+        where: {
+          userId: user.id,
+          category: { in: Array.from(categories) },
+          date: { gte: window.start, lte: window.end },
+          amount: { lt: 0 },
+        },
+        _sum: { amount: true },
+      });
+      budgetSpentByPeriod.set(
+        period,
+        new Map(totals.map((row) => [row.category, -(row._sum.amount ?? 0)])),
+      );
+    }
   }
 
   // One round trip for the delivery ledger: today's schedule keys are
@@ -97,6 +175,17 @@ export async function getReminderFeedFor(user: {
     ]),
     ...dueTasks.map((task) => dueReminderKey("task", task.id, date)),
     ...watchedAccounts.map((account) => lowBalanceReminderKey(account.id, weekStart)),
+    ...expiringDocuments.flatMap((document) => [
+      dueReminderKey("document", document.id, document.expiryDate),
+      dueReminderKey("document", document.id, document.expiryDate, true),
+    ]),
+    ...watchedBudgets.map((budget) =>
+      budgetThresholdReminderKey(
+        budget.id,
+        budgetWindowByPeriod.get(budgetPeriodOf(budget.period))?.start ?? date,
+        budget.alertThresholdPercent ?? 0,
+      ),
+    ),
   ];
   const delivered = await prisma.reminderDelivery.findMany({
     where: { userId: user.id, key: { in: candidateKeys } },
@@ -193,6 +282,52 @@ export async function getReminderFeedFor(user: {
       inactive: false,
       daysBefore: 0,
       detail: null,
+      deliveredKeys,
+    });
+    if (resolved.ok) occurrences.push(resolved.occurrence);
+  }
+
+  // Documents & renewals — the same due-date resolver, worded as an expiry.
+  // Renewing a document moves its expiry date, which arms the next occurrence
+  // on its own (exactly how paying a bill advances the next one).
+  for (const document of expiringDocuments) {
+    const resolved = resolveDueReminder({
+      kind: "document",
+      ownerId: document.id,
+      name: document.name,
+      dueDate: document.expiryDate,
+      today: date,
+      enabled: document.reminderEnabled,
+      completed: false,
+      inactive: document.archivedAt !== null,
+      daysBefore: document.reminderDaysBefore,
+      detail: document.issuer,
+      deliveredKeys,
+    });
+    if (resolved.ok) occurrences.push(resolved.occurrence);
+  }
+
+  // Budget thresholds — once per budget per period per threshold, so crossing
+  // 75 % says so on the day it happens and then stays quiet for the rest of
+  // the window.
+  for (const budget of watchedBudgets) {
+    const period = budgetPeriodOf(budget.period);
+    const window = budgetWindowByPeriod.get(period);
+    if (!window) continue;
+    const spent = moneyRound(budgetSpentByPeriod.get(period)?.get(budget.category) ?? 0);
+    const label =
+      FINANCE_CATEGORY_META[budget.category as FinanceCategory]?.label ?? budget.category;
+    const resolved = resolveBudgetThresholdReminder({
+      budgetId: budget.id,
+      label,
+      periodStart: window.start,
+      spent,
+      target: budget.amount,
+      threshold: budget.alertThresholdPercent,
+      today: date,
+      detail: `${formatMoney(spent)} of ${formatMoney(budget.amount)} ${
+        period === "weekly" ? "this week" : "this month"
+      }`,
       deliveredKeys,
     });
     if (resolved.ok) occurrences.push(resolved.occurrence);

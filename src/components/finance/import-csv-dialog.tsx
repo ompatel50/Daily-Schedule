@@ -362,6 +362,13 @@ export function ImportCsvDialog({
                 {report.createdCount} created · {report.skippedCount} skipped as duplicates ·{" "}
                 {report.rejectedCount} rejected. Balances and summaries are up to date.
               </p>
+              {report.createdCount > 0 && (
+                <p className="text-muted-foreground">
+                  Changed your mind? Undo this import from{" "}
+                  <span className="font-medium text-foreground">CSV imports</span> on this page —
+                  it removes exactly the rows it created.
+                </p>
+              )}
             </div>
           )}
         </div>

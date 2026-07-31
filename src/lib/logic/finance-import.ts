@@ -461,7 +461,7 @@ export function parseFinanceCsv(
       payee,
       category,
       notes,
-      importKey: `v1|${options.accountId}|${identity}|${occurrence}`,
+      importKey: buildImportKey({ accountId: options.accountId, date, amount, payee }, occurrence),
     });
   }
 
@@ -470,4 +470,101 @@ export function parseFinanceCsv(
   }
   result.invalidShown = result.invalid.slice(0, MAX_ROW_ERRORS);
   return result;
+}
+
+// --- import identity & undo --------------------------------------------------
+
+/** The row fields the import identity is built from. */
+export interface ImportIdentityFields {
+  accountId: string;
+  date: DayKey;
+  amount: number;
+  payee: string | null;
+}
+
+/**
+ * The one place the dedup key is spelled. `occurrence` distinguishes rows that
+ * are identical within a single file (n = 0, 1, …).
+ */
+export function buildImportKey(fields: ImportIdentityFields, occurrence: number): string {
+  return `v1|${fields.accountId}|${fields.date}|${fields.amount}|${(fields.payee ?? "").toLowerCase()}|${occurrence}`;
+}
+
+/**
+ * Does this ledger row still say exactly what the import wrote?
+ *
+ * The check rebuilds the key from the row's CURRENT account, date, amount and
+ * payee (reusing the occurrence the stored key ends with) and compares. So:
+ *
+ *   · re-categorising or annotating an imported row leaves it matching —
+ *     category and notes are deliberately outside the identity, exactly as
+ *     they are for duplicate detection;
+ *   · changing its date, amount, payee or account makes it stop matching,
+ *     because the row no longer describes the transaction the file did.
+ *
+ * A row with no key, or one whose key is not in the current format, is treated
+ * as not matching — undo keeps what it cannot positively identify.
+ */
+export function importedRowIsUnchanged(
+  row: ImportIdentityFields & { importKey: string | null },
+): boolean {
+  if (!row.importKey) return false;
+  const occurrence = /\|(\d+)$/.exec(row.importKey)?.[1];
+  if (occurrence === undefined) return false;
+  return buildImportKey(row, Number(occurrence)) === row.importKey;
+}
+
+/**
+ * What an undo does with one row the batch created.
+ *
+ *   remove       — untouched since the import; the undo deletes it
+ *   keep_edited  — edited since (date/amount/payee/account changed); kept,
+ *                  because deleting it would throw away the user's own work
+ *   keep_linked  — since given a meaning beyond the import (it settles a bill,
+ *                  or it is one leg of a transfer); kept, because removing it
+ *                  would corrupt the record it is now part of
+ */
+export type ImportUndoDecision = "remove" | "keep_edited" | "keep_linked";
+
+export interface ImportUndoCandidate extends ImportIdentityFields {
+  id: string;
+  importKey: string | null;
+  billId: string | null;
+  transferGroupId: string | null;
+}
+
+export function classifyImportUndoRow(row: ImportUndoCandidate): ImportUndoDecision {
+  if (row.billId !== null || row.transferGroupId !== null) return "keep_linked";
+  return importedRowIsUnchanged(row) ? "remove" : "keep_edited";
+}
+
+export interface ImportUndoPlan {
+  /** Ids the undo will delete. */
+  removeIds: string[];
+  removeCount: number;
+  keptEdited: number;
+  keptLinked: number;
+  get keptCount(): number;
+}
+
+/** Split a batch's rows into "undo removes this" and "undo keeps this". */
+export function planImportUndo(rows: ImportUndoCandidate[]): ImportUndoPlan {
+  const removeIds: string[] = [];
+  let keptEdited = 0;
+  let keptLinked = 0;
+  for (const row of rows) {
+    const decision = classifyImportUndoRow(row);
+    if (decision === "remove") removeIds.push(row.id);
+    else if (decision === "keep_edited") keptEdited += 1;
+    else keptLinked += 1;
+  }
+  return {
+    removeIds,
+    removeCount: removeIds.length,
+    keptEdited,
+    keptLinked,
+    get keptCount() {
+      return this.keptEdited + this.keptLinked;
+    },
+  };
 }

@@ -496,7 +496,7 @@ describe("budgets", () => {
     const summary = await getFinanceSummary();
     expect(summary.budgets.count).toBe(2);
     expect(summary.budgets.overCount).toBe(1);
-    expect(summary.budgets.worst).toEqual({ label: "Dining", percent: 130 });
+    expect(summary.budgets.worst).toEqual({ label: "Dining", percent: 130, period: "monthly" });
   });
 });
 

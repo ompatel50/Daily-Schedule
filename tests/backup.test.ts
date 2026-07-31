@@ -53,7 +53,6 @@ describe("backup validation", () => {
   });
 
   it("v5 carries the finance-workflow tables and counts their rows", () => {
-    expect(BACKUP_VERSION).toBe(5);
     expect(BACKUP_TABLES).toContain("budgets");
     expect(BACKUP_TABLES).toContain("financeImportBatches");
     // Restore order: tasks precede the schedule items that may link to them,
@@ -70,6 +69,38 @@ describe("backup validation", () => {
     expect(result.counts.budgets).toBe(1);
     expect(result.counts.financeImportBatches).toBe(1);
     expect(result.warnings.join(" ")).not.toContain("unrecognised");
+  });
+
+  it("v6 carries documents and task tags, in an order the links survive", () => {
+    expect(BACKUP_VERSION).toBe(6);
+    expect(BACKUP_TABLES).toContain("documents");
+    expect(BACKUP_TABLES).toContain("taskTags");
+    // A tag join needs BOTH ends already restored.
+    expect(BACKUP_TABLES.indexOf("tags")).toBeLessThan(BACKUP_TABLES.indexOf("taskTags"));
+    expect(BACKUP_TABLES.indexOf("tasks")).toBeLessThan(BACKUP_TABLES.indexOf("taskTags"));
+
+    const result = inspectBackup(
+      backup({
+        data: {
+          documents: [{ id: "d1" }, { id: "d2" }],
+          taskTags: [{ taskId: "t1", tagId: "g1" }],
+        },
+      }),
+    );
+    expect(result.ok).toBe(true);
+    expect(result.counts.documents).toBe(2);
+    expect(result.counts.taskTags).toBe(1);
+    expect(result.warnings.join(" ")).not.toContain("unrecognised");
+  });
+
+  it("a v5 file (no documents, no task tags) still inspects cleanly", () => {
+    const result = inspectBackup(
+      backup({ version: 5, data: { budgets: [{ id: "b1" }], tasks: [{ id: "t1" }] } }),
+    );
+    expect(result.ok).toBe(true);
+    expect(result.counts.documents).toBe(0);
+    expect(result.counts.taskTags).toBe(0);
+    expect(result.warnings.join(" ")).toContain("format v5");
   });
 
   it("a v4 file (no budgets, no import batches) still inspects cleanly", () => {

@@ -131,6 +131,74 @@ export function describeRepeat(repeat: string, every: number): string {
   return `Every ${every} ${noun}`;
 }
 
+// --- tags --------------------------------------------------------------------
+
+/**
+ * Tags are labels, not containers. A task has one project (where it belongs)
+ * and any number of tags (how you want to slice it) — the cap keeps that a
+ * label list rather than a second hierarchy, and keeps a task row's chip strip
+ * readable.
+ */
+export const TASK_TAG_LIMIT = 8;
+export const TAG_NAME_MAX = 30;
+
+/**
+ * One spelling per tag: trimmed, lower-cased, inner whitespace collapsed. The
+ * planner's `createTag` has always stored lower-case names, so tasks and
+ * planner blocks share one vocabulary instead of accumulating "Work"/"work".
+ * Returns "" for anything that normalises to nothing.
+ */
+export function normalizeTagName(raw: string): string {
+  return raw.trim().replace(/\s+/g, " ").toLowerCase().slice(0, TAG_NAME_MAX);
+}
+
+/** Normalise, drop blanks, de-duplicate, cap — in first-seen order. */
+export function normalizeTagNames(raw: readonly string[]): string[] {
+  const seen = new Set<string>();
+  const names: string[] = [];
+  for (const value of raw) {
+    const name = normalizeTagName(value);
+    if (!name || seen.has(name)) continue;
+    seen.add(name);
+    names.push(name);
+    if (names.length >= TASK_TAG_LIMIT) break;
+  }
+  return names;
+}
+
+/** Anything carrying a list of tag NAMES — the shape server and client share. */
+export interface TaggedLike {
+  tags: readonly string[];
+}
+
+/**
+ * Items carrying EVERY selected tag (AND, not OR): filters narrow, which is
+ * what makes stacking two of them useful. An empty selection filters nothing.
+ */
+export function filterByTags<T extends TaggedLike>(items: T[], selected: readonly string[]): T[] {
+  const wanted = normalizeTagNames(selected);
+  if (wanted.length === 0) return items;
+  return items.filter((item) => {
+    const names = new Set(item.tags.map(normalizeTagName));
+    return wanted.every((name) => names.has(name));
+  });
+}
+
+/** Tag names in use across a set of items, with counts, most-used first. */
+export function tagUsage<T extends TaggedLike>(items: T[]): Array<{ name: string; count: number }> {
+  const counts = new Map<string, number>();
+  for (const item of items) {
+    for (const raw of item.tags) {
+      const name = normalizeTagName(raw);
+      if (!name) continue;
+      counts.set(name, (counts.get(name) ?? 0) + 1);
+    }
+  }
+  return Array.from(counts.entries())
+    .map(([name, count]) => ({ name, count }))
+    .sort((a, b) => b.count - a.count || a.name.localeCompare(b.name));
+}
+
 // --- projects ----------------------------------------------------------------
 
 export interface ProjectProgress {

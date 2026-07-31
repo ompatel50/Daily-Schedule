@@ -4,6 +4,9 @@ import {
   BILL_KINDS,
   BILL_RECURRENCES,
   BUDGETABLE_CATEGORIES,
+  BUDGET_ALERT_THRESHOLDS,
+  BUDGET_PERIODS,
+  DOCUMENT_KINDS,
   FINANCE_CATEGORIES,
   isBookkeepingCategory,
   FOOD_CATEGORIES,
@@ -25,6 +28,7 @@ import { GOAL_COMPARISONS, GOAL_SOURCES } from "./logic/goals";
 import { TEMPLATE_APPLY_MODES } from "./logic/planner";
 import { DAYPARTS, OVERRIDE_KINDS, SCHEDULE_MODES } from "./logic/schedule";
 import { NUTRIENT_BASES } from "./logic/servings";
+import { normalizeTagNames, TAG_NAME_MAX, TASK_TAG_LIMIT } from "./logic/tasks";
 
 /** Every server action validates its input through one of these schemas. */
 
@@ -447,6 +451,16 @@ export const taskSchema = z
     repeat: z.enum(REPEAT_UNITS).default("none"),
     repeatEvery: z.number().int().min(1).max(365).default(1),
     reminderEnabled: z.boolean().default(false),
+    /**
+     * Tag NAMES, not ids: a tag is created by typing it. The transform
+     * normalises spelling, drops blanks and duplicates, and caps the list, so
+     * the action layer only ever sees a clean vocabulary.
+     */
+    tags: z
+      .array(z.string().max(TAG_NAME_MAX * 2))
+      .max(TASK_TAG_LIMIT * 4, `Up to ${TASK_TAG_LIMIT} tags per task`)
+      .default([])
+      .transform((values) => normalizeTagNames(values)),
   })
   .refine((value) => value.repeat === "none" || Boolean(value.dueDate), {
     message: "A repeating task needs a due date to repeat from",
@@ -580,15 +594,42 @@ export const transferSchema = z
 
 export type TransferInput = z.infer<typeof transferSchema>;
 
-/** One budget per spending category; monthly is the only window so far. */
+/** One budget per spending category, measured over a monthly or weekly window. */
 export const budgetSchema = z.object({
   id: z.string().optional(),
   category: z.enum(BUDGETABLE_CATEGORIES as [string, ...string[]]),
   amount: money.refine((value) => value > 0, "The target must be above zero"),
-  period: z.enum(["monthly"]).default("monthly"),
+  period: z.enum(BUDGET_PERIODS).default("monthly"),
+  /** Warn once per period at this share of the target; null = no alert. */
+  alertThresholdPercent: z
+    .union([
+      z.literal(BUDGET_ALERT_THRESHOLDS[0]),
+      z.literal(BUDGET_ALERT_THRESHOLDS[1]),
+      z.literal(BUDGET_ALERT_THRESHOLDS[2]),
+      z.literal(BUDGET_ALERT_THRESHOLDS[3]),
+    ])
+    .nullable()
+    .optional(),
 });
 
 export type BudgetInput = z.infer<typeof budgetSchema>;
+
+// --- documents & renewals ----------------------------------------------------
+
+/** Something with an expiry date worth being reminded about. */
+export const documentSchema = z.object({
+  id: z.string().optional(),
+  name: z.string().trim().min(1, "Give it a name").max(120),
+  kind: z.enum(DOCUMENT_KINDS).default("other"),
+  issuer: z.string().max(120).nullable().optional(),
+  expiryDate: dayKey,
+  notes: z.string().max(2000).nullable().optional(),
+  reminderEnabled: z.boolean().default(true),
+  /** Remind this many days before expiry (0 = only on the day). */
+  reminderDaysBefore: z.number().int().min(0).max(365).default(30),
+});
+
+export type DocumentInput = z.infer<typeof documentSchema>;
 
 /**
  * A CSV import request — preview and commit share it, so what was previewed is

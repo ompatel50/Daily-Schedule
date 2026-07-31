@@ -269,7 +269,13 @@ export async function saveBudget(input: unknown): Promise<ActionResult<{ id: str
   if (!parsed.success) return fromZod(parsed.error);
   const user = await getCurrentUser();
   const { id, ...data } = parsed.data;
-  const payload = { ...data, amount: moneyRound(data.amount) };
+  const payload = {
+    ...data,
+    amount: moneyRound(data.amount),
+    // Explicit null rather than `undefined`: clearing the alert on an edit has
+    // to write the column, not silently leave the old threshold in place.
+    alertThresholdPercent: data.alertThresholdPercent ?? null,
+  };
   const categoryLabel =
     FINANCE_CATEGORY_META[data.category as FinanceCategory]?.label ?? data.category;
 

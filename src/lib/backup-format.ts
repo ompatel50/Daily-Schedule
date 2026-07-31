@@ -29,15 +29,19 @@
  *      `importBatchId`, accounts a `lowBalanceThreshold`, and schedule items
  *      and inbox items an optional `taskId` link. Tasks and projects moved
  *      ahead of schedule items in restore order for that link.
+ * v6 — adds documents & renewals (`documents`) and task tags (`taskTags`,
+ *      the join onto the existing `tags` vocabulary); budgets now carry
+ *      `period` (monthly | weekly) and `alertThresholdPercent`, and import
+ *      batches the undo stamp (`undoneAt`, `undoneCount`, `keptCount`).
  *
- * A v1–v4 file restores into a v5 app unchanged: the missing tables simply
- * have no rows, the new columns take their defaults, `npm run db:migrate`
- * backfills an every-day schedule for anything that arrives without one, and
- * metric rows that arrive without a fingerprint get one from the same
- * migration — which is exactly how those records behaved when the older
- * backup was taken.
+ * A v1–v5 file restores into a v6 app unchanged: the missing tables simply
+ * have no rows, the new columns take their defaults (a v5 budget arrives as
+ * the monthly, alert-free budget it was), `npm run db:migrate` backfills an
+ * every-day schedule for anything that arrives without one, and metric rows
+ * that arrive without a fingerprint get one from the same migration — which
+ * is exactly how those records behaved when the older backup was taken.
  */
-export const BACKUP_VERSION = 5;
+export const BACKUP_VERSION = 6;
 
 export interface BackupMetadata {
   /** Schema version of the backup format itself. */
@@ -78,6 +82,7 @@ export const BACKUP_TABLES = [
   // it was created from, and the task row must exist first.
   "projects",
   "tasks",
+  "taskTags",
   "scheduleItems",
   "scheduleItemTags",
   "habitLogs",
@@ -103,6 +108,7 @@ export const BACKUP_TABLES = [
   "savingsGoals",
   "budgets",
   "inboxItems",
+  "documents",
   "seedBatches",
   "seedRecords",
 ] as const;

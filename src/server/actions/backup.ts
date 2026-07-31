@@ -58,6 +58,7 @@ export async function exportBackup(): Promise<ActionResult<BackupFile>> {
     tags,
     projects,
     tasks,
+    taskTags,
     financeAccounts,
     financeImportBatches,
     bills,
@@ -65,6 +66,7 @@ export async function exportBackup(): Promise<ActionResult<BackupFile>> {
     savingsGoals,
     budgets,
     inboxItems,
+    documents,
     seedBatches,
     seedRecords,
   ] = await Promise.all([
@@ -116,6 +118,7 @@ export async function exportBackup(): Promise<ActionResult<BackupFile>> {
     prisma.tag.findMany({ where: { userId: user.id } }),
     prisma.project.findMany({ where: { userId: user.id } }),
     prisma.task.findMany({ where: { userId: user.id } }),
+    prisma.taskTag.findMany({ where: { task: { userId: user.id } } }),
     prisma.financeAccount.findMany({ where: { userId: user.id } }),
     prisma.financeImportBatch.findMany({ where: { userId: user.id } }),
     prisma.bill.findMany({ where: { userId: user.id } }),
@@ -123,6 +126,7 @@ export async function exportBackup(): Promise<ActionResult<BackupFile>> {
     prisma.savingsGoal.findMany({ where: { userId: user.id } }),
     prisma.budget.findMany({ where: { userId: user.id } }),
     prisma.inboxItem.findMany({ where: { userId: user.id } }),
+    prisma.lifeDocument.findMany({ where: { userId: user.id } }),
     prisma.seedBatch.findMany({ where: { userId: user.id } }),
     prisma.seedRecord.findMany({ where: { batch: { userId: user.id } } }),
   ]);
@@ -180,6 +184,7 @@ export async function exportBackup(): Promise<ActionResult<BackupFile>> {
     favorites,
     projects,
     tasks,
+    taskTags,
     financeAccounts,
     financeImportBatches,
     bills,
@@ -187,6 +192,7 @@ export async function exportBackup(): Promise<ActionResult<BackupFile>> {
     savingsGoals,
     budgets,
     inboxItems,
+    documents,
     seedBatches,
     seedRecords,
   };
