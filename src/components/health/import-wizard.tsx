@@ -35,7 +35,14 @@ import type { ImportOutcome, ImportPreviewResult } from "@/server/health-import"
  * megabytes — an Apple Health export is routinely far larger, and the route
  * streams it to disk instead.
  */
-export function ImportWizard({ compact = false }: { compact?: boolean }) {
+export function ImportWizard({
+  compact = false,
+  limitNote,
+}: {
+  compact?: boolean;
+  /** What this deployment will actually accept, resolved on the server. */
+  limitNote?: string;
+}) {
   const router = useRouter();
   const fileRef = React.useRef<HTMLInputElement>(null);
   const [open, setOpen] = React.useState(false);
@@ -160,6 +167,7 @@ export function ImportWizard({ compact = false }: { compact?: boolean }) {
           Apple Health <code>export.zip</code>, <code>export.xml</code> or a CSV. The file is read
           on the server, in your account only, and is deleted the moment the preview is ready —
           nothing is saved to your health records until you confirm.
+          {limitNote ? ` ${limitNote}` : ""}
         </p>
       )}
 
@@ -177,13 +185,24 @@ export function ImportWizard({ compact = false }: { compact?: boolean }) {
               </DialogHeader>
               <div className="grid grid-cols-2 gap-2 text-sm sm:grid-cols-3">
                 <OutcomeStat label="New records" value={outcome.imported} />
-                <OutcomeStat label="Refreshed" value={outcome.updated} />
+                <OutcomeStat label="Merged" value={outcome.updated} />
                 <OutcomeStat label="Already present" value={outcome.duplicates} />
+                <OutcomeStat label="Kept as yours" value={outcome.protectedRows} />
                 <OutcomeStat label="Workouts added" value={outcome.workoutsImported} />
                 <OutcomeStat label="Workouts skipped" value={outcome.workoutsSkipped} />
                 <OutcomeStat label="Health records" value={outcome.recordsImported} />
                 <OutcomeStat label="Days recalculated" value={outcome.recomputedDays} />
               </div>
+              {outcome.protectedRows > 0 && (
+                <p className="rounded-lg border border-dashed px-3 py-2 text-xs text-muted-foreground">
+                  <span className="font-medium text-foreground">
+                    {formatNumber(outcome.protectedRows)} reading
+                    {outcome.protectedRows === 1 ? "" : "s"} were left exactly as they were.
+                  </span>{" "}
+                  You had edited them since importing, or entered them yourself — the file&rsquo;s
+                  values for those days were not written over.
+                </p>
+              )}
               <DialogFooter>
                 <Button onClick={closeAfterDone}>Done</Button>
               </DialogFooter>
@@ -238,16 +257,23 @@ export function ImportWizard({ compact = false }: { compact?: boolean }) {
                             ? ` · ${category.dateFrom} → ${category.dateTo}`
                             : ""}
                         </p>
+                        {/* Added vs merged vs skipped vs protected, per
+                            category, before anything is written. */}
                         <div className="mt-1 flex flex-wrap gap-1.5 text-[11px]">
                           {category.newRows > 0 && (
                             <Badge variant="muted">{formatNumber(category.newRows)} new</Badge>
                           )}
                           {category.updatedRows > 0 && (
-                            <Badge variant="muted">{formatNumber(category.updatedRows)} refreshed</Badge>
+                            <Badge variant="muted">{formatNumber(category.updatedRows)} merged</Badge>
                           )}
                           {category.unchangedRows > 0 && (
                             <Badge variant="muted">
                               {formatNumber(category.unchangedRows)} already present
+                            </Badge>
+                          )}
+                          {category.protectedRows > 0 && (
+                            <Badge variant="outline" title="Left exactly as they are">
+                              {formatNumber(category.protectedRows)} kept as yours
                             </Badge>
                           )}
                         </div>

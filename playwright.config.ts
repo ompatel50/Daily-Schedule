@@ -1,3 +1,5 @@
+import { randomUUID } from "node:crypto";
+
 import { defineConfig, devices } from "@playwright/test";
 
 /**
@@ -15,6 +17,28 @@ import { defineConfig, devices } from "@playwright/test";
  * export it; it must point at a cache matching the installed @playwright/test.
  */
 process.env.PLAYWRIGHT_BROWSERS_PATH ??= "/opt/pw-browsers";
+
+/**
+ * A distinct client identity per run — the fix for a real flake.
+ *
+ * Sign-up, sign-in and recovery are fenced by a database-backed per-client
+ * rate limit keyed on the forwarding headers a proxy sets. A local `npm start`
+ * sits behind no proxy, so every request from every run resolved to the same
+ * `unknown` bucket: the sign-up journey spends two of the eight hourly
+ * attempts, and the fourth consecutive run in an hour started failing with
+ * "rate-limited" — the suite tripping the application's own abuse protection
+ * because the test environment made every run look like one persistent client.
+ *
+ * Each run now presents itself as its own client, which is what separate runs
+ * genuinely are. The protection is untouched and still enforced: a single run
+ * that exceeded a fence would still be refused, which is what
+ * tests/integration/signup-flow.test.ts asserts directly.
+ *
+ * Assigned here, in the runner process, so every worker inherits the same
+ * value through the environment — the same mechanism the browser path above
+ * relies on.
+ */
+process.env.E2E_CLIENT_ADDRESS ??= `e2e-run-${randomUUID()}`;
 
 export default defineConfig({
   // CI runs against a freshly-migrated empty database; the one spec that
@@ -35,6 +59,9 @@ export default defineConfig({
   use: {
     baseURL: "http://localhost:3000",
     trace: "retain-on-failure",
+    // See E2E_CLIENT_ADDRESS above. Applies to page navigations and to the
+    // server-action POSTs the forms make, which is where the fences live.
+    extraHTTPHeaders: { "x-forwarded-for": process.env.E2E_CLIENT_ADDRESS as string },
   },
   projects: [
     // Signs in each test account once and stores the session cookie; every

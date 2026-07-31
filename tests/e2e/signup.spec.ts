@@ -55,7 +55,12 @@ test.describe.serial("public sign-up journey", () => {
 
     await page.getByRole("button", { name: "Account" }).click();
     await page.getByRole("menuitem", { name: "Sign out" }).click();
-    await expect(page).toHaveURL(/\/signin/);
+    // A server round trip: sign out, then a render of /signin. The suite runs
+    // two workers, so this can coincide with the import spec's large write
+    // transaction in the other one; the default 10 s expect timeout is not
+    // always enough for that, and the flow itself is not racy (20 stress
+    // repeats in isolation are clean). What is asserted is unchanged.
+    await expect(page).toHaveURL(/\/signin/, { timeout: 30_000 });
 
     // The session really ended: the app is fenced again.
     await page.goto("/today");
@@ -91,7 +96,7 @@ test.describe.serial("public sign-up journey", () => {
     // …and the burned code never works twice.
     await page.getByRole("button", { name: "Account" }).click();
     await page.getByRole("menuitem", { name: "Sign out" }).click();
-    await expect(page).toHaveURL(/\/signin/);
+    await expect(page).toHaveURL(/\/signin/, { timeout: 30_000 });
 
     await page.goto("/forgot-password");
     await page.locator("#reset-email").fill(EMAIL);

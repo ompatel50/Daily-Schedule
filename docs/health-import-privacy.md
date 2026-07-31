@@ -124,7 +124,13 @@ only what is genuinely new. You never have to remember what you imported last.
 * **A very large export takes minutes**, most of it streaming and parsing. The import page shows
   progress; the batch records how long it actually took.
 * **A hosting platform's own limits bind before this app's do.** Vercel caps request body size
-  and execution time per plan; a self-hosted deployment has neither cap. If an export is large
-  enough to be refused by the platform, self-hosting is the answer.
+  and execution time per plan; a self-hosted deployment has neither cap. The app detects this and
+  advertises the smaller, truthful number — the import page states what the deployment will
+  actually accept, and a refusal says the platform is the reason. `HEALTH_MAX_UPLOAD_MB`
+  overrides it when you know your real limit. If an export is larger than the platform allows,
+  self-hosting is the answer.
+* **A re-import will not overwrite a reading you edited.** It is reported as kept, not written
+  over, and counted on the import's own history row. See the merge rules in
+  [`health-module.md`](health-module.md).
 * **An in-flight upload does not survive leaving the page.** Nothing partial is written; pick
   the file again.

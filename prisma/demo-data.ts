@@ -30,6 +30,7 @@ import { addDays, addMonths, format, startOfMonth, subDays, subMonths } from "da
 import { SEED_FOODS } from "../src/lib/data/foods";
 import { moneyRound } from "../src/lib/logic/finance";
 import { fingerprintFor, manualDailyFingerprint } from "../src/lib/logic/health-import/rollup";
+import { IMPORT_FORMAT_VERSION } from "../src/lib/logic/health-import/version";
 // The seed calls the app's real aggregation rather than keeping its own copy of
 // the scoring formula. It used to duplicate scoreDay() by hand, which meant
 // seeded history and live recomputation could drift apart silently.
@@ -1367,9 +1368,13 @@ async function seedImportedHealth(prisma: DbClient, userId: string): Promise<voi
         "raw FHIR payloads — only their index is read",
       ]),
       xmlBytes: BigInt(1_842_301_774),
+      formatVersion: IMPORT_FORMAT_VERSION,
       startedAt,
       finishedAt,
       durationMs: finishedAt.getTime() - startedAt.getTime(),
+      // `createdAt` defaults to now(); without this the history row would say
+      // the import ran today while the run's own timings said two days ago.
+      createdAt: startedAt,
     },
   });
 
@@ -1502,12 +1507,20 @@ async function seedImportedHealth(prisma: DbClient, userId: string): Promise<voi
 
   // Written in batches: the same shape a real confirm uses, and the only way
   // a 70-day multi-metric seed stays a handful of statements.
+  //
+  // Every row is stamped with the batch's own `finishedAt`. Undo's boundary is
+  // that instant, so rows left at their default `now()` would all be classified
+  // as "edited after the import" — and the demo's undo preview would offer to
+  // remove nothing while claiming the user had personally corrected 1,682
+  // readings. The timestamps have to agree with the run that wrote them.
   const CHUNK = 500;
   for (let index = 0; index < rows.length; index += CHUNK) {
     await prisma.healthMetric.createMany({
       data: rows.slice(index, index + CHUNK).map((row) => ({
         userId,
         batchId: batch.id,
+        createdAt: finishedAt,
+        updatedAt: finishedAt,
         date: row.date,
         type: row.type,
         subtype: row.subtype,
@@ -1556,6 +1569,10 @@ async function seedImportedHealth(prisma: DbClient, userId: string): Promise<voi
     await prisma.workout.create({
       data: {
         userId,
+        // Same reason as the metric rows above: undo compares against the
+        // batch's `finishedAt`, so a row stamped `now()` reads as user-edited.
+        createdAt: finishedAt,
+        updatedAt: finishedAt,
         date: day(workout.offset),
         time: "18:00",
         name: workout.activity,
@@ -1629,6 +1646,8 @@ async function seedImportedHealth(prisma: DbClient, userId: string): Promise<voi
       data: {
         userId,
         batchId: batch.id,
+        createdAt: finishedAt,
+        updatedAt: finishedAt,
         kind: record.kind,
         date: day(record.offset),
         recordedAt,
@@ -1656,6 +1675,126 @@ async function seedImportedHealth(prisma: DbClient, userId: string): Promise<voi
       workoutsSkipped: 2,
       recordsImported: records.length,
     },
+  });
+
+  await seedEarlierScaleImport(prisma, userId);
+  await seedFailedImport(prisma, userId);
+}
+
+/**
+ * A third batch: one that failed.
+ *
+ * It owns no rows — that is precisely what a rolled-back import is — so it
+ * costs the demo nothing and shows two things a healthy-looking history never
+ * would: what a failure looks like, and that a failure wrote nothing. It also
+ * gives the history's status filters and search box more than one answer to
+ * return, which is the only way those controls can be judged.
+ */
+async function seedFailedImport(prisma: DbClient, userId: string): Promise<void> {
+  const startedAt = subDays(new Date(), 21);
+  const finishedAt = new Date(startedAt.getTime() + 31_400);
+  await prisma.healthImportBatch.create({
+    data: {
+      userId,
+      source: "apple_health",
+      fileType: "zip",
+      fileName: "export-partial.zip",
+      fileSize: 14 * 1024 * 1024,
+      status: "failed",
+      error: "Import failed (reference demo-0000) — the archive ended mid-file.",
+      categories: JSON.stringify([]),
+      examined: 184_002,
+      formatVersion: IMPORT_FORMAT_VERSION,
+      startedAt,
+      finishedAt,
+      durationMs: finishedAt.getTime() - startedAt.getTime(),
+      createdAt: startedAt,
+    },
+  });
+}
+
+/**
+ * A second, earlier import — a smart scale's CSV export, six weeks ago.
+ *
+ * The demo needs more than one import for the import dashboard and the history
+ * to be worth looking at: with a single batch the search box, the source
+ * filters, the "imports run" tile and the format-version note all describe a
+ * list of one. This is the smallest thing that makes them mean something, and
+ * it is a real batch with real rows — undoable, fingerprinted, and counted by
+ * the same aggregates as any other.
+ *
+ * It is stamped `formatVersion: 1` because that is what a batch of its age
+ * would be: the pipeline that wrote it replaced matching readings instead of
+ * protecting the ones you had edited. The history says so, which is exactly
+ * the case that note exists to cover.
+ */
+async function seedEarlierScaleImport(prisma: DbClient, userId: string): Promise<void> {
+  const startedAt = subDays(new Date(), 42);
+  const finishedAt = new Date(startedAt.getTime() + 1_900);
+
+  // One weigh-in a week for ten weeks, drifting gently downward — the shape a
+  // scale's own export has, and a metric the Apple batch above does not carry,
+  // so the two imports never contend for the same fingerprints.
+  const readings: Array<{ date: string; value: number; externalId: string }> = [];
+  let weight = 83.4;
+  for (let week = 10; week >= 1; week -= 1) {
+    weight = Number((weight - between(0.05, 0.3)).toFixed(2));
+    readings.push({
+      date: day(-week * 7),
+      value: weight,
+      externalId: `demo-scale-${week}`,
+    });
+  }
+
+  const batch = await prisma.healthImportBatch.create({
+    data: {
+      userId,
+      source: "csv",
+      fileType: "csv",
+      fileName: "scale-export-2026.csv",
+      fileSize: 2_184,
+      status: "completed",
+      dateFrom: readings[0].date,
+      dateTo: readings[readings.length - 1].date,
+      categories: JSON.stringify(["body_weight"]),
+      examined: readings.length,
+      imported: readings.length,
+      warnings: JSON.stringify([]),
+      formatVersion: 1,
+      startedAt,
+      finishedAt,
+      durationMs: finishedAt.getTime() - startedAt.getTime(),
+      createdAt: startedAt,
+    },
+  });
+
+  await prisma.healthMetric.createMany({
+    data: readings.map((reading) => ({
+      userId,
+      batchId: batch.id,
+      createdAt: finishedAt,
+      updatedAt: finishedAt,
+      date: reading.date,
+      type: "body_weight",
+      value: reading.value,
+      unit: "kg",
+      source: "csv",
+      sourceApp: "Smart scale",
+      externalId: reading.externalId,
+      sampleCount: 1,
+      // The real key a CSV row with its own id gets, so re-seeding is
+      // idempotent for the same reason a re-import is.
+      fingerprint: fingerprintFor({
+        type: "body_weight",
+        subtype: null,
+        value: reading.value,
+        unit: "kg",
+        date: reading.date,
+        source: "csv",
+        externalId: reading.externalId,
+      } as never),
+    })),
+    skipDuplicates: true,
   });
 }
 

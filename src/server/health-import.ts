@@ -17,7 +17,17 @@ import type {
   RawWorkout,
 } from "@/lib/logic/health-import/types";
 import { isLikelyDuplicateWorkout } from "@/lib/logic/health-import/workout-dup";
+import {
+  countMerge,
+  decideMerge,
+  protectedSummary,
+  totalProtected,
+  type BatchBoundaries,
+  type MergeCounts,
+  type StoredRow,
+} from "@/lib/logic/health-import/merge";
 import { classifyHealthUndoRow, planHealthUndo } from "@/lib/logic/health-import/undo";
+import { IMPORT_FORMAT_VERSION } from "@/lib/logic/health-import/version";
 import { logRedactedError } from "@/server/safe-error";
 import { rebuildSummariesForDates } from "@/server/summaries";
 
@@ -97,8 +107,11 @@ export interface CategoryPreview {
   dateFrom: string | null;
   dateTo: string | null;
   newRows: number;
+  /** Rows an existing reading will be merged with — the file's value wins. */
   updatedRows: number;
   unchangedRows: number;
+  /** Rows this import will leave alone because they are no longer its to change. */
+  protectedRows: number;
   sample: Array<{
     date: string;
     value: number;
@@ -197,25 +210,41 @@ export async function stageImport(
     findWorkoutDuplicates(userId, plan.workouts),
     findExistingRecordFingerprints(userId, plan.records),
   ]);
+  const boundaries = await loadBatchBoundaries(userId, existingByFp.values());
+
+  // The same decision the confirm step will make, made now so the preview can
+  // promise it. Nothing here writes; this is the whole point of the preview.
+  const totals: MergeCounts = {
+    create: 0,
+    merge: 0,
+    unchanged: 0,
+    protectedEdited: 0,
+    protectedForeign: 0,
+  };
 
   const categories: CategoryPreview[] = plan.categories.map((category) => {
     const rows = plan.rows.filter((row) => row.type === category.key);
     let newRows = 0;
     let updatedRows = 0;
     let unchangedRows = 0;
+    let protectedRows = 0;
     for (const row of rows) {
-      const current = existingByFp.get(row.fingerprint);
-      if (current === undefined) newRows += 1;
-      else if (Math.abs(current - row.value) < 1e-6) unchangedRows += 1;
-      else updatedRows += 1;
+      const outcome = decideMerge(row, existingByFp.get(row.fingerprint), boundaries);
+      countMerge(outcome, totals);
+      if (outcome.decision === "create") newRows += 1;
+      else if (outcome.decision === "merge") updatedRows += 1;
+      else if (outcome.decision === "unchanged") unchangedRows += 1;
+      else protectedRows += 1;
     }
     if (category.key === WORKOUTS_CATEGORY) {
       unchangedRows = workoutDupes.exact.length + workoutDupes.potential.length;
       newRows = plan.workouts.length - unchangedRows;
+      protectedRows = 0;
     }
     if (category.key === RECORDS_CATEGORY) {
       unchangedRows = plan.records.filter((record) => existingRecords.has(record.fingerprint)).length;
       newRows = plan.records.length - unchangedRows;
+      protectedRows = 0;
     }
     return {
       key: category.key,
@@ -227,6 +256,7 @@ export async function stageImport(
       newRows,
       updatedRows,
       unchangedRows,
+      protectedRows,
       sample: sampleFor(category.key, plan, rows),
     };
   });
@@ -239,6 +269,10 @@ export async function stageImport(
         "They will be skipped rather than merged — your own records stay untouched.",
     );
   }
+  // Said plainly and up front: a skip the user is not told about is
+  // indistinguishable from data loss.
+  const protectedNote = protectedSummary(totals);
+  if (protectedNote) warnings.push(protectedNote);
 
   const summary: StagedSummary = {
     userId,
@@ -376,8 +410,29 @@ async function writeStagedChunks(sessionId: string, plan: ImportPlan): Promise<v
   });
 }
 
+/** The columns the merge rule needs, and no more. */
+const MERGE_SELECT = {
+  id: true,
+  fingerprint: true,
+  value: true,
+  source: true,
+  batchId: true,
+  updatedAt: true,
+} as const;
+
+type FoundRow = { fingerprint: string | null } & Omit<StoredRow, "fingerprint">;
+
+function indexByFingerprint(rows: FoundRow[]): Map<string, StoredRow> {
+  const map = new Map<string, StoredRow>();
+  for (const row of rows) {
+    if (row.fingerprint) map.set(row.fingerprint, row);
+  }
+  return map;
+}
+
 /**
- * Which of the plan's fingerprints already exist, and at what value.
+ * Which of the plan's fingerprints already exist, and everything the merge rule
+ * needs to decide whether they are still the import's to change.
  *
  * Two strategies, because the two front ends have different shapes. Every
  * Apple fingerprint embeds the row's own date, so one bounded range scan finds
@@ -389,7 +444,7 @@ async function writeStagedChunks(sessionId: string, plan: ImportPlan): Promise<v
 async function findExistingFingerprints(
   userId: string,
   plan: ImportPlan,
-): Promise<Map<string, number>> {
+): Promise<Map<string, StoredRow>> {
   if (plan.rows.length === 0) return new Map();
 
   if (plan.kind === "apple_health" && plan.dateFrom && plan.dateTo) {
@@ -402,9 +457,9 @@ async function findExistingFingerprints(
         date: { gte: shiftDay(plan.dateFrom as DayKey, -1), lte: shiftDay(plan.dateTo as DayKey, 1) },
         fingerprint: { not: null },
       },
-      select: { fingerprint: true, value: true },
+      select: MERGE_SELECT,
     });
-    return new Map(rows.map((row) => [row.fingerprint as string, row.value]));
+    return indexByFingerprint(rows);
   }
 
   const found = await chunked(
@@ -413,11 +468,47 @@ async function findExistingFingerprints(
     (chunk) =>
       prisma.healthMetric.findMany({
         where: { userId, fingerprint: { in: chunk } },
-        select: { fingerprint: true, value: true },
+        select: MERGE_SELECT,
       }),
   );
-  return new Map(found.map((row) => [row.fingerprint as string, row.value]));
+  return indexByFingerprint(found);
 }
+
+/**
+ * When each import that owns one of these rows finished.
+ *
+ * The merge rule needs a boundary instant per row to answer "has the user
+ * edited this since the import wrote it?" — the same question, and the same
+ * boundary, that undo asks. Scoped by `userId`, so a batch id that arrived on a
+ * row from anywhere else simply does not resolve and its row is protected
+ * rather than merged.
+ *
+ * Bounded by the number of distinct past imports touching this plan's date
+ * range, which is small; chunked anyway so it stays one bounded query even for
+ * an account with a long import history.
+ */
+async function loadBatchBoundaries(
+  userId: string,
+  stored: Iterable<StoredRow>,
+  client: PrismaLike = prisma,
+): Promise<BatchBoundaries> {
+  const ids = new Set<string>();
+  for (const row of stored) {
+    if (row.batchId) ids.add(row.batchId);
+  }
+  if (ids.size === 0) return new Map();
+
+  const batches = await chunked([...ids], CHUNK, (chunk) =>
+    client.healthImportBatch.findMany({
+      where: { userId, id: { in: chunk } },
+      select: { id: true, finishedAt: true, createdAt: true },
+    }),
+  );
+  return new Map(batches.map((batch) => [batch.id, batch.finishedAt ?? batch.createdAt]));
+}
+
+/** The subset of the client both `prisma` and a transaction handle satisfy. */
+type PrismaLike = Pick<typeof prisma, "healthImportBatch">;
 
 async function findExistingRecordFingerprints(
   userId: string,
@@ -559,8 +650,11 @@ export async function getStagedPreview(
 export interface ImportOutcome {
   batchId: string;
   imported: number;
+  /** Existing readings this import merged a fuller value into. */
   updated: number;
   duplicates: number;
+  /** Readings left exactly as they were, because they were not this import's. */
+  protectedRows: number;
   invalid: number;
   skippedTypes: number;
   workoutsImported: number;
@@ -645,30 +739,48 @@ export async function confirmHealthImport(
             errors: JSON.stringify(summary.errors.slice(0, 40)),
             ignoredFiles: JSON.stringify(summary.ignoredFiles),
             xmlBytes: summary.xmlBytes > 0 ? BigInt(summary.xmlBytes) : null,
+            formatVersion: IMPORT_FORMAT_VERSION,
             startedAt,
           },
         });
 
-        // Which fingerprints already exist decides create vs update vs no-op.
-        const existing = new Map<string, { id: string; value: number }>();
+        // Which fingerprints already exist, and whether they are still this
+        // import's to change. Re-read inside the transaction rather than reused
+        // from the preview: the preview may be hours old, and a row edited in
+        // between must be protected on the strength of what is true *now*.
+        const existing = new Map<string, StoredRow>();
         for (let index = 0; index < rows.length; index += CHUNK) {
           const chunk = rows.slice(index, index + CHUNK);
           const found = await tx.healthMetric.findMany({
             where: { userId, fingerprint: { in: chunk.map((row) => row.fingerprint) } },
-            select: { id: true, fingerprint: true, value: true },
+            select: MERGE_SELECT,
           });
-          for (const row of found) existing.set(row.fingerprint as string, row);
+          for (const row of found) {
+            if (row.fingerprint) existing.set(row.fingerprint, row);
+          }
         }
+        const boundaries = await loadBatchBoundaries(userId, existing.values(), tx);
 
         const toCreate: NormalizedHealthRow[] = [];
         const toUpdate: Array<{ id: string; row: NormalizedHealthRow }> = [];
         let duplicates = 0;
+        const merges: MergeCounts = {
+          create: 0,
+          merge: 0,
+          unchanged: 0,
+          protectedEdited: 0,
+          protectedForeign: 0,
+        };
         for (const row of rows) {
           const current = existing.get(row.fingerprint);
-          if (!current) toCreate.push(row);
-          else if (Math.abs(current.value - row.value) < 1e-6) duplicates += 1;
-          else toUpdate.push({ id: current.id, row });
+          const outcome = decideMerge(row, current, boundaries);
+          countMerge(outcome, merges);
+          if (outcome.decision === "create") toCreate.push(row);
+          else if (outcome.decision === "merge") toUpdate.push({ id: (current as StoredRow).id, row });
+          else if (outcome.decision === "unchanged") duplicates += 1;
+          // `protected` writes nothing at all — that is the whole behaviour.
         }
+        const protectedRows = totalProtected(merges);
 
         for (let index = 0; index < toCreate.length; index += CHUNK) {
           await tx.healthMetric.createMany({
@@ -784,6 +896,7 @@ export async function confirmHealthImport(
               : 0,
             recordsImported,
             recordsDuplicate: records.length - recordsImported,
+            protectedRows,
             finishedAt,
             durationMs: finishedAt.getTime() - startedAt.getTime(),
           },
@@ -794,6 +907,7 @@ export async function confirmHealthImport(
           imported: toCreate.length,
           updated: toUpdate.length,
           duplicates,
+          protectedRows,
           invalid: summary.invalid,
           skippedTypes,
           workoutsImported,
@@ -827,6 +941,7 @@ export async function confirmHealthImport(
           dateTo,
           categories: JSON.stringify([...selected].sort()),
           examined: summary.examined,
+          formatVersion: IMPORT_FORMAT_VERSION,
           startedAt,
           finishedAt: new Date(),
         },
@@ -876,6 +991,139 @@ export async function listImportBatches(userId: string, take = 50) {
 }
 
 export type ImportBatchSummary = Awaited<ReturnType<typeof listImportBatches>>[number];
+
+/** How long ago the last successful import was, bucketed for the UI. */
+export type ImportRecency = "never" | "today" | "week" | "month" | "stale";
+
+export interface ImportDashboard {
+  /** Newest first, bounded — the searchable history the page renders. */
+  batches: ImportBatchSummary[];
+  /** True when the account has more imports than `batches` carries. */
+  truncated: boolean;
+  totals: {
+    runs: number;
+    completed: number;
+    undone: number;
+    failed: number;
+    readingsWritten: number;
+    readingsMerged: number;
+    readingsProtected: number;
+    workoutsWritten: number;
+    recordsWritten: number;
+    bytesRead: number;
+  };
+  lastSuccessful: {
+    id: string;
+    fileName: string;
+    at: Date;
+    imported: number;
+    daysAgo: number;
+  } | null;
+  recency: ImportRecency;
+  /** Staged imports waiting to be confirmed or cancelled. */
+  pending: number;
+}
+
+function recencyOf(daysAgo: number | null): ImportRecency {
+  if (daysAgo === null) return "never";
+  if (daysAgo <= 0) return "today";
+  if (daysAgo <= 7) return "week";
+  if (daysAgo <= 31) return "month";
+  return "stale";
+}
+
+/**
+ * Everything the import dashboard shows, in five bounded queries.
+ *
+ * The totals are **aggregates over every batch**, not sums of the page's list —
+ * an account with hundreds of imports would otherwise see a "readings written"
+ * figure that silently meant "of the most recent hundred". The list itself is
+ * capped and says so when it is.
+ *
+ * Every query is scoped by `userId` and served by the existing
+ * `(userId, createdAt)` and `(userId, status)` indexes.
+ */
+export async function getImportDashboard(
+  userId: string,
+  today: DayKey,
+  take = 100,
+): Promise<ImportDashboard> {
+  const [batches, totalRuns, byStatus, sums, lastSuccessfulRow, pending] = await Promise.all([
+    listImportBatches(userId, take),
+    prisma.healthImportBatch.count({ where: { userId } }),
+    prisma.healthImportBatch.groupBy({
+      by: ["status"],
+      where: { userId },
+      _count: { _all: true },
+    }),
+    prisma.healthImportBatch.aggregate({
+      where: { userId },
+      _sum: {
+        imported: true,
+        updated: true,
+        protectedRows: true,
+        workoutsImported: true,
+        recordsImported: true,
+        fileSize: true,
+      },
+    }),
+    prisma.healthImportBatch.findFirst({
+      where: { userId, status: "completed" },
+      orderBy: { createdAt: "desc" },
+      select: { id: true, fileName: true, createdAt: true, finishedAt: true, imported: true },
+    }),
+    prisma.healthImportSession.count({
+      where: { userId, status: "staged", expiresAt: { gt: new Date() } },
+    }),
+  ]);
+
+  const countFor = (status: string) =>
+    byStatus.find((group) => group.status === status)?._count._all ?? 0;
+
+  const at = lastSuccessfulRow ? (lastSuccessfulRow.finishedAt ?? lastSuccessfulRow.createdAt) : null;
+  // Compared in whole days against the user's own today, not the host clock —
+  // "2 days ago" must mean the same thing here as everywhere else in the app.
+  const daysAgo =
+    at === null
+      ? null
+      : Math.max(
+          0,
+          Math.round(
+            (Date.parse(`${today}T12:00:00Z`) -
+              Date.parse(`${at.toISOString().slice(0, 10)}T12:00:00Z`)) /
+              86_400_000,
+          ),
+        );
+
+  return {
+    batches,
+    truncated: totalRuns > batches.length,
+    totals: {
+      runs: totalRuns,
+      completed: countFor("completed"),
+      undone: countFor("removed"),
+      failed: countFor("failed"),
+      readingsWritten: sums._sum.imported ?? 0,
+      readingsMerged: sums._sum.updated ?? 0,
+      readingsProtected: sums._sum.protectedRows ?? 0,
+      workoutsWritten: sums._sum.workoutsImported ?? 0,
+      recordsWritten: sums._sum.recordsImported ?? 0,
+      bytesRead: sums._sum.fileSize ?? 0,
+    },
+    lastSuccessful:
+      lastSuccessfulRow && at
+        ? {
+            id: lastSuccessfulRow.id,
+            fileName: lastSuccessfulRow.fileName,
+            at,
+            imported: lastSuccessfulRow.imported,
+            daysAgo: daysAgo ?? 0,
+          }
+        : null,
+    recency: recencyOf(daysAgo),
+    pending,
+  };
+}
 
 function safeJsonArray(raw: string): string[] {
   try {
@@ -1143,3 +1391,4 @@ export async function removeImportBatch(
 }
 
 export { classifyHealthUndoRow };
+export { IMPORT_FORMAT_VERSION };

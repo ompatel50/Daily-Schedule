@@ -42,6 +42,9 @@ export function HealthGroupPage({
   /** Extra content shown above the metric panels (notes, sessions, lists). */
   children?: ReactNode;
 }) {
+  const withData = view.series.filter((series) => series.daysWithData > 0);
+  const withoutData = view.series.filter((series) => series.daysWithData === 0);
+
   return (
     <>
       <PageHeader
@@ -64,11 +67,32 @@ export function HealthGroupPage({
           }
         />
       ) : (
-        <div className="grid gap-4 lg:grid-cols-2">
-          {view.series.map((series) => (
-            <MetricPanel key={series.type} series={series} chart={chart} />
-          ))}
-        </div>
+        <>
+          <div className="grid gap-4 lg:grid-cols-2">
+            {withData.map((series) => (
+              <MetricPanel key={series.type} series={series} chart={chart} />
+            ))}
+          </div>
+
+          {/*
+            The metrics this group covers but this account has no readings for.
+            One line rather than one empty chart panel each: Nutrition alone
+            covers twenty-odd metrics, and a page of identical "nothing recorded"
+            cards buries the four that do have data. Still listed, because
+            silently dropping them would leave the user unable to tell whether
+            the app tracks the metric at all.
+          */}
+          {withoutData.length > 0 && (
+            <p className="mt-4 rounded-lg border border-dashed px-4 py-3 text-xs text-muted-foreground">
+              <span className="font-medium text-foreground">
+                No readings in this range for {withoutData.length}{" "}
+                {withoutData.length === 1 ? "metric" : "metrics"}:
+              </span>{" "}
+              {withoutData.map((series) => series.label).join(", ")}. They appear here as soon as an
+              import or a manual entry supplies one.
+            </p>
+          )}
+        </>
       )}
     </>
   );

@@ -93,7 +93,6 @@ describe("backup validation", () => {
   });
 
   it("v7 carries health records, after the batches they belong to", () => {
-    expect(BACKUP_VERSION).toBe(7);
     expect(BACKUP_TABLES).toContain("healthRecords");
     // A record's batch link only survives if the batch was restored first.
     expect(BACKUP_TABLES.indexOf("healthImportBatches")).toBeLessThan(
@@ -112,6 +111,28 @@ describe("backup validation", () => {
     expect(result.ok).toBe(true);
     expect(result.counts.healthRecords).toBe(2);
     expect(result.warnings.join(" ")).not.toContain("unrecognised");
+  });
+
+  it("v8 adds no tables — only columns on the health import batch", () => {
+    // The bump exists so an older app refuses a newer file rather than
+    // silently dropping `protectedRows` and `formatVersion` on restore. No
+    // table moved, so nothing about restore ORDER changed with it.
+    expect(BACKUP_VERSION).toBe(8);
+    expect(BACKUP_TABLES.indexOf("healthImportBatches")).toBeLessThan(
+      BACKUP_TABLES.indexOf("healthMetrics"),
+    );
+  });
+
+  it("a v7 file (no smart-merge accounting) still inspects cleanly", () => {
+    const result = inspectBackup(
+      backup({
+        version: 7,
+        data: { healthImportBatches: [{ id: "hb1" }], healthRecords: [{ id: "hr1" }] },
+      }),
+    );
+    expect(result.ok).toBe(true);
+    expect(result.counts.healthRecords).toBe(1);
+    expect(result.warnings.join(" ")).toContain("format v7");
   });
 
   it("a v6 file (no health records) still inspects cleanly", () => {

@@ -30,9 +30,10 @@ export function SectionCard({
           {Icon && <Icon className={cn("h-4 w-4 shrink-0", accent)} />}
           <div className="min-w-0">
             <p className="truncate text-sm font-semibold">{title}</p>
-            {description && (
-              <p className="truncate text-xs text-muted-foreground">{description}</p>
-            )}
+            {/* Wraps rather than truncates: a description is a sentence, and a
+                sentence cut off mid-word tells the reader less than nothing.
+                Titles stay on one line because they are two or three words. */}
+            {description && <p className="text-xs text-muted-foreground">{description}</p>}
           </div>
         </div>
         {action}

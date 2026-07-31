@@ -42,6 +42,11 @@ test("account menu shows the email; sign-out returns to /signin", async ({ page 
   // JWT sessions: this only clears the cookie in this test's own context, so
   // the storage state the other specs reuse stays valid.
   await page.getByRole("menuitem", { name: "Sign out" }).click();
-  await expect(page).toHaveURL(/\/signin/);
+  // A server round trip: sign out, then a render of /signin. The suite runs
+  // two workers, so this can coincide with the import spec's large write
+  // transaction in the other one; the default 10 s expect timeout is not
+  // always enough for that, and the flow itself is not racy (20 stress
+  // repeats in isolation are clean). What is asserted is unchanged.
+  await expect(page).toHaveURL(/\/signin/, { timeout: 30_000 });
   await expect(page.locator("aside")).toHaveCount(0);
 });

@@ -76,18 +76,26 @@ mechanics are described in
 
 ### Format versions
 
-The current format is **v7**, which added the Health module's records
+The current format is **v8**. v7 added the Health module's records
 (`healthRecords` — ECGs, medications, clinical records and workout-route
 metadata) alongside the health metrics and import batches earlier versions
-already carried. Health import batches also gained their undo stamp and run
-timings.
+already carried, plus the undo stamp and run timings on health import batches.
+v8 adds two columns to those batches and **no new tables**: `protectedRows`
+(readings a re-import deliberately left alone because you had edited them) and
+`formatVersion` (which version of the importer wrote the batch).
 
-Older files import unchanged — a v1–v6 backup simply has no rows for tables
-that did not exist yet, and columns added since take their defaults (a v5
+Older files import unchanged — a v1–v7 backup simply has no rows for tables
+that did not exist yet, and columns added since take their defaults. Those
+defaults are the truth about the older record rather than a placeholder: a v5
 budget arrives as the monthly, alert-free budget it was; a v6 health import
-batch arrives un-undone and untimed, which is exactly what it was). A file
-written by a *newer* app version is refused rather than half-understood,
-because this app cannot know what its tables mean.
+batch arrives un-undone and untimed, which is exactly what it was; a v7 health
+import batch arrives with `protectedRows = 0` and `formatVersion = 1`, which is
+exactly what it did and what wrote it.
+
+A file written by a *newer* app version is refused rather than half-understood,
+because this app cannot know what its tables mean. That refusal is the whole
+point of bumping the version for a columns-only change: without it, a v8 file
+restored by a v7 build would lose the merge accounting silently.
 
 ## The verification report
 
