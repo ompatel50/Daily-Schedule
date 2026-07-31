@@ -21,14 +21,17 @@
  * v3 — adds health import batches (`healthImportBatches`) and the reminder
  *      delivery ledger (`reminderDeliveries`); health metric rows now carry
  *      fingerprints, intervals, sleep stages and batch links.
+ * v4 — adds the universal-OS foundation tables: tasks & projects (`projects`,
+ *      `tasks`), finance (`financeAccounts`, `bills`, `financeTransactions`,
+ *      `savingsGoals`) and the life-admin inbox (`inboxItems`).
  *
- * A v1 or v2 file restores into a v3 app unchanged: the missing tables simply
+ * A v1–v3 file restores into a v4 app unchanged: the missing tables simply
  * have no rows, `npm run db:migrate` backfills an every-day schedule for
  * anything that arrives without one, and metric rows that arrive without a
  * fingerprint get one from the same migration — which is exactly how those
  * records behaved when the older backup was taken.
  */
-export const BACKUP_VERSION = 3;
+export const BACKUP_VERSION = 4;
 
 export interface BackupMetadata {
   /** Schema version of the backup format itself. */
@@ -83,6 +86,13 @@ export const BACKUP_TABLES = [
   "reminders",
   "reminderDeliveries",
   "favorites",
+  "projects",
+  "tasks",
+  "financeAccounts",
+  "bills",
+  "financeTransactions",
+  "savingsGoals",
+  "inboxItems",
   "seedBatches",
   "seedRecords",
 ] as const;

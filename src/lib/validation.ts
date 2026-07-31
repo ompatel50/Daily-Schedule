@@ -1,5 +1,9 @@
 import { z } from "zod";
 import {
+  ACCOUNT_TYPES,
+  BILL_KINDS,
+  BILL_RECURRENCES,
+  FINANCE_CATEGORIES,
   FOOD_CATEGORIES,
   GOAL_DOMAINS,
   HABIT_CATEGORIES,
@@ -9,6 +13,7 @@ import {
   ITEM_STATUSES,
   MEAL_TYPES,
   PRIORITIES,
+  REPEAT_UNITS,
   SCHEDULE_CATEGORIES,
   SERVING_UNITS,
   WORKOUT_TYPES,
@@ -416,6 +421,145 @@ export const settingsSchema = z.object({
   dayStartHour: z.number().int().min(0).max(23),
   dayEndHour: z.number().int().min(1).max(24),
 });
+
+// --- tasks & projects --------------------------------------------------------
+
+export const projectSchema = z.object({
+  id: z.string().optional(),
+  name: z.string().trim().min(1, "Give the project a name").max(120),
+  description: z.string().max(1000).nullable().optional(),
+  color: z.string().max(40).default("slate"),
+});
+
+export type ProjectInput = z.infer<typeof projectSchema>;
+
+export const taskSchema = z
+  .object({
+    id: z.string().optional(),
+    title: z.string().trim().min(1, "Give the task a title").max(200),
+    notes: z.string().max(5000).nullable().optional(),
+    projectId: z.string().nullable().optional(),
+    parentId: z.string().nullable().optional(),
+    priority: z.enum(PRIORITIES).default("medium"),
+    dueDate: dayKey.nullable().optional(),
+    repeat: z.enum(REPEAT_UNITS).default("none"),
+    repeatEvery: z.number().int().min(1).max(365).default(1),
+    reminderEnabled: z.boolean().default(false),
+  })
+  .refine((value) => value.repeat === "none" || Boolean(value.dueDate), {
+    message: "A repeating task needs a due date to repeat from",
+    path: ["repeat"],
+  });
+
+export type TaskInput = z.infer<typeof taskSchema>;
+
+// --- finance -----------------------------------------------------------------
+
+/** Cents-precision money, kept finite and inside a sane planetary bound. */
+const money = z.number().finite().min(-1_000_000_000_000).max(1_000_000_000_000);
+
+export const financeAccountSchema = z.object({
+  id: z.string().optional(),
+  name: z.string().trim().min(1, "Give the account a name").max(120),
+  type: z.enum(ACCOUNT_TYPES).default("checking"),
+  currency: z
+    .string()
+    .trim()
+    .regex(/^[A-Za-z]{3}$/, "Use a three-letter currency code")
+    .transform((value) => value.toUpperCase())
+    .default("USD"),
+  openingBalance: money.default(0),
+  notes: z.string().max(2000).nullable().optional(),
+});
+
+export type FinanceAccountInput = z.infer<typeof financeAccountSchema>;
+
+export const financeTransactionSchema = z
+  .object({
+    id: z.string().optional(),
+    accountId: z.string().min(1, "Pick an account"),
+    date: dayKey,
+    /** Signed: positive = money in, negative = money out. */
+    amount: money,
+    payee: z.string().max(200).nullable().optional(),
+    category: z.enum(FINANCE_CATEGORIES).default("other"),
+    notes: z.string().max(2000).nullable().optional(),
+    billId: z.string().nullable().optional(),
+  })
+  .refine((value) => value.amount !== 0, {
+    message: "An amount of zero records nothing",
+    path: ["amount"],
+  });
+
+export type FinanceTransactionInput = z.infer<typeof financeTransactionSchema>;
+
+export const setAccountBalanceSchema = z.object({
+  accountId: z.string().min(1),
+  balance: money,
+  date: dayKey,
+});
+
+export const billSchema = z.object({
+  id: z.string().optional(),
+  name: z.string().trim().min(1, "Give it a name").max(120),
+  amount: money.refine((value) => value > 0, "The amount must be above zero"),
+  kind: z.enum(BILL_KINDS).default("bill"),
+  category: z.enum(FINANCE_CATEGORIES).default("utilities"),
+  accountId: z.string().nullable().optional(),
+  recurrence: z.enum(BILL_RECURRENCES).default("monthly"),
+  /** The next due date; on create it anchors the recurrence too. */
+  dueDate: dayKey,
+  autoPay: z.boolean().default(false),
+  reminderEnabled: z.boolean().default(true),
+  reminderDaysBefore: z.number().int().min(0).max(60).default(3),
+  notes: z.string().max(2000).nullable().optional(),
+});
+
+export type BillInput = z.infer<typeof billSchema>;
+
+export const markBillPaidSchema = z.object({
+  billId: z.string().min(1),
+  /** The day the payment happened (defaults to the user's today in the action). */
+  date: dayKey,
+  /** Actual amount paid; defaults to the bill's expected amount. */
+  amount: money.refine((value) => value > 0, "The amount must be above zero").optional(),
+  /** Account it was paid from; defaults to the bill's account. */
+  accountId: z.string().nullable().optional(),
+  /** Also write the payment into the ledger (needs an account). */
+  recordTransaction: z.boolean().default(true),
+});
+
+export const savingsGoalSchema = z.object({
+  id: z.string().optional(),
+  name: z.string().trim().min(1, "Give the goal a name").max(120),
+  targetAmount: money.refine((value) => value > 0, "The target must be above zero"),
+  currentAmount: money.refine((value) => value >= 0, "Cannot be negative").default(0),
+  targetDate: dayKey.nullable().optional(),
+  notes: z.string().max(2000).nullable().optional(),
+});
+
+export type SavingsGoalInput = z.infer<typeof savingsGoalSchema>;
+
+export const savingsContributionSchema = z
+  .object({
+    id: z.string().min(1),
+    /** Signed: positive adds to the goal, negative withdraws. */
+    amount: money,
+  })
+  .refine((value) => value.amount !== 0, {
+    message: "An amount of zero records nothing",
+    path: ["amount"],
+  });
+
+// --- inbox -------------------------------------------------------------------
+
+export const inboxItemSchema = z.object({
+  id: z.string().optional(),
+  title: z.string().trim().min(1, "Write something to capture").max(300),
+  notes: z.string().max(5000).nullable().optional(),
+});
+
+export type InboxItemInput = z.infer<typeof inboxItemSchema>;
 
 /** Standard action result — every server action returns this shape. */
 export type ActionResult<T = unknown> =

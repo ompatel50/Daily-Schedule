@@ -75,6 +75,13 @@ const MODEL_BY_TABLE: Record<BackupTable, string> = {
   reminders: "Reminder",
   reminderDeliveries: "ReminderDelivery",
   favorites: "FavoriteItem",
+  projects: "Project",
+  tasks: "Task",
+  financeAccounts: "FinanceAccount",
+  bills: "Bill",
+  financeTransactions: "FinanceTransaction",
+  savingsGoals: "SavingsGoal",
+  inboxItems: "InboxItem",
   seedBatches: "SeedBatch",
   seedRecords: "SeedRecord",
 };
@@ -536,7 +543,7 @@ export async function restoreBackupForUser(
     if (!mapped || typeof mapped.key !== "string") return null;
     // Delivery keys embed record ids (`habit:<id>:<date>`); remap the embedded
     // id so "already delivered" still means the right occurrence.
-    const match = /^(habit|goal|reminder):([^:]+):(.*)$/.exec(mapped.key);
+    const match = /^(habit|goal|reminder|bill|task):([^:]+):(.*)$/.exec(mapped.key);
     if (match) {
       mapped.key = `${match[1]}:${remapId(userId, match[2])}:${match[3]}`;
     }
@@ -566,6 +573,53 @@ export async function restoreBackupForUser(
       mapped.refId = map(row.refId);
     }
     return own(mapped);
+  });
+
+  prepare("projects", (row) => {
+    const mapped = withId(row);
+    return mapped ? own(mapped) : null;
+  });
+
+  prepare("tasks", (row) => {
+    const mapped = withId(row);
+    if (!mapped) return null;
+    // A task survives losing its project or parent (optional links), but a
+    // foreign id must never survive into this account.
+    mapped.projectId = inFile("projects", row.projectId) ? map(row.projectId) : null;
+    mapped.parentId = inFile("tasks", row.parentId) ? map(row.parentId) : null;
+    return own(mapped);
+  });
+
+  prepare("financeAccounts", (row) => {
+    const mapped = withId(row);
+    return mapped ? own(mapped) : null;
+  });
+
+  prepare("bills", (row) => {
+    const mapped = withId(row);
+    if (!mapped) return null;
+    mapped.accountId = inFile("financeAccounts", row.accountId) ? map(row.accountId) : null;
+    return own(mapped);
+  });
+
+  prepare("financeTransactions", (row) => {
+    const mapped = withId(row);
+    if (!mapped) return null;
+    // A ledger row without its account is meaningless — drop it.
+    if (!inFile("financeAccounts", row.accountId)) return null;
+    mapped.accountId = map(row.accountId);
+    mapped.billId = inFile("bills", row.billId) ? map(row.billId) : null;
+    return own(mapped);
+  });
+
+  prepare("savingsGoals", (row) => {
+    const mapped = withId(row);
+    return mapped ? own(mapped) : null;
+  });
+
+  prepare("inboxItems", (row) => {
+    const mapped = withId(row);
+    return mapped ? own(mapped) : null;
   });
 
   prepare("seedBatches", (row) => {
@@ -641,6 +695,13 @@ export async function restoreBackupForUser(
         await db.reminder.deleteMany({ where: { userId } });
         await db.reminderDelivery.deleteMany({ where: { userId } });
         await db.favoriteItem.deleteMany({ where: { userId } });
+        await db.financeTransaction.deleteMany({ where: { userId } });
+        await db.bill.deleteMany({ where: { userId } });
+        await db.financeAccount.deleteMany({ where: { userId } });
+        await db.savingsGoal.deleteMany({ where: { userId } });
+        await db.task.deleteMany({ where: { userId } });
+        await db.project.deleteMany({ where: { userId } });
+        await db.inboxItem.deleteMany({ where: { userId } });
         await db.goalEntry.deleteMany({ where: { userId } });
         await db.goal.deleteMany({ where: { userId } });
         await db.scheduleRuleDay.deleteMany({ where: { rule: { userId } } });
@@ -666,6 +727,15 @@ export async function restoreBackupForUser(
             });
             const second = children.length
               ? await db.scheduleItem.createMany({ data: children as never, skipDuplicates: true })
+              : { count: 0 };
+            created = first.count + second.count;
+          } else if (table === "tasks") {
+            // Subtasks reference their parent row — same split as series items.
+            const parents = rows.filter((row) => !row.parentId);
+            const children = rows.filter((row) => row.parentId);
+            const first = await db.task.createMany({ data: parents as never, skipDuplicates: true });
+            const second = children.length
+              ? await db.task.createMany({ data: children as never, skipDuplicates: true })
               : { count: 0 };
             created = first.count + second.count;
           } else {
@@ -724,6 +794,13 @@ export async function restoreBackupForUser(
     journalEntries: await prisma.journalEntry.count({ where: { userId } }),
     reminders: await prisma.reminder.count({ where: { userId } }),
     favorites: await prisma.favoriteItem.count({ where: { userId } }),
+    projects: await prisma.project.count({ where: { userId } }),
+    tasks: await prisma.task.count({ where: { userId } }),
+    financeAccounts: await prisma.financeAccount.count({ where: { userId } }),
+    bills: await prisma.bill.count({ where: { userId } }),
+    financeTransactions: await prisma.financeTransaction.count({ where: { userId } }),
+    savingsGoals: await prisma.savingsGoal.count({ where: { userId } }),
+    inboxItems: await prisma.inboxItem.count({ where: { userId } }),
   };
 
   const report: ImportReport = {

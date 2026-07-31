@@ -373,6 +373,124 @@ export const HEALTH_METRIC_META: Record<
 export const GOAL_DOMAINS = ["nutrition", "workout", "habit", "health", "planner"] as const;
 export type GoalDomain = (typeof GOAL_DOMAINS)[number];
 
+// --- tasks & projects --------------------------------------------------------
+
+export const TASK_STATUSES = ["open", "done", "dropped"] as const;
+export type TaskStatus = (typeof TASK_STATUSES)[number];
+
+export const PROJECT_STATUSES = ["active", "completed", "archived"] as const;
+export type ProjectStatus = (typeof PROJECT_STATUSES)[number];
+
+export const PROJECT_STATUS_META: Record<ProjectStatus, { label: string; chip: string }> = {
+  active: { label: "Active", chip: "bg-blue-500/10 text-blue-700 dark:text-blue-400" },
+  completed: { label: "Completed", chip: "bg-emerald-500/10 text-emerald-700 dark:text-emerald-400" },
+  archived: { label: "Archived", chip: "bg-slate-500/10 text-slate-700 dark:text-slate-300" },
+};
+
+/** Cadence units shared by repeating tasks and bill recurrences. */
+export const REPEAT_UNITS = ["none", "daily", "weekly", "monthly", "yearly"] as const;
+export type RepeatUnit = (typeof REPEAT_UNITS)[number];
+
+export const REPEAT_UNIT_META: Record<RepeatUnit, { label: string }> = {
+  none: { label: "Does not repeat" },
+  daily: { label: "Daily" },
+  weekly: { label: "Weekly" },
+  monthly: { label: "Monthly" },
+  yearly: { label: "Yearly" },
+};
+
+// --- finance -----------------------------------------------------------------
+
+export const ACCOUNT_TYPES = [
+  "checking",
+  "savings",
+  "cash",
+  "credit_card",
+  "investment",
+  "loan",
+  "other",
+] as const;
+export type AccountType = (typeof ACCOUNT_TYPES)[number];
+
+export const ACCOUNT_TYPE_META: Record<
+  AccountType,
+  { label: string; chip: string; /** Balances are normally owed, not owned. */ debt: boolean }
+> = {
+  checking: { label: "Checking", chip: "bg-blue-500/10 text-blue-700 dark:text-blue-400", debt: false },
+  savings: { label: "Savings", chip: "bg-emerald-500/10 text-emerald-700 dark:text-emerald-400", debt: false },
+  cash: { label: "Cash", chip: "bg-teal-500/10 text-teal-700 dark:text-teal-400", debt: false },
+  credit_card: { label: "Credit card", chip: "bg-amber-500/10 text-amber-800 dark:text-amber-400", debt: true },
+  investment: { label: "Investment", chip: "bg-violet-500/10 text-violet-700 dark:text-violet-400", debt: false },
+  loan: { label: "Loan", chip: "bg-red-500/10 text-red-700 dark:text-red-400", debt: true },
+  other: { label: "Other", chip: "bg-slate-500/10 text-slate-700 dark:text-slate-300", debt: false },
+};
+
+export const FINANCE_CATEGORIES = [
+  "income",
+  "housing",
+  "utilities",
+  "groceries",
+  "dining",
+  "transport",
+  "health",
+  "insurance",
+  "subscriptions",
+  "entertainment",
+  "shopping",
+  "travel",
+  "education",
+  "personal",
+  "savings",
+  "debt",
+  "fees",
+  "gifts",
+  "adjustment",
+  "other",
+] as const;
+export type FinanceCategory = (typeof FINANCE_CATEGORIES)[number];
+
+export const FINANCE_CATEGORY_META: Record<FinanceCategory, { label: string }> = {
+  income: { label: "Income" },
+  housing: { label: "Housing" },
+  utilities: { label: "Utilities" },
+  groceries: { label: "Groceries" },
+  dining: { label: "Dining" },
+  transport: { label: "Transport" },
+  health: { label: "Health" },
+  insurance: { label: "Insurance" },
+  subscriptions: { label: "Subscriptions" },
+  entertainment: { label: "Entertainment" },
+  shopping: { label: "Shopping" },
+  travel: { label: "Travel" },
+  education: { label: "Education" },
+  personal: { label: "Personal" },
+  savings: { label: "Savings" },
+  debt: { label: "Debt payment" },
+  fees: { label: "Fees" },
+  gifts: { label: "Gifts" },
+  adjustment: { label: "Balance adjustment" },
+  other: { label: "Other" },
+};
+
+export const BILL_KINDS = ["bill", "subscription"] as const;
+export type BillKind = (typeof BILL_KINDS)[number];
+
+export const BILL_RECURRENCES = ["once", "weekly", "monthly", "quarterly", "yearly"] as const;
+export type BillRecurrence = (typeof BILL_RECURRENCES)[number];
+
+export const BILL_RECURRENCE_META: Record<BillRecurrence, { label: string }> = {
+  once: { label: "One time" },
+  weekly: { label: "Weekly" },
+  monthly: { label: "Monthly" },
+  quarterly: { label: "Quarterly" },
+  yearly: { label: "Yearly" },
+};
+
+// --- inbox -------------------------------------------------------------------
+
+export const INBOX_STATUSES = ["open", "done", "archived"] as const;
+export type InboxStatus = (typeof INBOX_STATUSES)[number];
+
 /** Narrow an untrusted string to a known enum member, else fall back. */
 export function coerceEnum<T extends string>(
   value: unknown,
