@@ -110,6 +110,8 @@ model User {
   financeTransactions FinanceTransaction[]
   bills             Bill[]
   savingsGoals      SavingsGoal[]
+  budgets           Budget[]
+  financeImportBatches FinanceImportBatch[]
   inboxItems        InboxItem[]
 
   // --- day score configuration ----------------------------------------------
@@ -385,6 +387,13 @@ model ScheduleItem {
   templateId String?
   template   ScheduleTemplate? @relation(fields: [templateId], references: [id], onDelete: SetNull)
 
+  /// Set when this block was created from a task ("add to planner"). The item
+  /// stays an ordinary planner block — no scheduling logic rides this link;
+  /// it only records where the block came from. Deleting the task keeps the
+  /// block (SetNull); completing either side never touches the other.
+  taskId String?
+  task   Task?   @relation(fields: [taskId], references: [id], onDelete: SetNull)
+
   /// Stable identity of a row stamped onto this day by a routine, formatted
   /// `<application ordinal>:<row index>` — e.g. `1:0` is the first row of the
   /// first application, `2:0` the same row applied a deliberate second time.
@@ -403,6 +412,7 @@ model ScheduleItem {
   @@index([userId, date])
   @@index([userId, status])
   @@index([seriesId])
+  @@index([taskId])
 }
 
 /// A reusable block (or whole routine) that can be stamped onto any day.
@@ -1301,6 +1311,12 @@ model Task {
 
   sortOrder Int @default(0)
 
+  /// Planner blocks created from this task ("add to planner") and inbox
+  /// captures this task was converted from. Both links are informational —
+  /// deleting the task merely unlinks them.
+  scheduleItems ScheduleItem[]
+  inboxItems    InboxItem[]
+
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
@@ -1334,12 +1350,19 @@ model FinanceAccount {
   /// transaction rather than editing this.
   openingBalance Float @default(0)
 
+  /// Remind when the computed balance sits below this amount (in the
+  /// account's own currency). Null = no low-balance reminder. Delivery rides
+  /// the reminder ledger, at most once per week per account — see
+  /// resolveLowBalanceReminder in src/lib/logic/reminders.ts.
+  lowBalanceThreshold Float?
+
   notes      String?
   archivedAt DateTime?
   sortOrder  Int       @default(0)
 
-  transactions FinanceTransaction[]
-  bills        Bill[]
+  transactions  FinanceTransaction[]
+  bills         Bill[]
+  importBatches FinanceImportBatch[]
 
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
@@ -1373,10 +1396,23 @@ model FinanceTransaction {
   category String  @default("other")
   notes    String?
 
-  /// Future CSV import identity: a deterministic hash of the imported row so
-  /// re-importing the same file upserts instead of duplicating. Null for
-  /// manual entries (NULLS DISTINCT — they never collide).
+  /// CSV import identity: a deterministic fingerprint of the imported row so
+  /// re-importing the same file skips instead of duplicating. Null for
+  /// manual entries (NULLS DISTINCT — they never collide). Format:
+  /// `v1|<accountId>|<date>|<amount>|<payee>|<occurrence>` — see
+  /// src/lib/logic/finance-import.ts.
   importKey String?
+
+  /// Both legs of an account transfer share one group id — that is what makes
+  /// a transfer atomic to delete and impossible to half-edit. Null for
+  /// everything that is not a transfer leg. Transfer legs carry category
+  /// `transfer`, which every income/spending summary excludes.
+  transferGroupId String?
+
+  /// The CSV import batch that created this row, for auditability. Optional —
+  /// deleting the batch record keeps the transactions.
+  importBatchId String?
+  importBatch   FinanceImportBatch? @relation(fields: [importBatchId], references: [id], onDelete: SetNull)
 
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
@@ -1385,6 +1421,8 @@ model FinanceTransaction {
   @@index([userId, date])
   @@index([accountId, date])
   @@index([billId])
+  @@index([transferGroupId])
+  @@index([importBatchId])
 }
 
 /// A recurring obligation — a bill or a subscription (`kind` separates the
@@ -1464,6 +1502,60 @@ model SavingsGoal {
   @@index([userId])
 }
 
+/// A monthly spending target for one category. Spending in the window counts
+/// against it; income, adjustments and transfers never do. One budget per
+/// category per user — the unique key below is the whole identity. `period`
+/// only ever holds `monthly` today; the column exists so other windows can
+/// arrive additively without a migration that reinterprets old rows.
+model Budget {
+  id     String @id @default(cuid())
+  userId String
+  user   User   @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  /// See FINANCE_CATEGORIES in src/lib/enums.ts. Bookkeeping categories
+  /// (adjustment, transfer) and income are rejected in the action layer.
+  category String
+  /// Target spend per period, in the user's primary currency.
+  amount   Float
+  /// monthly (the only period so far)
+  period   String @default("monthly")
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@unique([userId, category])
+}
+
+/// One CSV import run — the audit record behind "where did these rows come
+/// from?". The transactions link back optionally, so deleting a batch record
+/// never deletes ledger rows.
+model FinanceImportBatch {
+  id     String @id @default(cuid())
+  userId String
+  user   User   @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  /// The account the rows were imported into. Informational — SetNull keeps
+  /// the audit record when the account goes.
+  accountId String?
+  account   FinanceAccount? @relation(fields: [accountId], references: [id], onDelete: SetNull)
+
+  fileName String
+  /// Rows in the file, excluding the header.
+  rowCount      Int
+  createdCount  Int
+  /// Valid rows skipped as already-imported duplicates.
+  skippedCount  Int
+  /// Rows that failed validation and were never written.
+  rejectedCount Int
+
+  transactions FinanceTransaction[]
+
+  createdAt DateTime @default(now())
+
+  @@index([userId, createdAt])
+  @@index([accountId])
+}
+
 // ---------------------------------------------------------------------------
 // Inbox — one catchall queue for life admin
 // ---------------------------------------------------------------------------
@@ -1483,10 +1575,17 @@ model InboxItem {
   status      String    @default("open")
   completedAt DateTime?
 
+  /// Set when this capture was converted into a task. Records where it went
+  /// and stops a second conversion from creating a duplicate; SetNull frees
+  /// the item for re-conversion if the task is later deleted.
+  taskId String?
+  task   Task?   @relation(fields: [taskId], references: [id], onDelete: SetNull)
+
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
   @@index([userId, status])
+  @@index([taskId])
 }
 
 /// Generic "pin this" across domains — foods, workouts, templates, habits.

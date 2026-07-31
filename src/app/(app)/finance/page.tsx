@@ -5,6 +5,7 @@ import { CalendarClock, TrendingDown, TrendingUp, Wallet } from "lucide-react";
 import type { AccountView } from "@/components/finance/account-dialog";
 import { AddTransactionButton } from "@/components/finance/add-transaction-button";
 import type { BillRowView } from "@/components/finance/bill-dialog";
+import type { BudgetView } from "@/components/finance/budget-dialog";
 import { FinanceBoard, type CategoryTotalView } from "@/components/finance/finance-board";
 import type { SavingsGoalView } from "@/components/finance/savings-goal-dialog";
 import type { TransactionView } from "@/components/finance/transaction-dialog";
@@ -34,6 +35,7 @@ export default async function FinancePage() {
     type: account.type,
     currency: account.currency,
     openingBalance: account.openingBalance,
+    lowBalanceThreshold: account.lowBalanceThreshold,
     notes: account.notes,
     archived: account.archivedAt !== null,
     balance,
@@ -53,6 +55,18 @@ export default async function FinancePage() {
     currency: transaction.account.currency,
     billId: transaction.billId,
     billName: transaction.bill?.name ?? null,
+    transferGroupId: transaction.transferGroupId,
+  }));
+
+  const budgets: BudgetView[] = overview.budgets.map((view) => ({
+    id: view.budget.id,
+    category: view.budget.category,
+    label: view.label,
+    amount: view.budget.amount,
+    spent: view.spent,
+    remaining: view.remaining,
+    percent: view.percent,
+    over: view.over,
   }));
 
   const bills: BillRowView[] = overview.bills.map(({ bill, bucket, daysUntilDue }) => ({
@@ -159,6 +173,7 @@ export default async function FinancePage() {
           transactions={transactions}
           bills={bills}
           goals={goals}
+          budgets={budgets}
           byCategory={byCategory}
           today={overview.today}
           primaryCurrency={primaryCurrency}

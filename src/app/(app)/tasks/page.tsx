@@ -47,6 +47,11 @@ export default async function TasksPage() {
       title: subtask.title,
       status: subtask.status,
     })),
+    plannerItems: task.scheduleItems.map((item) => ({
+      id: item.id,
+      date: item.date,
+      status: item.status,
+    })),
   });
 
   const boardData: TaskBoardData = {

@@ -44,6 +44,8 @@ export interface TransactionView {
   currency: string;
   billId: string | null;
   billName: string | null;
+  /** Set on both legs of a transfer — such rows are deleted as a pair, never edited. */
+  transferGroupId: string | null;
 }
 
 type Direction = "spent" | "received";
@@ -115,10 +117,13 @@ export function TransactionDialog({
   }
 
   const selectedAccount = accounts.find((account) => account.id === form.accountId);
-  // Adjustments are bookkeeping written by "Set balance…"; they are only
-  // offered here when editing one that already exists.
+  // Bookkeeping categories are written by their own flows — "Set balance…"
+  // for adjustments, "Transfer" for transfer legs. Adjustments are still
+  // offered when editing one that already exists; transfers never are (their
+  // legs cannot be edited here at all).
   const categories = FINANCE_CATEGORIES.filter(
-    (value) => value !== "adjustment" || form.category === "adjustment",
+    (value) =>
+      value !== "transfer" && (value !== "adjustment" || form.category === "adjustment"),
   );
 
   function submit(event: React.FormEvent) {

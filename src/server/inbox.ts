@@ -21,18 +21,25 @@ const openInboxMemo = cache(openInboxImpl);
 
 export type InboxItemRow = Awaited<ReturnType<typeof openInboxImpl>>[number];
 
-/** Everything the inbox page renders: the open queue plus recent history. */
+/** Everything the inbox page renders: the open queue plus recent history,
+ *  and the active projects the convert-to-task dialog offers. */
 export async function getInboxPage() {
   const user = await getCurrentUser();
-  const [open, resolved] = await Promise.all([
+  const [open, resolved, projects] = await Promise.all([
     openInboxMemo(user.id),
     prisma.inboxItem.findMany({
       where: { userId: user.id, status: { in: ["done", "archived"] } },
       orderBy: { updatedAt: "desc" },
       take: 50,
     }),
+    prisma.project.findMany({
+      where: { userId: user.id, status: "active" },
+      select: { id: true, name: true, color: true },
+      orderBy: [{ sortOrder: "asc" }, { createdAt: "asc" }],
+      take: 100,
+    }),
   ]);
-  return { open, resolved };
+  return { open, resolved, projects };
 }
 
 export type InboxPage = Awaited<ReturnType<typeof getInboxPage>>;

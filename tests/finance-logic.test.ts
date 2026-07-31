@@ -6,12 +6,14 @@ import {
   billCadence,
   billIsActive,
   billsByUrgency,
+  budgetProgress,
   formatMoney,
   moneyRound,
   netBalance,
   savingsProgress,
   spendingByCategory,
   summarizeTransactions,
+  transferLegs,
   upcomingBillsTotal,
   type AccountBalanceInput,
   type BillLike,
@@ -147,6 +149,19 @@ describe("summarizeTransactions", () => {
     });
   });
 
+  it("keeps transfer legs out of both sides — moving money between accounts is not income", () => {
+    const summary = summarizeTransactions([
+      tx(1000, "income"),
+      tx(-200, "transfer"),
+      tx(200, "transfer"),
+      tx(-50, "groceries"),
+    ]);
+    expect(summary.income).toBe(1000);
+    expect(summary.spending).toBe(50);
+    expect(summary.net).toBe(950);
+    expect(summary.count).toBe(2);
+  });
+
   it("keeps balance adjustments out of both sides and the count", () => {
     const summary = summarizeTransactions([
       tx(500, "adjustment"),
@@ -182,6 +197,12 @@ describe("spendingByCategory", () => {
   it("bounds the list by the limit", () => {
     const top = spendingByCategory(transactions, 2);
     expect(top.map((entry) => entry.category)).toEqual(["groceries", "dining"]);
+  });
+
+  it("keeps transfer legs out of category spending", () => {
+    const totals = spendingByCategory([tx(-500, "transfer"), tx(-30, "dining")]);
+    expect(totals).toHaveLength(1);
+    expect(totals[0].category).toBe("dining");
   });
 
   it("falls back to the raw category as the label for unknown categories", () => {
@@ -343,5 +364,103 @@ describe("savingsProgress", () => {
       remaining: 1000,
       complete: false,
     });
+  });
+});
+
+describe("budgetProgress", () => {
+  const budget = (category: string, amount: number, id = category) => ({ id, category, amount });
+
+  it("counts only spending in the budget's category", () => {
+    const [view] = budgetProgress(
+      [budget("dining", 200)],
+      [tx(-50, "dining"), tx(-30, "groceries"), tx(20, "dining")],
+    );
+    expect(view.spent).toBe(50);
+    expect(view.remaining).toBe(150);
+    expect(view.percent).toBe(25);
+    expect(view.over).toBe(false);
+    expect(view.label).toBe("Dining");
+  });
+
+  it("income never offsets a budget, and bookkeeping rows never count", () => {
+    const [view] = budgetProgress(
+      [budget("dining", 100)],
+      [tx(-80, "dining"), tx(500, "dining"), tx(-40, "transfer"), tx(-40, "adjustment")],
+    );
+    expect(view.spent).toBe(80);
+  });
+
+  it("flags over-budget with the uncapped percentage", () => {
+    const [view] = budgetProgress([budget("dining", 100)], [tx(-130, "dining")]);
+    expect(view.over).toBe(true);
+    expect(view.percent).toBe(130);
+    expect(view.remaining).toBe(0);
+  });
+
+  it("a budget with no spending reads as untouched", () => {
+    const [view] = budgetProgress([budget("travel", 300)], []);
+    expect(view).toMatchObject({ spent: 0, remaining: 300, percent: 0, over: false });
+  });
+
+  it("sorts over-budget first, then by percentage", () => {
+    const views = budgetProgress(
+      [budget("dining", 100), budget("groceries", 100), budget("travel", 100)],
+      [tx(-150, "groceries"), tx(-90, "travel"), tx(-10, "dining")],
+    );
+    expect(views.map((view) => view.budget.category)).toEqual([
+      "groceries",
+      "travel",
+      "dining",
+    ]);
+  });
+
+  it("exact-target spending is not over budget", () => {
+    const [view] = budgetProgress([budget("dining", 100)], [tx(-100, "dining")]);
+    expect(view.over).toBe(false);
+    expect(view.percent).toBe(100);
+    expect(view.remaining).toBe(0);
+  });
+});
+
+describe("transferLegs", () => {
+  const input = {
+    fromAccountId: "a1",
+    toAccountId: "a2",
+    fromAccountName: "Checking",
+    toAccountName: "Savings",
+    amount: 250,
+    date: "2026-07-31",
+    notes: "monthly move",
+    transferGroupId: "grp",
+  };
+
+  it("shapes one out leg and one in leg sharing the group id", () => {
+    const [out, into] = transferLegs(input);
+    expect(out).toMatchObject({
+      accountId: "a1",
+      amount: -250,
+      category: "transfer",
+      payee: "Transfer to Savings",
+      transferGroupId: "grp",
+    });
+    expect(into).toMatchObject({
+      accountId: "a2",
+      amount: 250,
+      category: "transfer",
+      payee: "Transfer from Checking",
+      transferGroupId: "grp",
+    });
+  });
+
+  it("the legs cancel exactly — a transfer moves money, never creates it", () => {
+    const [out, into] = transferLegs({ ...input, amount: 33.335 });
+    expect(out.amount + into.amount).toBe(0);
+    expect(into.amount).toBe(33.34); // rounded to cents once, same on both legs
+  });
+
+  it("normalises a negative amount — direction comes from from/to, not the sign", () => {
+    const [out, into] = transferLegs({ ...input, amount: -40 });
+    expect(out.amount).toBe(-40);
+    expect(into.amount).toBe(40);
   });
 });

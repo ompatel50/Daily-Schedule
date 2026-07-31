@@ -10,6 +10,7 @@ import {
   fail,
   fromZod,
   projectSchema,
+  scheduleTaskSchema,
   succeed,
   taskSchema,
   type ActionResult,
@@ -179,4 +180,48 @@ export async function deleteTask(id: string): Promise<ActionResult<null>> {
   await prisma.task.deleteMany({ where: { id, userId: user.id } });
   revalidateAll();
   return succeed(null);
+}
+
+export interface ScheduleTaskOutcome {
+  scheduleItemId: string;
+  date: string;
+}
+
+/**
+ * Put a task on the planner: an ordinary planner block on the chosen day,
+ * carrying the task's title and priority and a link back to the task. No
+ * scheduling logic rides the link — the block behaves exactly like one typed
+ * into the planner, completing it never completes the task, and deleting the
+ * task merely unlinks the block. One task can be scheduled onto several days;
+ * that is time-blocking, not duplication.
+ */
+export async function scheduleTaskOnPlanner(
+  input: unknown,
+): Promise<ActionResult<ScheduleTaskOutcome>> {
+  const parsed = scheduleTaskSchema.safeParse(input);
+  if (!parsed.success) return fromZod(parsed.error);
+  const user = await getCurrentUser();
+  const { taskId, date, startMinute, endMinute } = parsed.data;
+
+  const task = await prisma.task.findFirst({ where: { id: taskId, userId: user.id } });
+  if (!task) return fail("Task not found");
+  if (task.status !== "open") return fail("Only open tasks can be scheduled");
+
+  const timed = startMinute !== null && startMinute !== undefined;
+  const created = await prisma.scheduleItem.create({
+    data: {
+      userId: user.id,
+      title: task.title,
+      date,
+      allDay: !timed,
+      startMinute: timed ? startMinute : null,
+      endMinute: timed ? (endMinute ?? null) : null,
+      category: "admin",
+      priority: task.priority,
+      taskId: task.id,
+    },
+  });
+
+  revalidateAll();
+  return succeed({ scheduleItemId: created.id, date });
 }

@@ -24,14 +24,20 @@
  * v4 — adds the universal-OS foundation tables: tasks & projects (`projects`,
  *      `tasks`), finance (`financeAccounts`, `bills`, `financeTransactions`,
  *      `savingsGoals`) and the life-admin inbox (`inboxItems`).
+ * v5 — adds per-category budgets (`budgets`) and CSV import audit records
+ *      (`financeImportBatches`); transactions now carry `transferGroupId` /
+ *      `importBatchId`, accounts a `lowBalanceThreshold`, and schedule items
+ *      and inbox items an optional `taskId` link. Tasks and projects moved
+ *      ahead of schedule items in restore order for that link.
  *
- * A v1–v3 file restores into a v4 app unchanged: the missing tables simply
- * have no rows, `npm run db:migrate` backfills an every-day schedule for
- * anything that arrives without one, and metric rows that arrive without a
- * fingerprint get one from the same migration — which is exactly how those
- * records behaved when the older backup was taken.
+ * A v1–v4 file restores into a v5 app unchanged: the missing tables simply
+ * have no rows, the new columns take their defaults, `npm run db:migrate`
+ * backfills an every-day schedule for anything that arrives without one, and
+ * metric rows that arrive without a fingerprint get one from the same
+ * migration — which is exactly how those records behaved when the older
+ * backup was taken.
  */
-export const BACKUP_VERSION = 4;
+export const BACKUP_VERSION = 5;
 
 export interface BackupMetadata {
   /** Schema version of the backup format itself. */
@@ -68,6 +74,10 @@ export const BACKUP_TABLES = [
   "workoutTemplates",
   "workouts",
   "workoutSets",
+  // Tasks precede schedule items: a planner block can link back to the task
+  // it was created from, and the task row must exist first.
+  "projects",
+  "tasks",
   "scheduleItems",
   "scheduleItemTags",
   "habitLogs",
@@ -86,12 +96,12 @@ export const BACKUP_TABLES = [
   "reminders",
   "reminderDeliveries",
   "favorites",
-  "projects",
-  "tasks",
   "financeAccounts",
+  "financeImportBatches",
   "bills",
   "financeTransactions",
   "savingsGoals",
+  "budgets",
   "inboxItems",
   "seedBatches",
   "seedRecords",

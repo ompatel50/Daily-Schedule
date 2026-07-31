@@ -34,7 +34,7 @@ export type ReminderSuppression =
 export interface ReminderOccurrence {
   /** Stable identity for exactly-once delivery, e.g. `habit:<id>:<date>`. */
   key: string;
-  kind: "reminder" | "habit" | "goal" | "bill" | "task";
+  kind: "reminder" | "habit" | "goal" | "bill" | "task" | "low_balance";
   title: string;
   message: string | null;
   /**
@@ -261,6 +261,61 @@ export function resolveDueReminder(
       kind: input.kind,
       title: input.name,
       message: input.detail ? `${duePhrase} · ${input.detail}` : duePhrase,
+      fireAt: minuteToWallClock(input.today, DUE_REMINDER_MINUTE),
+      reminderId: null,
+    },
+  };
+}
+
+// --- low-balance reminders (finance — first threshold alert on the foundation)
+
+/**
+ * The delivery key embeds the WEEK, not the day: while an account sits below
+ * its threshold the reminder fires at most once per week, instead of nagging
+ * every morning about a number the user already saw. A new week (or a
+ * recovered-then-dipped balance in a new week) arms it again. Future finance
+ * alerts (budget thresholds, document expiry) follow this same shape: a
+ * threshold check plus a coarse-window key on the one delivery ledger.
+ */
+export function lowBalanceReminderKey(accountId: string, weekStart: DayKey): string {
+  return `low_balance:${accountId}:${weekStart}`;
+}
+
+export interface LowBalanceReminderInput {
+  accountId: string;
+  accountName: string;
+  /** The computed balance (openingBalance + ledger), in account currency. */
+  balance: number;
+  /** Null = the account has no low-balance alert configured. */
+  threshold: number | null;
+  archived: boolean;
+  today: DayKey;
+  /** Start of the user's current week (their weekStartsOn convention). */
+  weekStart: DayKey;
+  /** Extra context for the message, e.g. formatted balance/threshold. */
+  detail: string | null;
+  deliveredKeys: ReadonlySet<string>;
+}
+
+/** A low-balance occurrence for one account, or why it stays silent. */
+export function resolveLowBalanceReminder(
+  input: LowBalanceReminderInput,
+): { ok: true; occurrence: ReminderOccurrence } | { ok: false; reason: ReminderSuppression } {
+  if (input.archived) return { ok: false, reason: "inactive" };
+  if (input.threshold === null) return { ok: false, reason: "disabled" };
+  // At or above the line: nothing to say. "not_scheduled" — today asks nothing.
+  if (input.balance >= input.threshold) return { ok: false, reason: "not_scheduled" };
+
+  const key = lowBalanceReminderKey(input.accountId, input.weekStart);
+  if (input.deliveredKeys.has(key)) return { ok: false, reason: "delivered" };
+
+  return {
+    ok: true,
+    occurrence: {
+      key,
+      kind: "low_balance",
+      title: `${input.accountName} is low`,
+      message: input.detail ?? "Balance is below your alert level",
       fireAt: minuteToWallClock(input.today, DUE_REMINDER_MINUTE),
       reminderId: null,
     },

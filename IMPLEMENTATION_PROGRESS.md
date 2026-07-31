@@ -2945,3 +2945,245 @@ Phase 32 candidates, in rough order of user value: CSV transaction import
 per category with month-over-month views, low-balance + document-expiry
 reminder types on the due-reminder foundation, task ↔ planner linking
 ("schedule this task"), and demo/starter data for the new modules.
+
+## Phase 32 — Finance workflows & life-admin bridges: CSV import, transfers, budgets, inbox → task, low-balance alerts, task → planner
+
+The first expansion on top of the Phase 31 foundation: the practical
+workflows the foundation reserved seats for. Nothing from the foundation was
+recreated or undone; every addition rides the established patterns
+(user-scoped Prisma models, pure logic under `lib/logic`, `ActionResult`
+actions, bounded read models, the one reminder ledger, backup versioning).
+
+### Schema (migration `20260731015758_finance_workflows_life_admin` — additive only)
+
+Two new tables and six new columns, all user-scoped, no drops, validated with
+`prisma migrate diff` against the committed migrations:
+
+* `Budget` — one monthly spending target per `(userId, category)` (the
+  unique key IS the identity; `period` only ever holds `monthly` today so
+  other windows can arrive additively).
+* `FinanceImportBatch` — one row per CSV import run: file name,
+  row/created/skipped/rejected counts, optional account link (SetNull — the
+  audit record outlives the account).
+* `FinanceTransaction.transferGroupId` — both legs of a transfer share one
+  id; `importBatchId` (SetNull) + the previously-reserved `importKey` now in
+  real use.
+* `FinanceAccount.lowBalanceThreshold` — null = no alert.
+* `ScheduleItem.taskId` / `InboxItem.taskId` — optional SetNull links for
+  "add to planner" and "became a task".
+
+### 1) CSV transaction import
+
+* Pure parser (`src/lib/logic/finance-import.ts`), reusing the health
+  importer's RFC-4180 field splitter: header alias detection (date, signed
+  amount OR debit/credit split OR amount + type column, description,
+  category, notes, currency, account-ignored), `$1,234.56` / `(45.00)` /
+  unicode-minus money parsing, strict dates (ISO always; slash dates via an
+  auto-detected — and user-flippable — day/month order, never guessed
+  silently when ambiguous), per-row rejection messages with line numbers,
+  currency-mismatch rejection against the target account, 5 000-row / 1 MB
+  caps.
+* Import identity: `v1|<accountId>|<date>|<amount>|<payee>|<n>` where `n`
+  counts identical rows within the file — so re-importing a file (or an
+  overlapping export window) skips row-for-row, while two genuinely
+  identical purchases in one file both import. Category/notes deliberately
+  excluded so recategorising never duplicates. Backed by the existing
+  `(userId, importKey)` unique.
+* Preview action parses and reports (new / already-imported / invalid,
+  detected mapping, sample rows) writing NOTHING; commit re-parses the same
+  input and writes batch + rows in ONE transaction (`createMany
+  skipDuplicates` backstops racing tabs). Duplicate lookups chunked at 500
+  keys per query.
+* Dialog on the finance page: account picker, file picker, mapping chips,
+  day-first toggle (shown only when relevant), sample table, rejected-row
+  list, then a created/skipped/rejected report. Template CSV at
+  `/finance-import-template.csv`.
+
+### 2) Account transfers
+
+* `transferBetweenAccounts`: two linked legs (−amount / +amount, category
+  `transfer`, payees "Transfer to/from X") written atomically with a shared
+  `transferGroupId`. Same currency enforced with a clear message
+  (cross-currency = record two manual transactions, documented); archived
+  accounts refused; both accounts ownership-checked.
+* `summarizeTransactions`, `spendingByCategory` and budget maths exclude
+  bookkeeping categories (`adjustment`, `transfer`) via one shared
+  `isBookkeepingCategory` helper — transfers move balances, never totals.
+* Deleting either leg deletes the pair; editing a leg through
+  `saveTransaction` is refused (delete-and-redo is the edit path — a
+  half-edited transfer cannot exist); hand-made `transfer`-category rows are
+  refused; the category picker never offers `transfer`.
+* Transaction rows show a Transfer badge, muted amount, and a
+  "Delete both legs" confirm instead of Edit.
+
+### 3) Per-category budgets
+
+* `budgetProgress` (pure): spent per category over the caller's window
+  (spending only — income never offsets, bookkeeping never counts),
+  remaining floored at zero, uncapped percent, `over` flag; sorted
+  over-first then by percent.
+* Actions: `saveBudget` (P2002 → "You already have a X budget"), 
+  `deleteBudget`. Category validated against `BUDGETABLE_CATEGORIES`
+  (spending categories only — no income, no bookkeeping).
+* Finance page: Budgets card with progress bars, red over-budget states and
+  "Over by $X" chips — computed from the month fetch already in hand, zero
+  extra ledger queries. Dashboard Money card: "N of M budgets over — worst
+  at P%" callout via `getFinanceSummary().budgets`.
+* Future budget-threshold reminders: the low-balance shape (threshold check
+  + coarse-window ledger key) is the documented template; not implemented.
+
+### 4) Inbox → task conversion
+
+* `convertInboxItemToTask`: one transaction claims the item with a guarded
+  `updateMany(taskId: null)` (two racing tabs → one task), creates the task
+  (title/notes prefilled from the capture, due date / priority / project
+  from the dialog, project ownership verified), archives the item and links
+  it. `taskId` is the double-conversion guard; deleting the task SetNulls it
+  and the item can convert again.
+* Inbox rows: "Make a task" button → prefilled dialog; converted items show
+  a "Became a task" badge in history. The inbox stays capture-first.
+
+### 5) Low-balance reminders
+
+* `resolveLowBalanceReminder` (pure) on the due-reminder foundation:
+  archived → inactive, no threshold → disabled, at-or-above → not_scheduled,
+  else an occurrence keyed `low_balance:<accountId>:<weekStart>` — the WEEK
+  in the key makes it fire at most once per week per account instead of a
+  daily nag; a new week re-arms it. Fires at the shared 9:00 due-reminder
+  minute; message carries formatted balance and threshold in the account's
+  currency.
+* Feed: one bounded load of threshold-bearing accounts (+ one groupBy for
+  just their ledger sums, only when any exist); same delivery ledger, same
+  kind-agnostic watcher and push runner. Restore's delivery-key remap regex
+  learned the `low_balance:` prefix.
+* UI: optional "Low balance alert" field on the account dialog (empty =
+  off, explicit null clears on edit); a quiet "Low" badge on account rows
+  while under.
+
+### 6) Task → planner linking (the optional goal — it fit cleanly)
+
+* `scheduleTaskOnPlanner`: creates an ORDINARY planner block (all-day, or
+  start time + 1 h) carrying the task's title/priority and a `taskId` link.
+  No scheduling logic rides the link: completing either side never touches
+  the other, one task can block several days, deleting the task unlinks the
+  block (SetNull), open tasks only.
+* Task rows: "Add to planner…" menu item + a "Planned · Aug 14" chip for the
+  next planned block (3 linked items loaded per task, bounded).
+
+### Cross-module updates
+
+* **Search**: new Budgets group (matched on category key, which the labels
+  derive from); transfer legs already reachable via payee text. 17 groups.
+* **Backup v5**: `budgets` + `financeImportBatches` export/restore/replace/
+  verify; tasks & projects moved AHEAD of schedule items in restore order
+  (the new `taskId` FK requires it); `transferGroupId` remapped with the
+  same id function on both legs (pairs survive, file values never collide
+  with live groups); the account id EMBEDDED in `importKey` remapped with
+  the account itself — so a CSV re-imported after a restore computes the
+  exact same keys and still dedups row-for-row; inbox/schedule-item task
+  links remapped or dropped like every optional link. v1–v4 files restore
+  unchanged.
+* **Dashboard**: Money card over-budget callout; everything else untouched.
+
+### Adversarial review round (7 findings confirmed by independent verifiers, all fixed before merge)
+
+A 14-agent review pass (7 focused reviewers over the diff, one skeptic per
+finding; 0 findings refuted) caught, and this session fixed:
+
+1. **Restore did not remap the account id embedded in `importKey`** — after
+   any backup restore, re-importing an overlapping CSV would have
+   double-counted the whole window silently. Fixed by remapping the key's
+   account segment exactly like the delivery keys; pinned by a new
+   import → export → replace-restore → re-import integration test.
+2. **A negative value in a debit/credit column was sign-flipped into
+   income** via `Math.abs` — a reversed deposit would have imported as
+   money in. Now rejected per-row with a message, like every other
+   contract violation.
+3. **A bill could carry the new `transfer` category** — "mark paid" would
+   then write a lone pseudo-transfer leg that every summary skips, hiding
+   real spending. Bookkeeping categories now refused by `billSchema` and
+   absent from the bill dialog.
+4. **The finance week card counted future-dated entries** on its
+   month-reuse path (and disagreed with its cross-month fallback path).
+   Both now compute the same `weekAgo..today` window.
+5. **The "Planned" chip vanished once a task had 3+ past planner blocks**
+   (unfiltered take-3). The include now filters to upcoming planned blocks
+   server-side.
+6. Docs claimed restore-then-reimport dedups while the code preserved keys
+   verbatim (the flip side of #1) — code now matches the claim.
+7. Stale test counts in the README.
+
+### Verification (all executed this session, in order)
+
+* `npm run lint` — clean. `npm run typecheck` — clean.
+* `npm test` — **837/837** (was 793; +44: `finance-import.test.ts` 26 new,
+  budget/transfer additions in `finance-logic.test.ts`, low-balance suite in
+  `reminders.test.ts`, v5 pins in `backup.test.ts`, Budgets in
+  `search.test.ts`).
+* `npm run test:integration` — **190/190** on real PostgreSQL (was 155;
+  +35: `finance-workflows.test.ts` — import preview/commit/idempotency/
+  delete-then-reimport/invalid-file/cross-user, transfer atomicity/
+  summary-exclusion/pair-delete/edit-refusal/cross-currency/cross-user,
+  budget CRUD/uniqueness/category-rules/cross-user/dashboard-summary,
+  conversion atomicity/no-duplicates/relink-after-delete/cross-user,
+  low-balance feed eligibility + once-per-week dedup + user scoping,
+  task→planner + unlink-on-delete + cross-user, search coverage; plus v5
+  round-trip fixtures in `backup-restore.test.ts`).
+* `npm run build` — clean; `/finance` 206 kB, `/inbox` 194 kB, `/tasks`
+  199 kB first-load, in line with the foundation.
+* Playwright e2e — **32 passed / 1 deliberate skip** (pre-seeded Apple
+  Health spec), identical to baseline.
+* **Browser verification (production build, real Chromium): 34/34 checks,
+  zero console errors/warnings/page errors/failed requests** (the one
+  filtered artifact is the pre-existing Vercel Analytics loader 404 that
+  only occurs outside the Vercel platform): sign-in; account creation with
+  a threshold; CSV preview (3 new / 1 invalid, mapping chips, per-row
+  errors) → commit (3 created) → re-import previews 3 duplicates with the
+  commit button disabled; transfer with visible linked legs; over-budget
+  and under-budget budget cards; the "Low" badge after the balance crossed
+  under; capture → convert → "Became a task"; the task on /tasks with an
+  "Add to planner" flow and chip; the block on the planner day; dashboard
+  Money over-budget line and Tasks open count; palette finding "Dining
+  budget" and "Transfer to Verify Savings"; all 12 routes 200.
+* **Database-checked, not screen-checked**: after the browser run — 4
+  transfer legs all `category=transfer` with non-null shared groups;
+  `lowBalanceThreshold 100` on the right account; the batch row
+  `bank.csv 4/3/0/1`; the converted item `archived` + linked to a task with
+  `dueDate 2026-08-15, priority high`; the planner block `2026-08-14,
+  allDay, linked`.
+
+### Performance notes
+
+* Budgets ride the month window the finance page already fetches — zero new
+  ledger queries on the page; the dashboard summary adds one indexed
+  `budget.findMany` (≤100 rows).
+* The reminder feed adds one indexed account load filtered to
+  threshold-bearing rows and one grouped ledger sum for exactly those
+  accounts, skipped entirely when none exist.
+* Import duplicate-lookups chunk at 500 keys; commit is one transaction;
+  the parser is bounded at 5 000 rows / 1 MB before any work happens.
+* Search adds one `take 8` indexed query (budgets) — 17 bounded queries per
+  keystroke batch, still one round trip.
+
+### Deliberately not implemented (recorded so nothing reads as forgotten)
+
+* Cross-currency transfers (refused with a message; two manual transactions
+  is the documented workaround).
+* Budget periods beyond monthly (column exists; validation allows only
+  `monthly`), budget rollover, budget-threshold reminders (shape documented
+  on the low-balance resolver).
+* Editing a transfer in place (delete-and-redo is the safe path offered).
+* Routing an `account` CSV column to multiple accounts (one import targets
+  one account; the column is ignored and documented as such).
+* Import undo ("delete everything batch X created" — the batch link makes
+  this a future one-liner).
+* Task ↔ planner status sync (deliberate: the block is an ordinary planner
+  item, not a task mirror).
+* Demo/starter seed data for the new modules (unchanged from Phase 31).
+
+### Exact next step
+
+Phase 33 candidates, in rough order of user value: import undo via the
+batch link, document-expiry reminders on the due-reminder foundation,
+budget-threshold reminders using the low-balance shape, weekly budget
+periods, demo/starter data for finance/tasks/inbox, and task tags/labels.

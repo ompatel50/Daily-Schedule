@@ -27,6 +27,7 @@ export const SEARCH_GROUPS = [
   "Bills",
   "Accounts",
   "Transactions",
+  "Budgets",
   "Savings goals",
   "Workouts",
   "Templates",
@@ -67,6 +68,7 @@ export interface SearchRows {
     currency: string;
   }>;
   bills: Array<{ id: string; name: string; kind: string; amount: number; nextDueDate: DayKey }>;
+  budgets: Array<{ id: string; category: string; amount: number }>;
   savingsGoals: Array<{ id: string; name: string; targetAmount: number; currentAmount: number }>;
 }
 
@@ -87,6 +89,7 @@ export function emptySearchRows(): SearchRows {
     accounts: [],
     transactions: [],
     bills: [],
+    budgets: [],
     savingsGoals: [],
   };
 }
@@ -205,6 +208,18 @@ export function buildSearchHits(rows: SearchRows, referenceDay: DayKey): SearchH
       group: "Transactions",
       title: transaction.payee || categoryLabel,
       subtitle: `${relativeDayLabel(transaction.date, referenceDay)} · ${formatMoney(transaction.amount, transaction.currency)}`,
+      href: "/finance",
+    });
+  }
+
+  for (const budget of rows.budgets) {
+    const label =
+      FINANCE_CATEGORY_META[budget.category as FinanceCategory]?.label ?? budget.category;
+    hits.push({
+      id: `budget-${budget.id}`,
+      group: "Budgets",
+      title: `${label} budget`,
+      subtitle: `${formatMoney(budget.amount)} monthly`,
       href: "/finance",
     });
   }

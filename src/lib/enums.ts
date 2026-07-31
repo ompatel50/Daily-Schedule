@@ -445,6 +445,7 @@ export const FINANCE_CATEGORIES = [
   "fees",
   "gifts",
   "adjustment",
+  "transfer",
   "other",
 ] as const;
 export type FinanceCategory = (typeof FINANCE_CATEGORIES)[number];
@@ -469,8 +470,27 @@ export const FINANCE_CATEGORY_META: Record<FinanceCategory, { label: string }> =
   fees: { label: "Fees" },
   gifts: { label: "Gifts" },
   adjustment: { label: "Balance adjustment" },
+  transfer: { label: "Transfer" },
   other: { label: "Other" },
 };
+
+/**
+ * Categories that record bookkeeping rather than earning or spending: balance
+ * adjustments (written by "Set balance") and the two legs of an account
+ * transfer. Every income/spending/budget summary excludes them — money moving
+ * between your own accounts is not income, and a corrected balance is not an
+ * expense.
+ */
+export const BOOKKEEPING_CATEGORIES = ["adjustment", "transfer"] as const;
+
+export function isBookkeepingCategory(category: string): boolean {
+  return (BOOKKEEPING_CATEGORIES as readonly string[]).includes(category);
+}
+
+/** Categories a budget can target: spending categories only. */
+export const BUDGETABLE_CATEGORIES = FINANCE_CATEGORIES.filter(
+  (category) => category !== "income" && !isBookkeepingCategory(category),
+);
 
 export const BILL_KINDS = ["bill", "subscription"] as const;
 export type BillKind = (typeof BILL_KINDS)[number];

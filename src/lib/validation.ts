@@ -3,7 +3,9 @@ import {
   ACCOUNT_TYPES,
   BILL_KINDS,
   BILL_RECURRENCES,
+  BUDGETABLE_CATEGORIES,
   FINANCE_CATEGORIES,
+  isBookkeepingCategory,
   FOOD_CATEGORIES,
   GOAL_DOMAINS,
   HABIT_CATEGORIES,
@@ -469,6 +471,8 @@ export const financeAccountSchema = z.object({
     .transform((value) => value.toUpperCase())
     .default("USD"),
   openingBalance: money.default(0),
+  /** Remind when the balance drops below this; null = no low-balance alert. */
+  lowBalanceThreshold: money.nullable().optional(),
   notes: z.string().max(2000).nullable().optional(),
 });
 
@@ -504,7 +508,16 @@ export const billSchema = z.object({
   name: z.string().trim().min(1, "Give it a name").max(120),
   amount: money.refine((value) => value > 0, "The amount must be above zero"),
   kind: z.enum(BILL_KINDS).default("bill"),
-  category: z.enum(FINANCE_CATEGORIES).default("utilities"),
+  // Bookkeeping categories are refused: markBillPaid writes the payment into
+  // the ledger under the bill's category, and a `transfer`/`adjustment` row
+  // would hide real spending from every summary while pairing with nothing.
+  category: z
+    .enum(FINANCE_CATEGORIES)
+    .default("utilities")
+    .refine(
+      (value) => !isBookkeepingCategory(value),
+      "Bills record real spending — pick a spending category",
+    ),
   accountId: z.string().nullable().optional(),
   recurrence: z.enum(BILL_RECURRENCES).default("monthly"),
   /** The next due date; on create it anchors the recurrence too. */
@@ -551,6 +564,46 @@ export const savingsContributionSchema = z
     path: ["amount"],
   });
 
+/** Moving money between two of your own accounts — same currency only. */
+export const transferSchema = z
+  .object({
+    fromAccountId: z.string().min(1, "Pick the account the money leaves"),
+    toAccountId: z.string().min(1, "Pick the account the money enters"),
+    amount: money.refine((value) => value > 0, "The amount must be above zero"),
+    date: dayKey,
+    notes: z.string().max(2000).nullable().optional(),
+  })
+  .refine((value) => value.fromAccountId !== value.toAccountId, {
+    message: "Pick two different accounts",
+    path: ["toAccountId"],
+  });
+
+export type TransferInput = z.infer<typeof transferSchema>;
+
+/** One budget per spending category; monthly is the only window so far. */
+export const budgetSchema = z.object({
+  id: z.string().optional(),
+  category: z.enum(BUDGETABLE_CATEGORIES as [string, ...string[]]),
+  amount: money.refine((value) => value > 0, "The target must be above zero"),
+  period: z.enum(["monthly"]).default("monthly"),
+});
+
+export type BudgetInput = z.infer<typeof budgetSchema>;
+
+/**
+ * A CSV import request — preview and commit share it, so what was previewed is
+ * exactly what commits. The content cap matches the parser's own bound.
+ */
+export const financeCsvImportSchema = z.object({
+  accountId: z.string().min(1, "Pick an account"),
+  fileName: z.string().trim().min(1).max(200),
+  content: z.string().min(1, "The file is empty").max(1_000_000),
+  /** Override the auto-detected day/month order of slash dates. */
+  dateOrder: z.enum(["iso", "mdy", "dmy"]).optional(),
+});
+
+export type FinanceCsvImportInput = z.infer<typeof financeCsvImportSchema>;
+
 // --- inbox -------------------------------------------------------------------
 
 export const inboxItemSchema = z.object({
@@ -560,6 +613,44 @@ export const inboxItemSchema = z.object({
 });
 
 export type InboxItemInput = z.infer<typeof inboxItemSchema>;
+
+/**
+ * Turning a capture into a task. Title/notes default to the item's own; the
+ * rest is what the task dialog would have asked anyway.
+ */
+export const convertInboxItemSchema = z.object({
+  id: z.string().min(1),
+  title: z.string().trim().min(1, "Give the task a title").max(200).optional(),
+  notes: z.string().max(5000).nullable().optional(),
+  projectId: z.string().nullable().optional(),
+  priority: z.enum(PRIORITIES).default("medium"),
+  dueDate: dayKey.nullable().optional(),
+});
+
+export type ConvertInboxItemInput = z.infer<typeof convertInboxItemSchema>;
+
+/**
+ * Putting a task on the planner: an ordinary planner block on a chosen day,
+ * linked back to the task. All-day unless a start time is given.
+ */
+export const scheduleTaskSchema = z
+  .object({
+    taskId: z.string().min(1),
+    date: dayKey,
+    startMinute: optionalMinute,
+    endMinute: optionalMinute,
+  })
+  .refine(
+    (value) =>
+      value.startMinute === null ||
+      value.startMinute === undefined ||
+      value.endMinute === null ||
+      value.endMinute === undefined ||
+      value.endMinute >= value.startMinute,
+    { message: "End time must be after the start time", path: ["endMinute"] },
+  );
+
+export type ScheduleTaskInput = z.infer<typeof scheduleTaskSchema>;
 
 /** Standard action result — every server action returns this shape. */
 export type ActionResult<T = unknown> =

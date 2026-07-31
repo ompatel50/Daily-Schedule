@@ -78,9 +78,11 @@ const MODEL_BY_TABLE: Record<BackupTable, string> = {
   projects: "Project",
   tasks: "Task",
   financeAccounts: "FinanceAccount",
+  financeImportBatches: "FinanceImportBatch",
   bills: "Bill",
   financeTransactions: "FinanceTransaction",
   savingsGoals: "SavingsGoal",
+  budgets: "Budget",
   inboxItems: "InboxItem",
   seedBatches: "SeedBatch",
   seedRecords: "SeedRecord",
@@ -438,6 +440,23 @@ export async function restoreBackupForUser(
     return mapped;
   });
 
+  // Projects and tasks come before schedule items: a planner block may link
+  // back to the task it was created from, and the task row must exist first.
+  prepare("projects", (row) => {
+    const mapped = withId(row);
+    return mapped ? own(mapped) : null;
+  });
+
+  prepare("tasks", (row) => {
+    const mapped = withId(row);
+    if (!mapped) return null;
+    // A task survives losing its project or parent (optional links), but a
+    // foreign id must never survive into this account.
+    mapped.projectId = inFile("projects", row.projectId) ? map(row.projectId) : null;
+    mapped.parentId = inFile("tasks", row.parentId) ? map(row.parentId) : null;
+    return own(mapped);
+  });
+
   prepare("scheduleItems", (row) => {
     const mapped = withId(row);
     if (!mapped) return null;
@@ -446,6 +465,7 @@ export async function restoreBackupForUser(
     mapped.mealId = inFile("meals", row.mealId) ? map(row.mealId) : null;
     mapped.templateId = inFile("scheduleTemplates", row.templateId) ? map(row.templateId) : null;
     mapped.seriesId = inFile("scheduleItems", row.seriesId) ? map(row.seriesId) : null;
+    mapped.taskId = inFile("tasks", row.taskId) ? map(row.taskId) : null;
     return own(mapped);
   });
 
@@ -543,7 +563,7 @@ export async function restoreBackupForUser(
     if (!mapped || typeof mapped.key !== "string") return null;
     // Delivery keys embed record ids (`habit:<id>:<date>`); remap the embedded
     // id so "already delivered" still means the right occurrence.
-    const match = /^(habit|goal|reminder|bill|task):([^:]+):(.*)$/.exec(mapped.key);
+    const match = /^(habit|goal|reminder|bill|task|low_balance):([^:]+):(.*)$/.exec(mapped.key);
     if (match) {
       mapped.key = `${match[1]}:${remapId(userId, match[2])}:${match[3]}`;
     }
@@ -575,24 +595,17 @@ export async function restoreBackupForUser(
     return own(mapped);
   });
 
-  prepare("projects", (row) => {
-    const mapped = withId(row);
-    return mapped ? own(mapped) : null;
-  });
-
-  prepare("tasks", (row) => {
-    const mapped = withId(row);
-    if (!mapped) return null;
-    // A task survives losing its project or parent (optional links), but a
-    // foreign id must never survive into this account.
-    mapped.projectId = inFile("projects", row.projectId) ? map(row.projectId) : null;
-    mapped.parentId = inFile("tasks", row.parentId) ? map(row.parentId) : null;
-    return own(mapped);
-  });
-
   prepare("financeAccounts", (row) => {
     const mapped = withId(row);
     return mapped ? own(mapped) : null;
+  });
+
+  prepare("financeImportBatches", (row) => {
+    const mapped = withId(row);
+    if (!mapped) return null;
+    // The audit record survives losing its account (optional link).
+    mapped.accountId = inFile("financeAccounts", row.accountId) ? map(row.accountId) : null;
+    return own(mapped);
   });
 
   prepare("bills", (row) => {
@@ -609,6 +622,28 @@ export async function restoreBackupForUser(
     if (!inFile("financeAccounts", row.accountId)) return null;
     mapped.accountId = map(row.accountId);
     mapped.billId = inFile("bills", row.billId) ? map(row.billId) : null;
+    mapped.importBatchId = inFile("financeImportBatches", row.importBatchId)
+      ? map(row.importBatchId)
+      : null;
+    // importKey embeds the account id (`v1|<accountId>|…`); remap that
+    // segment the same way accountId itself is remapped — like the delivery
+    // keys above — so a CSV re-imported AFTER a restore still dedups
+    // row-for-row instead of double-counting the ledger. Ids never contain
+    // "|", so splitting on the first two pipes is safe even for payees that
+    // do.
+    if (typeof mapped.importKey === "string") {
+      const keyMatch = /^v1\|([^|]+)\|([\s\S]*)$/.exec(mapped.importKey);
+      if (keyMatch && inFile("financeAccounts", keyMatch[1])) {
+        mapped.importKey = `v1|${map(keyMatch[1])}|${keyMatch[2]}`;
+      }
+    }
+    // Not a row id, but remapped with the same function anyway: the pair
+    // keeps pairing (both legs remap identically) and a file value can never
+    // collide with a group this account created live.
+    mapped.transferGroupId =
+      typeof row.transferGroupId === "string" && row.transferGroupId.length > 0
+        ? remapId(userId, row.transferGroupId)
+        : null;
     return own(mapped);
   });
 
@@ -617,9 +652,17 @@ export async function restoreBackupForUser(
     return mapped ? own(mapped) : null;
   });
 
-  prepare("inboxItems", (row) => {
+  prepare("budgets", (row) => {
     const mapped = withId(row);
     return mapped ? own(mapped) : null;
+  });
+
+  prepare("inboxItems", (row) => {
+    const mapped = withId(row);
+    if (!mapped) return null;
+    // The converted-to-task link is optional; a foreign id never survives.
+    mapped.taskId = inFile("tasks", row.taskId) ? map(row.taskId) : null;
+    return own(mapped);
   });
 
   prepare("seedBatches", (row) => {
@@ -697,8 +740,10 @@ export async function restoreBackupForUser(
         await db.favoriteItem.deleteMany({ where: { userId } });
         await db.financeTransaction.deleteMany({ where: { userId } });
         await db.bill.deleteMany({ where: { userId } });
+        await db.financeImportBatch.deleteMany({ where: { userId } });
         await db.financeAccount.deleteMany({ where: { userId } });
         await db.savingsGoal.deleteMany({ where: { userId } });
+        await db.budget.deleteMany({ where: { userId } });
         await db.task.deleteMany({ where: { userId } });
         await db.project.deleteMany({ where: { userId } });
         await db.inboxItem.deleteMany({ where: { userId } });
@@ -797,9 +842,11 @@ export async function restoreBackupForUser(
     projects: await prisma.project.count({ where: { userId } }),
     tasks: await prisma.task.count({ where: { userId } }),
     financeAccounts: await prisma.financeAccount.count({ where: { userId } }),
+    financeImportBatches: await prisma.financeImportBatch.count({ where: { userId } }),
     bills: await prisma.bill.count({ where: { userId } }),
     financeTransactions: await prisma.financeTransaction.count({ where: { userId } }),
     savingsGoals: await prisma.savingsGoal.count({ where: { userId } }),
+    budgets: await prisma.budget.count({ where: { userId } }),
     inboxItems: await prisma.inboxItem.count({ where: { userId } }),
   };
 

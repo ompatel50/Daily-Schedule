@@ -1,10 +1,12 @@
 import { getCurrentUser, prisma } from "@/lib/db";
-import { shiftDay } from "@/lib/date";
-import { formatMoney } from "@/lib/logic/finance";
+import { shiftDay, weekRange } from "@/lib/date";
+import { formatMoney, moneyRound } from "@/lib/logic/finance";
 import {
   dueReminderKey,
+  lowBalanceReminderKey,
   resolveClassicReminder,
   resolveDueReminder,
+  resolveLowBalanceReminder,
   resolveScheduleReminder,
   type ReminderOccurrence,
 } from "@/lib/logic/reminders";
@@ -41,8 +43,9 @@ export async function getReminderFeedFor(user: {
 }): Promise<ReminderOccurrence[]> {
   const settings = scheduleSettingsFor(user);
   const date = settings.today;
+  const weekStart = weekRange(date, user.weekStartsOn === 0 ? 0 : 1).start;
 
-  const [reminders, habits, goals, dueBills, dueTasks] = await Promise.all([
+  const [reminders, habits, goals, dueBills, dueTasks, watchedAccounts] = await Promise.all([
     prisma.reminder.findMany({
       where: { userId: user.id, enabled: true },
       include: { scheduleItem: { select: { status: true } } },
@@ -63,7 +66,24 @@ export async function getReminderFeedFor(user: {
       where: { userId: user.id, status: "open", reminderEnabled: true, dueDate: date },
       take: 200,
     }),
+    // Accounts with a low-balance alert configured. The balance is the ledger
+    // sum — fetched only for these accounts, and only when any exist.
+    prisma.financeAccount.findMany({
+      where: { userId: user.id, archivedAt: null, lowBalanceThreshold: { not: null } },
+      select: { id: true, name: true, currency: true, openingBalance: true, lowBalanceThreshold: true },
+      take: 100,
+    }),
   ]);
+
+  const balanceByAccount = new Map<string, number>();
+  if (watchedAccounts.length > 0) {
+    const totals = await prisma.financeTransaction.groupBy({
+      by: ["accountId"],
+      where: { userId: user.id, accountId: { in: watchedAccounts.map((account) => account.id) } },
+      _sum: { amount: true },
+    });
+    for (const row of totals) balanceByAccount.set(row.accountId, row._sum.amount ?? 0);
+  }
 
   // One round trip for the delivery ledger: today's schedule keys are
   // deterministic, and classic keys derive from each reminder's instant.
@@ -76,6 +96,7 @@ export async function getReminderFeedFor(user: {
       dueReminderKey("bill", bill.id, bill.nextDueDate, true),
     ]),
     ...dueTasks.map((task) => dueReminderKey("task", task.id, date)),
+    ...watchedAccounts.map((account) => lowBalanceReminderKey(account.id, weekStart)),
   ];
   const delivered = await prisma.reminderDelivery.findMany({
     where: { userId: user.id, key: { in: candidateKeys } },
@@ -172,6 +193,31 @@ export async function getReminderFeedFor(user: {
       inactive: false,
       daysBefore: 0,
       detail: null,
+      deliveredKeys,
+    });
+    if (resolved.ok) occurrences.push(resolved.occurrence);
+  }
+
+  // Low balances — the first threshold alert on the foundation. At most once
+  // per week per account (the key embeds the week), so a lingering low
+  // balance never turns into a daily nag.
+  for (const account of watchedAccounts) {
+    const balance = moneyRound(
+      account.openingBalance + (balanceByAccount.get(account.id) ?? 0),
+    );
+    const threshold = account.lowBalanceThreshold;
+    const resolved = resolveLowBalanceReminder({
+      accountId: account.id,
+      accountName: account.name,
+      balance,
+      threshold,
+      archived: false, // the query already filters archived accounts
+      today: date,
+      weekStart,
+      detail:
+        threshold === null
+          ? null
+          : `Balance ${formatMoney(balance, account.currency)} is below your ${formatMoney(threshold, account.currency)} alert level`,
       deliveredKeys,
     });
     if (resolved.ok) occurrences.push(resolved.occurrence);

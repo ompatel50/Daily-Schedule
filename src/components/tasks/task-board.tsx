@@ -7,6 +7,7 @@ import {
   Archive,
   CalendarCheck2,
   CalendarDays,
+  CalendarPlus,
   CalendarRange,
   CheckCircle2,
   ChevronDown,
@@ -39,6 +40,10 @@ import { Progress } from "@/components/ui/progress";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import { projectColorDot } from "@/components/tasks/project-colors";
 import { ProjectDialog, type ProjectDraft } from "@/components/tasks/project-dialog";
+import {
+  ScheduleTaskDialog,
+  type ScheduleSource,
+} from "@/components/tasks/schedule-task-dialog";
 import { TaskDialog, blankTask, type TaskDraft } from "@/components/tasks/task-dialog";
 import { formatDay } from "@/lib/date";
 import { PRIORITY_META, PROJECT_STATUS_META, type Priority, type ProjectStatus } from "@/lib/enums";
@@ -63,10 +68,18 @@ export interface SubtaskItem {
   status: string;
 }
 
+export interface PlannerLink {
+  id: string;
+  date: string;
+  status: string;
+}
+
 export interface TaskItem extends TaskDraft {
   id: string;
   project: { id: string; name: string; color: string; status: string } | null;
   subtasks: SubtaskItem[];
+  /** Planner blocks created from this task ("add to planner"), soonest first. */
+  plannerItems: PlannerLink[];
 }
 
 export interface ProjectItem {
@@ -118,6 +131,7 @@ export function TaskBoard({ board }: { board: TaskBoardData }) {
   const [parentTitle, setParentTitle] = React.useState<string | null>(null);
   const [projectDialogOpen, setProjectDialogOpen] = React.useState(false);
   const [editingProject, setEditingProject] = React.useState<ProjectDraft | null>(null);
+  const [scheduling, setScheduling] = React.useState<ScheduleSource | null>(null);
   const [completing, setCompleting] = React.useState<Record<string, boolean>>({});
   const [expanded, setExpanded] = React.useState<Record<string, boolean>>({});
 
@@ -250,6 +264,9 @@ export function TaskBoard({ board }: { board: TaskBoardData }) {
                     onToggleDone={toggleDone}
                     onEdit={() => openEditTask(task)}
                     onAddSubtask={() => openAddSubtask(task)}
+                    onSchedule={() =>
+                      setScheduling({ id: task.id, title: task.title, dueDate: task.dueDate })
+                    }
                     onDrop={() => run(() => dropTask(task.id), "Task dropped")}
                     onDelete={() => run(() => deleteTask(task.id), "Task deleted")}
                   />
@@ -361,6 +378,11 @@ export function TaskBoard({ board }: { board: TaskBoardData }) {
         onOpenChange={setProjectDialogOpen}
         project={editingProject}
       />
+      <ScheduleTaskDialog
+        task={scheduling}
+        today={board.today}
+        onClose={() => setScheduling(null)}
+      />
     </div>
   );
 }
@@ -374,6 +396,7 @@ function TaskRow({
   onToggleDone,
   onEdit,
   onAddSubtask,
+  onSchedule,
   onDrop,
   onDelete,
 }: {
@@ -385,6 +408,7 @@ function TaskRow({
   onToggleDone: (id: string, status: string) => void;
   onEdit: () => void;
   onAddSubtask: () => void;
+  onSchedule: () => void;
   onDrop: () => void;
   onDelete: () => void;
 }) {
@@ -397,6 +421,11 @@ function TaskRow({
   // Dropped subtasks are not obligations, so they count toward neither side.
   const countable = task.subtasks.filter((subtask) => subtask.status !== "dropped");
   const subtasksDone = countable.filter((subtask) => subtask.status === "done").length;
+
+  // The next planner block for this task: today or later, not yet done/skipped.
+  const nextPlanned = task.plannerItems.find(
+    (item) => item.status === "planned" && item.date >= today,
+  );
 
   return (
     <div className="rounded-lg border px-3 py-2">
@@ -438,7 +467,7 @@ function TaskRow({
             )}
           </div>
 
-          {(task.dueDate || task.repeat !== "none" || countable.length > 0) && (
+          {(task.dueDate || task.repeat !== "none" || countable.length > 0 || nextPlanned) && (
             <div className="mt-1 flex flex-wrap items-center gap-x-3 gap-y-0.5 text-xs text-muted-foreground">
               {task.dueDate && (
                 <span className={cn(overdue && "font-medium text-red-700 dark:text-red-400")}>
@@ -452,6 +481,15 @@ function TaskRow({
                 >
                   <Repeat2 className="h-3 w-3" aria-hidden="true" />
                   {describeRepeat(task.repeat, task.repeatEvery)}
+                </span>
+              )}
+              {nextPlanned && (
+                <span
+                  className="inline-flex items-center gap-1"
+                  title={`On the planner for ${formatDay(nextPlanned.date)}`}
+                >
+                  <CalendarPlus className="h-3 w-3" aria-hidden="true" />
+                  Planned · {formatDay(nextPlanned.date, "MMM d")}
                 </span>
               )}
               {countable.length > 0 && (
@@ -519,6 +557,9 @@ function TaskRow({
             </DropdownMenuItem>
             <DropdownMenuItem onSelect={onAddSubtask}>
               <Plus /> Add subtask
+            </DropdownMenuItem>
+            <DropdownMenuItem onSelect={onSchedule}>
+              <CalendarPlus /> Add to planner…
             </DropdownMenuItem>
             <DropdownMenuSeparator />
             <DropdownMenuItem onSelect={onDrop}>

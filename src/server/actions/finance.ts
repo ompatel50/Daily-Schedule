@@ -1,12 +1,16 @@
 "use server";
 
+import { randomUUID } from "node:crypto";
+
 import { revalidatePath } from "next/cache";
 
 import { getCurrentUser, prisma } from "@/lib/db";
-import { advanceBillAfterPayment, moneyRound } from "@/lib/logic/finance";
+import { FINANCE_CATEGORY_META, type FinanceCategory } from "@/lib/enums";
+import { advanceBillAfterPayment, moneyRound, transferLegs } from "@/lib/logic/finance";
 import { todayIn } from "@/lib/logic/schedule";
 import {
   billSchema,
+  budgetSchema,
   fail,
   financeAccountSchema,
   financeTransactionSchema,
@@ -16,6 +20,7 @@ import {
   savingsGoalSchema,
   setAccountBalanceSchema,
   succeed,
+  transferSchema,
   type ActionResult,
 } from "@/lib/validation";
 
@@ -30,7 +35,16 @@ export async function saveFinanceAccount(input: unknown): Promise<ActionResult<{
   if (!parsed.success) return fromZod(parsed.error);
   const user = await getCurrentUser();
   const { id, ...data } = parsed.data;
-  const payload = { ...data, notes: data.notes ?? null };
+  const payload = {
+    ...data,
+    notes: data.notes ?? null,
+    // Explicitly null when absent, so clearing the field in the dialog
+    // actually turns the low-balance alert off on edit.
+    lowBalanceThreshold:
+      data.lowBalanceThreshold === undefined || data.lowBalanceThreshold === null
+        ? null
+        : moneyRound(data.lowBalanceThreshold),
+  };
 
   if (id) {
     const existing = await prisma.financeAccount.findFirst({
@@ -126,6 +140,13 @@ export async function saveTransaction(input: unknown): Promise<ActionResult<{ id
   const user = await getCurrentUser();
   const { id, accountId, billId, ...data } = parsed.data;
 
+  // Transfer legs only ever come in pairs, written by transferBetweenAccounts.
+  // A lone hand-made "transfer" row would move a balance while hiding from
+  // every summary — refuse it here rather than surprise later.
+  if (data.category === "transfer") {
+    return fail("Use “Transfer” to move money between accounts");
+  }
+
   // Client-supplied references must belong to the caller.
   const account = await prisma.financeAccount.findFirst({
     where: { id: accountId, userId: user.id },
@@ -150,6 +171,11 @@ export async function saveTransaction(input: unknown): Promise<ActionResult<{ id
       where: { id, userId: user.id },
     });
     if (!existing) return fail("Transaction not found");
+    // Editing one leg would silently unbalance the pair; the safe edit is
+    // delete-and-redo, which the UI offers.
+    if (existing.transferGroupId) {
+      return fail("This is one leg of a transfer — delete the transfer and record it again");
+    }
     await prisma.financeTransaction.update({ where: { id }, data: payload });
     revalidateAll();
     return succeed({ id });
@@ -162,9 +188,115 @@ export async function saveTransaction(input: unknown): Promise<ActionResult<{ id
   return succeed({ id: created.id });
 }
 
+/** Deleting one leg of a transfer removes the pair — never half a transfer.
+ *  Like every scoped delete here, deleting a row that is not yours (or is
+ *  already gone) is a silent no-op, not an error. */
 export async function deleteTransaction(id: string): Promise<ActionResult<null>> {
   const user = await getCurrentUser();
-  await prisma.financeTransaction.deleteMany({ where: { id, userId: user.id } });
+  const existing = await prisma.financeTransaction.findFirst({
+    where: { id, userId: user.id },
+    select: { transferGroupId: true },
+  });
+  if (existing) {
+    await prisma.financeTransaction.deleteMany({
+      where: existing.transferGroupId
+        ? { userId: user.id, transferGroupId: existing.transferGroupId }
+        : { id, userId: user.id },
+    });
+  }
+  revalidateAll();
+  return succeed(null);
+}
+
+// --- transfers ---------------------------------------------------------------
+
+export interface TransferOutcome {
+  transferGroupId: string;
+  amount: number;
+}
+
+/**
+ * Move money between two of the caller's accounts: two linked ledger rows
+ * (out of one account, into the other) written atomically, category
+ * `transfer` so no income/spending summary counts them. Same currency only —
+ * a conversion would be a made-up number.
+ */
+export async function transferBetweenAccounts(
+  input: unknown,
+): Promise<ActionResult<TransferOutcome>> {
+  const parsed = transferSchema.safeParse(input);
+  if (!parsed.success) return fromZod(parsed.error);
+  const user = await getCurrentUser();
+  const { fromAccountId, toAccountId, amount, date, notes } = parsed.data;
+
+  const accounts = await prisma.financeAccount.findMany({
+    where: { id: { in: [fromAccountId, toAccountId] }, userId: user.id },
+  });
+  const from = accounts.find((account) => account.id === fromAccountId);
+  const to = accounts.find((account) => account.id === toAccountId);
+  if (!from || !to) return fail("Account not found");
+  if (from.archivedAt || to.archivedAt) return fail("Restore the archived account first");
+  if (from.currency !== to.currency) {
+    return fail(
+      `These accounts use different currencies (${from.currency} and ${to.currency}) — cross-currency transfers aren't supported yet`,
+    );
+  }
+
+  const transferGroupId = randomUUID();
+  const legs = transferLegs({
+    fromAccountId: from.id,
+    toAccountId: to.id,
+    fromAccountName: from.name,
+    toAccountName: to.name,
+    amount,
+    date,
+    notes: notes ?? null,
+    transferGroupId,
+  });
+
+  await prisma.financeTransaction.createMany({
+    data: legs.map((leg) => ({ ...leg, userId: user.id })),
+  });
+
+  revalidateAll();
+  return succeed({ transferGroupId, amount: moneyRound(amount) });
+}
+
+// --- budgets -----------------------------------------------------------------
+
+export async function saveBudget(input: unknown): Promise<ActionResult<{ id: string }>> {
+  const parsed = budgetSchema.safeParse(input);
+  if (!parsed.success) return fromZod(parsed.error);
+  const user = await getCurrentUser();
+  const { id, ...data } = parsed.data;
+  const payload = { ...data, amount: moneyRound(data.amount) };
+  const categoryLabel =
+    FINANCE_CATEGORY_META[data.category as FinanceCategory]?.label ?? data.category;
+
+  try {
+    if (id) {
+      const existing = await prisma.budget.findFirst({ where: { id, userId: user.id } });
+      if (!existing) return fail("Budget not found");
+      await prisma.budget.update({ where: { id }, data: payload });
+      revalidateAll();
+      return succeed({ id });
+    }
+
+    const created = await prisma.budget.create({ data: { ...payload, userId: user.id } });
+    revalidateAll();
+    return succeed({ id: created.id });
+  } catch (error) {
+    // The (userId, category) unique: one budget per category.
+    if ((error as { code?: string }).code === "P2002") {
+      return fail(`You already have a ${categoryLabel} budget — edit that one instead`);
+    }
+    throw error;
+  }
+}
+
+export async function deleteBudget(id: string): Promise<ActionResult<null>> {
+  const user = await getCurrentUser();
+  await prisma.budget.deleteMany({ where: { id, userId: user.id } });
   revalidateAll();
   return succeed(null);
 }

@@ -4,7 +4,9 @@ import * as React from "react";
 import { useRouter } from "next/navigation";
 import {
   Archive,
+  ArrowLeftRight,
   CalendarClock,
+  FileUp,
   Landmark,
   MoreHorizontal,
   Pencil,
@@ -13,7 +15,9 @@ import {
   Plus,
   Receipt,
   Scale,
+  Target,
   Trash2,
+  TriangleAlert,
   Undo2,
   type LucideIcon,
 } from "lucide-react";
@@ -34,6 +38,8 @@ import { SectionCard } from "@/components/shared/section-card";
 import { AccountDialog, type AccountView } from "@/components/finance/account-dialog";
 import { AdjustGoalDialog } from "@/components/finance/adjust-goal-dialog";
 import { BillDialog, type BillRowView } from "@/components/finance/bill-dialog";
+import { BudgetDialog, type BudgetView } from "@/components/finance/budget-dialog";
+import { ImportCsvDialog } from "@/components/finance/import-csv-dialog";
 import {
   SavingsGoalDialog,
   type SavingsGoalView,
@@ -43,6 +49,7 @@ import {
   TransactionDialog,
   type TransactionView,
 } from "@/components/finance/transaction-dialog";
+import { TransferDialog } from "@/components/finance/transfer-dialog";
 import { formatDay } from "@/lib/date";
 import {
   ACCOUNT_TYPE_META,
@@ -57,6 +64,7 @@ import { formatMoney } from "@/lib/logic/finance";
 import { cn } from "@/lib/utils";
 import {
   deleteBill,
+  deleteBudget,
   deleteFinanceAccount,
   deleteSavingsGoal,
   deleteTransaction,
@@ -85,6 +93,7 @@ export function FinanceBoard({
   transactions,
   bills,
   goals,
+  budgets,
   byCategory,
   today,
   primaryCurrency,
@@ -93,6 +102,7 @@ export function FinanceBoard({
   transactions: TransactionView[];
   bills: BillRowView[];
   goals: SavingsGoalView[];
+  budgets: BudgetView[];
   byCategory: CategoryTotalView[];
   today: string;
   /** Currency of the largest account group — used where no account is linked. */
@@ -109,6 +119,10 @@ export function FinanceBoard({
   const [billEditing, setBillEditing] = React.useState<BillRowView | null>(null);
   const [goalOpen, setGoalOpen] = React.useState(false);
   const [goalEditing, setGoalEditing] = React.useState<SavingsGoalView | null>(null);
+  const [budgetOpen, setBudgetOpen] = React.useState(false);
+  const [budgetEditing, setBudgetEditing] = React.useState<BudgetView | null>(null);
+  const [transferOpen, setTransferOpen] = React.useState(false);
+  const [importOpen, setImportOpen] = React.useState(false);
   const [balanceAccount, setBalanceAccount] = React.useState<AccountView | null>(null);
   const [adjustingGoal, setAdjustingGoal] = React.useState<SavingsGoalView | null>(null);
   const [showArchivedAccounts, setShowArchivedAccounts] = React.useState(false);
@@ -158,6 +172,20 @@ export function FinanceBoard({
           icon={Receipt}
           accent="text-domain-finance"
           description="Newest first — the ledger every balance derives from"
+          action={
+            <div className="flex items-center gap-1">
+              {activeAccounts.length > 0 && (
+                <Button size="sm" variant="ghost" onClick={() => setImportOpen(true)}>
+                  <FileUp /> Import CSV
+                </Button>
+              )}
+              {activeAccounts.length > 1 && (
+                <Button size="sm" variant="ghost" onClick={() => setTransferOpen(true)}>
+                  <ArrowLeftRight /> Transfer
+                </Button>
+              )}
+            </div>
+          }
         >
           {transactions.length === 0 ? (
             <EmptyState
@@ -416,10 +444,53 @@ export function FinanceBoard({
         </SectionCard>
 
         <SectionCard
+          title="Budgets"
+          icon={Target}
+          accent="text-domain-finance"
+          description="Monthly targets per category"
+          action={
+            <Button
+              size="sm"
+              variant="ghost"
+              onClick={() => {
+                setBudgetEditing(null);
+                setBudgetOpen(true);
+              }}
+            >
+              <Plus /> New budget
+            </Button>
+          }
+        >
+          {budgets.length === 0 ? (
+            <EmptyState
+              icon={Target}
+              title="No budgets yet"
+              description="Set a monthly target for a category and watch spending against it."
+              className="py-6"
+            />
+          ) : (
+            <div className="space-y-2">
+              {budgets.map((budget) => (
+                <BudgetRow
+                  key={budget.id}
+                  budget={budget}
+                  currency={primaryCurrency}
+                  onEdit={() => {
+                    setBudgetEditing(budget);
+                    setBudgetOpen(true);
+                  }}
+                  onDelete={() => run(() => deleteBudget(budget.id), "Budget deleted")}
+                />
+              ))}
+            </div>
+          )}
+        </SectionCard>
+
+        <SectionCard
           title="This month by category"
           icon={PieChart}
           accent="text-domain-finance"
-          description="Spending only — income and adjustments stay out"
+          description="Spending only — income, transfers and adjustments stay out"
         >
           {byCategory.length === 0 ? (
             <EmptyState icon={PieChart} title="No spending recorded yet" className="py-6" />
@@ -455,6 +526,19 @@ export function FinanceBoard({
         currency={primaryCurrency}
         onClose={() => setAdjustingGoal(null)}
       />
+      <BudgetDialog
+        open={budgetOpen}
+        onOpenChange={setBudgetOpen}
+        budget={budgetEditing}
+        takenCategories={budgets.map((budget) => budget.category)}
+      />
+      <TransferDialog
+        open={transferOpen}
+        onOpenChange={setTransferOpen}
+        accounts={activeAccounts}
+        today={today}
+      />
+      <ImportCsvDialog open={importOpen} onOpenChange={setImportOpen} accounts={activeAccounts} />
     </div>
   );
 }
@@ -473,16 +557,23 @@ function TransactionRow({
   const categoryLabel =
     FINANCE_CATEGORY_META[transaction.category as FinanceCategory]?.label ?? transaction.category;
   const received = transaction.amount > 0;
+  const transfer = transaction.transferGroupId !== null;
 
   return (
     <div className="flex items-center gap-3 rounded-lg border px-3 py-2">
       <div className="min-w-0 flex-1">
         <div className="flex flex-wrap items-center gap-2">
           <p className="truncate text-sm font-medium">{transaction.payee ?? categoryLabel}</p>
-          {transaction.payee && (
-            <Badge variant="outline" className="text-[10px]">
-              {categoryLabel}
+          {transfer ? (
+            <Badge variant="outline" className="gap-1 text-[10px]">
+              <ArrowLeftRight className="h-2.5 w-2.5" aria-hidden="true" /> Transfer
             </Badge>
+          ) : (
+            transaction.payee && (
+              <Badge variant="outline" className="text-[10px]">
+                {categoryLabel}
+              </Badge>
+            )
           )}
           <Badge variant="muted" className="text-[10px]">
             {transaction.accountName}
@@ -496,7 +587,8 @@ function TransactionRow({
       <span
         className={cn(
           "tabular shrink-0 text-sm font-semibold",
-          received && "text-emerald-700 dark:text-emerald-400",
+          received && !transfer && "text-emerald-700 dark:text-emerald-400",
+          transfer && "text-muted-foreground",
         )}
       >
         {received ? "+" : ""}
@@ -504,9 +596,56 @@ function TransactionRow({
       </span>
       <RowMenu
         label="Transaction actions"
-        items={[{ label: "Edit", icon: Pencil, onClick: onEdit }]}
+        // One leg cannot be edited alone — delete removes the pair, and the
+        // dialog would only half-change a transfer anyway.
+        items={transfer ? [] : [{ label: "Edit", icon: Pencil, onClick: onEdit }]}
+        confirmLabel={transfer ? "Delete both legs" : "Confirm delete"}
         onDelete={onDelete}
       />
+    </div>
+  );
+}
+
+function BudgetRow({
+  budget,
+  currency,
+  onEdit,
+  onDelete,
+}: {
+  budget: BudgetView;
+  currency: string;
+  onEdit: () => void;
+  onDelete: () => void;
+}) {
+  return (
+    <div className="rounded-lg border px-3 py-2.5">
+      <div className="flex items-center gap-1">
+        <p className="min-w-0 flex-1 truncate text-sm font-medium">{budget.label}</p>
+        {budget.over && (
+          <Badge variant="outline" className="gap-1 border-red-500/30 text-[10px] text-red-700 dark:text-red-400">
+            <TriangleAlert className="h-2.5 w-2.5" aria-hidden="true" />
+            Over by {formatMoney(budget.spent - budget.amount, currency)}
+          </Badge>
+        )}
+        <RowMenu
+          label={`Actions for the ${budget.label} budget`}
+          items={[{ label: "Edit", icon: Pencil, onClick: onEdit }]}
+          onDelete={onDelete}
+        />
+      </div>
+      <Progress
+        value={Math.min(100, budget.percent)}
+        className="mt-2 h-1.5"
+        indicatorClassName={budget.over ? "bg-red-500" : "bg-domain-finance"}
+      />
+      <div className="mt-1.5 flex items-center justify-between gap-2 text-xs text-muted-foreground">
+        <span className="tabular">
+          {formatMoney(budget.spent, currency)} / {formatMoney(budget.amount, currency)}
+        </span>
+        <span className={cn("tabular", budget.over && "font-medium text-red-700 dark:text-red-400")}>
+          {budget.over ? `${budget.percent}% spent` : `${formatMoney(budget.remaining, currency)} left`}
+        </span>
+      </div>
     </div>
   );
 }
@@ -587,6 +726,8 @@ function AccountRow({
   onDelete: () => void;
 }) {
   const typeMeta = ACCOUNT_TYPE_META[account.type as AccountType] ?? ACCOUNT_TYPE_META.other;
+  const belowThreshold =
+    account.lowBalanceThreshold !== null && account.balance < account.lowBalanceThreshold;
 
   return (
     <div className="flex items-center gap-3 rounded-lg border px-3 py-2">
@@ -596,6 +737,15 @@ function AccountRow({
           <Badge variant="outline" className={cn("text-[10px]", typeMeta.chip)}>
             {typeMeta.label}
           </Badge>
+          {belowThreshold && (
+            <Badge
+              variant="outline"
+              className="gap-1 border-amber-500/30 text-[10px] text-amber-800 dark:text-amber-400"
+              title={`Below your ${formatMoney(account.lowBalanceThreshold ?? 0, account.currency)} alert level`}
+            >
+              <TriangleAlert className="h-2.5 w-2.5" aria-hidden="true" /> Low
+            </Badge>
+          )}
         </div>
       </div>
       <span
@@ -733,7 +883,7 @@ function RowMenu({
             <Icon /> {itemLabel}
           </DropdownMenuItem>
         ))}
-        <DropdownMenuSeparator />
+        {items.length > 0 && <DropdownMenuSeparator />}
         {confirming ? (
           <DropdownMenuItem destructive onClick={onDelete}>
             <Trash2 /> {confirmLabel}

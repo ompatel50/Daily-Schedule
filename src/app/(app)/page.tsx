@@ -555,6 +555,16 @@ export default async function DashboardPage() {
                     value={formatMoney(lifeAdmin.finance.month.spending)}
                   />
                 </div>
+                {lifeAdmin.finance.budgets.overCount > 0 && (
+                  <p className="text-xs font-medium text-red-700 dark:text-red-400">
+                    {lifeAdmin.finance.budgets.overCount} of {lifeAdmin.finance.budgets.count}{" "}
+                    {pluralize(lifeAdmin.finance.budgets.count, "budget")} over
+                    {lifeAdmin.finance.budgets.worst
+                      ? ` — ${lifeAdmin.finance.budgets.worst.label} at ${lifeAdmin.finance.budgets.worst.percent}%`
+                      : ""}
+                    .
+                  </p>
+                )}
                 {lifeAdmin.finance.billsDueSoon.length === 0 ? (
                   <p className="text-xs text-muted-foreground">
                     No bills due in the next two weeks.

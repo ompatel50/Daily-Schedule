@@ -640,6 +640,7 @@ export async function searchEverything(query: string, limit = 8): Promise<Search
     accounts,
     transactionRows,
     bills,
+    budgets,
     savingsGoals,
   ] = await Promise.all([
       prisma.scheduleItem.findMany({
@@ -730,6 +731,12 @@ export async function searchEverything(query: string, limit = 8): Promise<Search
         orderBy: { nextDueDate: "asc" },
         take: limit,
       }),
+      // Budgets are named by their category key ("dining", "groceries"), which
+      // is also what the labels derive from — key matching covers both.
+      prisma.budget.findMany({
+        where: { userId: user.id, category: { contains: term, mode: "insensitive" } },
+        take: limit,
+      }),
       prisma.savingsGoal.findMany({
         where: { userId: user.id, archivedAt: null, name: { contains: term, mode: "insensitive" } },
         take: limit,
@@ -758,6 +765,7 @@ export async function searchEverything(query: string, limit = 8): Promise<Search
       currency: transaction.account.currency,
     })),
     bills,
+    budgets,
     savingsGoals,
   };
 }

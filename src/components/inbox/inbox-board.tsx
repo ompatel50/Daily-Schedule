@@ -5,6 +5,7 @@ import { useRouter } from "next/navigation";
 import {
   Archive,
   Inbox,
+  ListTodo,
   MoreHorizontal,
   Pencil,
   Plus,
@@ -27,6 +28,11 @@ import {
 } from "@/components/ui/dropdown-menu";
 import { Input } from "@/components/ui/input";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
+import {
+  ConvertTaskDialog,
+  type ConvertSource,
+  type ProjectOption,
+} from "@/components/inbox/convert-task-dialog";
 import { InboxItemDialog, type InboxDraft } from "@/components/inbox/inbox-item-dialog";
 import { relativeDayLabel } from "@/lib/date";
 import { cn } from "@/lib/utils";
@@ -39,6 +45,8 @@ export interface InboxListItem {
   title: string;
   notes: string | null;
   status: string;
+  /** Set when this capture was converted into a task. */
+  taskId: string | null;
   /** Day key derived from `createdAt`. */
   createdDay: string;
   /** Day key derived from `updatedAt` — when the item was resolved. */
@@ -64,10 +72,13 @@ const INBOX_STATUS_META: Record<string, { label: string; chip: string }> = {
 export function InboxBoard({
   open,
   resolved,
+  projects,
   today,
 }: {
   open: InboxListItem[];
   resolved: InboxListItem[];
+  /** Active projects the convert-to-task dialog offers. */
+  projects: ProjectOption[];
   today: string;
 }) {
   const router = useRouter();
@@ -76,6 +87,7 @@ export function InboxBoard({
   const [pending, startTransition] = React.useTransition();
   const [dialogOpen, setDialogOpen] = React.useState(false);
   const [editing, setEditing] = React.useState<InboxDraft | null>(null);
+  const [converting, setConverting] = React.useState<ConvertSource | null>(null);
   /** Optimistically checked while their "done" call is in flight. */
   const [resolving, setResolving] = React.useState<Record<string, boolean>>({});
   const [confirmingDeleteId, setConfirmingDeleteId] = React.useState<string | null>(null);
@@ -183,6 +195,31 @@ export function InboxBoard({
                       <span className="mt-0.5 shrink-0 text-xs text-muted-foreground">
                         {relativeDayLabel(item.createdDay, today)}
                       </span>
+                      {item.taskId === null ? (
+                        <Tooltip>
+                          <TooltipTrigger asChild>
+                            <Button
+                              size="icon-sm"
+                              variant="ghost"
+                              aria-label={`Make ${item.title} a task`}
+                              onClick={() =>
+                                setConverting({
+                                  id: item.id,
+                                  title: item.title,
+                                  notes: item.notes,
+                                })
+                              }
+                            >
+                              <ListTodo />
+                            </Button>
+                          </TooltipTrigger>
+                          <TooltipContent>Make a task</TooltipContent>
+                        </Tooltip>
+                      ) : (
+                        <Badge variant="outline" className="mt-0.5 shrink-0 text-[10px]">
+                          Task
+                        </Badge>
+                      )}
                       <Tooltip>
                         <TooltipTrigger asChild>
                           <Button
@@ -234,10 +271,19 @@ export function InboxBoard({
                       >
                         {item.title}
                       </span>
-                      {meta && (
-                        <Badge variant="outline" className={cn("shrink-0 text-[10px]", meta.chip)}>
-                          {meta.label}
+                      {item.taskId !== null ? (
+                        <Badge variant="outline" className="shrink-0 gap-1 text-[10px]">
+                          <ListTodo className="h-2.5 w-2.5" aria-hidden="true" /> Became a task
                         </Badge>
+                      ) : (
+                        meta && (
+                          <Badge
+                            variant="outline"
+                            className={cn("shrink-0 text-[10px]", meta.chip)}
+                          >
+                            {meta.label}
+                          </Badge>
+                        )
                       )}
                       <span className="shrink-0 text-xs text-muted-foreground">
                         {relativeDayLabel(item.resolvedDay, today)}
@@ -288,6 +334,11 @@ export function InboxBoard({
       </div>
 
       <InboxItemDialog open={dialogOpen} onOpenChange={setDialogOpen} item={editing} />
+      <ConvertTaskDialog
+        item={converting}
+        projects={projects}
+        onClose={() => setConverting(null)}
+      />
     </div>
   );
 }

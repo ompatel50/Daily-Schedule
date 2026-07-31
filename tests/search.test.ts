@@ -52,6 +52,7 @@ describe("global search hits", () => {
           { id: "tx", payee: "Grocer", category: "groceries", date: "2026-07-29", amount: -42.5, currency: "USD" },
         ],
         bills: [{ id: "bl", name: "Rent", kind: "bill", amount: 1800, nextDueDate: "2026-08-01" }],
+        budgets: [{ id: "bu", category: "dining", amount: 250 }],
         savingsGoals: [{ id: "sg", name: "Emergency fund", targetAmount: 10000, currentAmount: 2500 }],
       }),
       REF,
@@ -73,6 +74,7 @@ describe("global search hits", () => {
     expect(byGroup.get("Accounts")?.href).toBe("/finance");
     expect(byGroup.get("Transactions")?.href).toBe("/finance");
     expect(byGroup.get("Bills")?.href).toBe("/finance");
+    expect(byGroup.get("Budgets")?.href).toBe("/finance");
     expect(byGroup.get("Savings goals")?.href).toBe("/finance");
     // every declared group appeared, and ids are namespaced uniquely
     expect(new Set(hits.map((hit) => hit.group)).size).toBe(SEARCH_GROUPS.length);

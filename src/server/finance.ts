@@ -7,6 +7,7 @@ import { monthRange, shiftDay, type DayKey } from "@/lib/date";
 import {
   accountBalances,
   billsByUrgency,
+  budgetProgress,
   moneyRound,
   savingsProgress,
   spendingByCategory,
@@ -129,6 +130,25 @@ export async function getRecentTransactions(limit = 50) {
 
 export type TransactionWithRefs = Awaited<ReturnType<typeof getRecentTransactions>>[number];
 
+// --- budgets -----------------------------------------------------------------
+
+async function budgetsImpl(userId: string) {
+  return prisma.budget.findMany({
+    where: { userId },
+    orderBy: { category: "asc" },
+    take: 100,
+  });
+}
+
+const budgetsMemo = cache(budgetsImpl);
+
+export async function getBudgets() {
+  const user = await getCurrentUser();
+  return budgetsMemo(user.id);
+}
+
+export type BudgetRow = Awaited<ReturnType<typeof budgetsImpl>>[number];
+
 // --- savings goals -----------------------------------------------------------
 
 export async function getSavingsGoals(includeArchived = false) {
@@ -153,16 +173,22 @@ export async function getFinanceOverview() {
   const month = monthRange(today);
   const weekAgo = shiftDay(today, -6);
 
-  const [balances, bills, monthTransactions, recentTransactions, savingsGoals] =
+  const [balances, bills, monthTransactions, recentTransactions, savingsGoals, budgets] =
     await Promise.all([
       accountBalancesMemo(user.id),
       billViewsMemo(user.id, today),
       getTransactionsBetween(month.start, month.end),
       getRecentTransactions(50),
       getSavingsGoals(),
+      budgetsMemo(user.id),
     ]);
 
-  const weekTransactions = monthTransactions.filter((transaction) => transaction.date >= weekAgo);
+  // Bounded on BOTH sides so this reuse path computes the same weekAgo..today
+  // window as the fallback fetch below — a future-dated entry (rent typed in
+  // ahead of time) must not inflate "the last 7 days".
+  const weekTransactions = monthTransactions.filter(
+    (transaction) => transaction.date >= weekAgo && transaction.date <= today,
+  );
 
   return {
     today,
@@ -183,6 +209,9 @@ export async function getFinanceOverview() {
         : summarizeTransactions(await getTransactionsBetween(weekAgo, today)),
     recentTransactions,
     savingsGoals,
+    // Budgets read the month fetch that is already in hand — no extra ledger
+    // query for the progress bars.
+    budgets: budgetProgress(budgets, monthTransactions),
   };
 }
 
@@ -194,13 +223,16 @@ export async function getFinanceSummary() {
   const settings = scheduleSettingsFor(user);
   const month = monthRange(settings.today);
 
-  const [balances, bills, monthTransactions] = await Promise.all([
+  const [balances, bills, monthTransactions, budgets] = await Promise.all([
     accountBalancesMemo(user.id),
     billViewsMemo(user.id, settings.today),
     getTransactionsBetween(month.start, month.end),
+    budgetsMemo(user.id),
   ]);
 
   const dueSoon = bills.filter((view) => view.daysUntilDue <= BILL_SOON_DAYS);
+  const budgetViews = budgetProgress(budgets, monthTransactions);
+  const overBudget = budgetViews.filter((view) => view.over);
 
   return {
     hasAccounts: balances.length > 0,
@@ -217,6 +249,14 @@ export async function getFinanceSummary() {
     billsDueSoonCount: dueSoon.length,
     billsOverdueCount: bills.filter((view) => view.bucket === "overdue").length,
     billsDueSoonTotal: upcomingBillsTotal(bills, BILL_SOON_DAYS),
+    budgets: {
+      count: budgetViews.length,
+      overCount: overBudget.length,
+      /** The most-over budget, for the one-line dashboard callout. */
+      worst: overBudget[0]
+        ? { label: overBudget[0].label, percent: overBudget[0].percent }
+        : null,
+    },
   };
 }
 

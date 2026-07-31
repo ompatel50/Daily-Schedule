@@ -367,12 +367,21 @@ project; one level of subtasks; and an opt-in reminder on its due date.
 * **Drop** is distinct from done: a deliberate "not doing this" that closes the task without
   pretending it happened.
 
+* **Add to planner**: any open task can block a day (all-day, or from a start time) — an
+  ordinary planner item carrying the task's title and priority, linked back to the task. The two
+  stay separate on purpose: completing the block never completes the task and vice versa, one
+  task can block several days, and deleting the task merely unlinks the block. There is no
+  second scheduling system — the block behaves exactly like one typed into the planner.
+
 ### 11. Inbox — `/inbox`
 
 One catchall queue for life admin: things to decide, follow up on, or file later. Capture is a
 single text box; an item is open until you mark it done or archive it. Deliberately **not** a
 second task system — no projects, no priorities, no due dates. When something in the inbox turns
-out to be a real task, make it one in Tasks.
+out to be a real task, **Make a task** converts it in one step: the dialog is prefilled from the
+capture, takes a due date / priority / project, and creates the task while archiving the item
+with a link to where it went — atomically, so a capture can never become two tasks. If the task
+is later deleted, the link clears and the item can be converted again.
 
 ### 12. Finance — `/finance`
 
@@ -391,18 +400,41 @@ Manual-first money tracking: no bank sync, no third-party integration, nothing l
   reads. Marking one paid advances the pointer and (when an account is known) writes the payment
   into the ledger atomically. Bills remind by default: on the due day and once in a configurable
   run-up window.
+* **Transfers**: first-class money moves between two of your own accounts — one action writes
+  two linked ledger rows (out of one, into the other) atomically. Transfer legs carry the
+  `transfer` category, which every income/spending/budget summary excludes: moving your own
+  money changes balances, never totals. Deleting either leg removes the pair; a leg can't be
+  edited alone (delete and redo instead). Same-currency only — a cross-currency transfer would
+  need an invented exchange rate, so it's refused with a clear message; record two manual
+  transactions for that.
+* **CSV import**: upload a bank CSV, preview exactly what would happen, then commit. The
+  importer detects common columns (date, amount **or** debit/credit **or** amount + type,
+  description, category, notes, currency), shows the mapping, auto-detects — and lets you flip —
+  the day/month order of slash dates, validates every row with per-line messages, and refuses
+  rows whose currency doesn't match the target account. Every row gets a deterministic import
+  identity, so re-importing the same file (or an overlapping export window) skips duplicates
+  instead of creating them, while two genuinely identical purchases in one file both import. The
+  commit is one transaction — a failure writes nothing — and an audit batch records file name and
+  created/skipped/rejected counts. A template lives at `/finance-import-template.csv`.
+* **Budgets**: a monthly spending target per category, one budget per category. Progress bars
+  show spent / remaining against this month's ledger; over-budget states surface in red on the
+  finance page and as a one-line callout on the dashboard's Money card. Income, transfers and
+  adjustments never count against a budget.
 * **Savings goals**: target, saved-so-far, optional target date. Maintained by its own add /
   withdraw actions rather than derived from the ledger, so goals work even without transaction
   discipline.
+* **Low-balance alerts**: give an account an optional threshold and the reminder system says so
+  when the computed balance drops below it — at most once per week per account, riding the same
+  exactly-once delivery ledger as every other reminder. The account row also shows a quiet "Low"
+  badge while it's under. Leave the field empty for no alert.
 * Amounts are stored per account currency and never converted; net balance is reported **per
-  currency** rather than pretending exchange rates don't exist. A future CSV import has a
-  structural seat reserved (`importKey` dedup identity on every transaction).
+  currency** rather than pretending exchange rates don't exist.
 
 ### 13. Productivity layer
 
 * **Command palette** (`⌘K` / `Ctrl K`) — searches across schedule items, tasks, projects, inbox
-  items, bills, accounts, transactions, savings goals, workouts, foods, habits and journal
-  entries, plus actions and navigation.
+  items, bills, accounts, transactions, budgets, savings goals, workouts, foods, habits and
+  journal entries, plus actions and navigation.
 * **Keyboard shortcuts**: `N` quick add · `/` search · `?` shortcuts · `G` then a letter to
   navigate · `J`/`K` previous/next day · `T` jump to today.
 * **Journal**: a note plus mood and energy on any day (which also feed the health charts).
@@ -589,7 +621,7 @@ and the formula in words.
 `WorkoutTemplate`, `HealthMetric`, `Goal`, `GoalEntry`, `ScheduleRule`, `ScheduleRuleDay`,
 `ScheduleOverride`, `CalendarDaySummary`, `JournalEntry`, `Reminder`, `FavoriteItem`, `SeedBatch`,
 `SeedRecord` — plus the universal-OS foundation: `Project`, `Task`, `FinanceAccount`,
-`FinanceTransaction`, `Bill`, `SavingsGoal`, `InboxItem`.
+`FinanceTransaction`, `Bill`, `SavingsGoal`, `Budget`, `FinanceImportBatch`, `InboxItem`.
 
 **Tasks are not schedule items.** A `ScheduleItem` occupies a slot in a day; a `Task` is an
 obligation with an optional due date. Keeping them separate means neither inherits the other's
@@ -598,6 +630,16 @@ anchored cadence engine (`lib/logic/due.ts`) — occurrences generate from the f
 is what keeps "monthly on the 31st" from drifting to the 28th forever. `FinanceAccount.balance`
 does not exist as a column: the balance is always `openingBalance + sum(transactions)`, and "set
 balance" writes an adjustment transaction instead of editing a number.
+
+**Money movement is data, not categories of convenience.** The two legs of a transfer share a
+`transferGroupId` and carry the `transfer` category, so summaries exclude them by construction
+and deleting one leg always removes both. Imported transactions carry a deterministic `importKey`
+(unique per user) so a re-imported file skips instead of duplicating, plus a link to the
+`FinanceImportBatch` that created them — the audit trail behind every import. A `Budget` is one
+row per `(user, category)` with a monthly target; progress is computed from the same month
+window the finance page already loads, never stored. `ScheduleItem.taskId` and `InboxItem.taskId`
+are optional SetNull links — "this block came from that task", "this capture became that task" —
+carrying no scheduling behaviour of their own.
 
 **Scheduling is three shared tables, not two parallel families.** `ScheduleRule` is one
 effective-dated version owned by `(ownerType, ownerId)`; `ScheduleRuleDay` is one row per selected
@@ -660,7 +702,7 @@ npm run test:integration   # database-backed, against the disposable test databa
 npm run test:e2e       # Playwright browser suite (against a running production build)
 ```
 
-Three suites, each doing the job the others can't. The **unit suite** (793 tests) covers the pure
+Three suites, each doing the job the others can't. The **unit suite** (837 tests) covers the pure
 logic that would be expensive to get wrong:
 
 * **Scheduling** — every mode, both week-start settings, DST, leap years, month and year
@@ -690,7 +732,7 @@ logic that would be expensive to get wrong:
 The unit tests are pure — no database, no fixtures, no mocking — because all the logic they cover
 lives in `src/lib/logic`.
 
-The **integration suite** (155 tests) runs against a real PostgreSQL — always the disposable
+The **integration suite** (190 tests) runs against a real PostgreSQL — always the disposable
 `personal_os_test` database, reset and re-migrated from zero each run — and covers what pure tests
 cannot: unique constraints, transaction rollback, backup import isolation, health-import session
 ownership, the reminder exactly-once ledger, password verification with its lockout and
