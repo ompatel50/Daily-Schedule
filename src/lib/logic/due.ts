@@ -49,9 +49,12 @@ function occurrenceAt(anchor: DayKey, cadence: Cadence, index: number): DayKey {
 export function nextOccurrenceAfter(anchor: DayKey, cadence: Cadence, after: DayKey): DayKey {
   if (daysBetween(after, anchor) > 0) return anchor;
 
-  // Estimate the occurrence index, then walk to the first one past `after`.
-  // The estimate can be off by one around month-length clamping, so the walk
-  // starts one below and moves up — never more than a few steps.
+  // Estimate the occurrence index, then walk UP to the first one past
+  // `after`. The walk only ever moves forward, so the estimate must never
+  // overshoot: each divisor is the MAXIMUM days the unit can span (31-day
+  // months, 92-day quarters, 366-day years), which makes the estimate a
+  // floor. Estimating with the average month length instead overshot for
+  // anchors years in the past and silently skipped an occurrence.
   const every = Math.max(1, Math.floor(cadence.every));
   const days = daysBetween(anchor, after);
   const perUnit =
@@ -60,10 +63,10 @@ export function nextOccurrenceAfter(anchor: DayKey, cadence: Cadence, after: Day
       : cadence.unit === "weekly"
         ? every * 7
         : cadence.unit === "monthly"
-          ? every * 28
+          ? every * 31
           : cadence.unit === "quarterly"
-            ? every * 89
-            : every * 365;
+            ? every * 92
+            : every * 366;
   let index = Math.max(0, Math.floor(days / perUnit) - 1);
   let occurrence = occurrenceAt(anchor, cadence, index);
   while (daysBetween(after, occurrence) <= 0) {
