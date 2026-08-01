@@ -28,6 +28,7 @@ import { cn } from "@/lib/utils";
 import {
   ASSISTANT_LIMITS,
   ASSISTANT_MODE_META,
+  ASSISTANT_TOOL_LABELS,
   type AssistantAuditView,
   type AssistantMode,
   type AssistantProposalView,
@@ -54,31 +55,13 @@ interface ChatMessage {
 
 const SUGGESTIONS = [
   "What should I focus on today?",
+  "Did I do my habits today?",
+  "Which habits am I missing this week?",
   "Summarize my finances this month.",
   "Find overdue bills and tasks.",
   "Summarize my sleep and heart trends.",
   "What happened this week?",
 ];
-
-const TOOL_LABELS: Record<string, string> = {
-  search_records: "Searching your records",
-  get_needs_attention: "Checking what needs attention",
-  get_day_overview: "Reading the day",
-  get_week_review: "Reviewing the week",
-  get_schedule: "Reading the planner",
-  list_tasks: "Reading tasks",
-  list_inbox: "Reading the inbox",
-  get_finance_overview: "Reading finances",
-  list_transactions: "Reading transactions",
-  list_bills: "Reading bills",
-  list_reminders: "Reading reminders",
-  get_reminder_feed: "Checking today's reminders",
-  get_health_trends: "Reading health trends",
-  list_documents: "Reading documents",
-  get_import_history: "Reading import history",
-  get_backup_status: "Checking backup status",
-  propose_action: "Drafting a proposal",
-};
 
 export function AssistantChat(props: {
   configured: boolean;
@@ -395,7 +378,7 @@ export function AssistantChat(props: {
                           ) : (
                             <XCircle className="h-3 w-3" />
                           )}
-                          {TOOL_LABELS[tool.tool] ?? tool.tool}
+                          {ASSISTANT_TOOL_LABELS[tool.tool] ?? tool.tool}
                         </span>
                       ))}
                     </div>

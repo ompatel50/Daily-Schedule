@@ -163,11 +163,14 @@ all (the CSP allows same-origin requests only) — everything flows through
 this app's server, as the signed-in user.
 
 The model reads through the same ownership-checked, bounded server functions
-as the rest of the app and has no direct database access. It cannot write:
+as the rest of the app and has no direct database access — no tool accepts a
+user id, and every one runs as the signed-in account. It cannot write:
 changes are staged as proposals, validated with the app's own schemas, and
 executed only after an explicit in-app confirmation — through the same server
-actions the app's buttons call. Read-only mode (the default) refuses even the
-staging, server-side. The audit trail stores bounded, app-authored summaries
+actions the app's buttons call. The set of changes it can even stage is a
+fixed list of ten narrow, single-record kinds, each described by the one
+sentence you confirm. Read-only mode (the default) refuses even the staging,
+server-side. The audit trail stores bounded, app-authored summaries
 — never transcripts — and conversations are not persisted at all. Assistant
 base URLs are validated (http/https only, no credentials, cloud-metadata
 addresses refused) and never appear in error messages or logs.

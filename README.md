@@ -577,14 +577,25 @@ rest of the app is untouched.
   reminder and planner changes, and for every delete.
 * **Tool-based access**: the model reads through a fixed registry of
   ownership-checked, bounded server tools (search, summaries, tasks, inbox,
-  finance, bills, budgets, reminders, health trends, documents, planner,
-  import history, backup row-counts). It has no database access of its own,
-  and confirmed writes route through the same server actions the app's own
-  buttons call.
+  habits, finance, bills, budgets, reminders, health trends, documents,
+  planner, import history, backup row-counts). It has no database access of
+  its own, and confirmed writes route through the same server actions the
+  app's own buttons call.
+* **Habit questions get real answers**: `get_habit_status` returns, per habit,
+  whether it is due, how today resolved, the current and longest streak, this
+  week's progress against target, which days this week were already missed,
+  the last 30 days' completion rate, and when it is next due — so “did I do my
+  habits today?”, “what am I missing this week?” and “what's my streak on
+  sleep?” are answered from the same schedule engine the habits page uses.
+* **Changes it can propose**: create/complete/delete a task, create or delete
+  a reminder, add or complete an inbox note, record a transaction, add a
+  planner block, log a habit day. Nothing broader — a change the one-sentence
+  preview cannot describe is a change the assistant cannot make.
 * **Audit log**: every exchange, decided proposal and connection test is
   recorded append-only — bounded summaries and tool names, never transcripts.
   Conversations themselves are deliberately not persisted.
-* Setup, model guidance and the full safety model: `docs/ai-assistant.md`.
+* Setup, model guidance, the full safety model and what was deliberately left
+  out: `docs/ai-assistant.md`.
 
 ---
 

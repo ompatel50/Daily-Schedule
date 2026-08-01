@@ -25,7 +25,8 @@ import {
 } from "@/server/ai/proposals";
 import { logRedactedError } from "@/server/safe-error";
 import { completeTask, deleteTask, saveTask } from "@/server/actions/tasks";
-import { saveInboxItem } from "@/server/actions/inbox";
+import { saveInboxItem, setInboxItemStatus } from "@/server/actions/inbox";
+import { logHabit } from "@/server/actions/habits";
 import { deleteReminder, saveReminder } from "@/server/actions/health";
 import { saveTransaction } from "@/server/actions/finance";
 import { createScheduleItem } from "@/server/actions/planner";
@@ -158,7 +159,26 @@ export async function confirmAssistantProposal(
   }
   const row = await prisma.assistantProposal.findFirst({ where: { id, userId: user.id } });
   if (!row || !isAssistantActionKind(row.kind)) {
-    return fail("This proposal could not be read.");
+    // The claim above already stamped the row "confirmed", so leaving now
+    // would record a change that never ran. Reachable in one real case: a
+    // proposal staged by a newer deployment, decided after a rollback that
+    // no longer knows the kind. Stamp it failed and audit it like any other
+    // failure, so the trail never claims something happened.
+    const error = "This proposal could not be read.";
+    if (row) {
+      await prisma.assistantProposal.update({
+        where: { id: row.id },
+        data: { status: "failed", resultSummary: error },
+      });
+      await writeAuditEntry({
+        userId: user.id,
+        kind: "action",
+        status: "error",
+        summary: `Confirmed but failed: ${row.summary} — ${error}`,
+        proposalId: row.id,
+      });
+    }
+    return fail(error);
   }
 
   const executed = await executeProposalKind(row.kind, row.payload);
@@ -268,6 +288,18 @@ async function executeProposalKind(
         const result = await createScheduleItem(payload);
         if (!result.ok) return { ok: false, error: result.error };
         return { ok: true, summary: "Planner block added", recordId: result.data.id };
+      }
+      case "log_habit": {
+        const result = await logHabit(payload);
+        if (!result.ok) return { ok: false, error: result.error };
+        const { habitId } = payload as { habitId: string };
+        return { ok: true, summary: `Habit logged as ${result.data.status}`, recordId: habitId };
+      }
+      case "complete_inbox_item": {
+        const { id } = payload as { id: string };
+        const result = await setInboxItemStatus(id, "done");
+        if (!result.ok) return { ok: false, error: result.error };
+        return { ok: true, summary: "Inbox note completed", recordId: id };
       }
       case "delete_task": {
         const { id } = payload as { id: string };

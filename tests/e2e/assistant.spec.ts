@@ -25,6 +25,8 @@ const STUB_PORT = 11435;
 const STUB_URL = `http://127.0.0.1:${STUB_PORT}`;
 const NONCE = `e2e-${Date.now().toString(36)}`;
 const TASK_TITLE = `Renew passport (assistant ${NONCE})`;
+/** The habit the status/log cases read and write. Created and removed here. */
+const HABIT_NAME = `Assistant habit ${NONCE}`;
 /** A separate title for the read-only case, so its "nothing was created"
  *  assertion cannot be confused by a task an earlier case legitimately made
  *  (or an interrupted run left behind). */
@@ -96,6 +98,23 @@ function taskIdFrom(listTasksJson: string): string | null {
   return null;
 }
 
+interface HabitStatusEntry {
+  id: string;
+  name: string;
+  status: string;
+  streak: { current: number };
+}
+
+/** This run's habit inside a get_habit_status tool result. */
+function habitFrom(statusJson: string): HabitStatusEntry | null {
+  try {
+    const parsed = JSON.parse(statusJson) as { habits?: HabitStatusEntry[] };
+    return (parsed.habits ?? []).find((habit) => habit.name.includes(NONCE)) ?? null;
+  } catch {
+    return null;
+  }
+}
+
 function chatResponseFor(messages: ChatMessage[]): string {
   const last = messages[messages.length - 1];
 
@@ -111,6 +130,25 @@ function chatResponseFor(messages: ChatMessage[]): string {
       return id
         ? toolReply("propose_action", { kind: "delete_task", payload: { id } })
         : textReply("I couldn't find that task.");
+    }
+    if (last.tool_name === "get_habit_status") {
+      const habit = habitFrom(last.content);
+      if (!habit) return textReply("I couldn't find that habit.");
+      // Which branch depends on what was asked, three messages back — the
+      // status question reports, the log request proposes.
+      const asked = [...messages].reverse().find((message) => message.role === "user")?.content ?? "";
+      if (asked.includes("mark my habit")) {
+        return toolReply("propose_action", {
+          kind: "log_habit",
+          payload: { habitId: habit.id },
+        });
+      }
+      // Read straight out of the tool result, so a green assertion here can
+      // only mean the tool really reached the database.
+      return textReply(
+        `Habit ${habit.name} is ${habit.status}, `,
+        `streak ${habit.streak.current}.`,
+      );
     }
     return textReply("Done.");
   }
@@ -134,6 +172,9 @@ function chatResponseFor(messages: ChatMessage[]): string {
   }
   if (asked.includes("delete the passport task")) {
     return toolReply("list_tasks", {});
+  }
+  if (asked.includes("how are my habits") || asked.includes("mark my habit")) {
+    return toolReply("get_habit_status", {});
   }
   return textReply("OK.");
 }
@@ -187,6 +228,28 @@ function startStub(): Promise<Server> {
 async function ask(page: Page, message: string) {
   await page.getByTestId("assistant-input").fill(message);
   await page.getByTestId("assistant-send").click();
+}
+
+/**
+ * A habit for this run, created the way a user would. The assistant has no
+ * create-habit tool by design, so the fixture goes through the habits UI —
+ * and `removeHabit` below takes it away again, so reruns start clean.
+ */
+async function createHabit(page: Page) {
+  await page.goto("/habits");
+  await page.getByRole("button", { name: /New habit|Create a habit/ }).first().click();
+  await page.locator("#habit-name").fill(HABIT_NAME);
+  await page.getByRole("button", { name: "Create habit" }).click();
+  await expect(page.getByText(HABIT_NAME).first()).toBeVisible();
+}
+
+async function removeHabit(page: Page) {
+  await page.goto("/habits");
+  await page.getByRole("button", { name: `Edit ${HABIT_NAME}` }).click();
+  const dialog = page.getByRole("dialog");
+  await dialog.getByRole("button", { name: "Delete", exact: true }).click();
+  await dialog.getByRole("button", { name: "Delete everything" }).click();
+  await expect(page.getByText(HABIT_NAME)).toHaveCount(0);
 }
 
 async function configureAssistant(page: Page, mode: "Confirm" | "Read-only") {
@@ -310,6 +373,46 @@ test("a destructive delete demands the harder confirmation — and works", async
   expect(consoleErrors()).toEqual([]);
 });
 
+test("get_habit_status answers a habit question from real data", async ({ page }) => {
+  const consoleErrors = watchConsole(page);
+  await createHabit(page);
+
+  await page.goto("/assistant");
+  await ask(page, "how are my habits doing?");
+
+  const transcript = page.getByTestId("assistant-transcript");
+  // The chip proves which tool ran; the sentence proves what it returned.
+  await expect(transcript).toContainText("Checking your habits");
+  await expect(transcript).toContainText(`Habit ${HABIT_NAME} is pending, streak 0.`);
+  expect(consoleErrors()).toEqual([]);
+});
+
+test("logging a habit is previewed, confirmed, and lands on the checklist", async ({ page }) => {
+  const consoleErrors = watchConsole(page);
+  await page.goto("/assistant");
+  await ask(page, "mark my habit as done today");
+
+  const proposal = page
+    .getByTestId("assistant-proposal")
+    .filter({ hasText: HABIT_NAME })
+    .first();
+  await expect(proposal).toBeVisible();
+  await expect(proposal).toContainText("Log habit");
+  // An everyday tick: one click, no second dialog.
+  await expect(proposal).not.toContainText("Destructive");
+  await expect(proposal).not.toContainText("Sensitive");
+
+  await proposal.getByTestId("assistant-proposal-confirm").click();
+  await expect(proposal).toBeHidden();
+
+  // Durable proof, where habits actually live.
+  await page.goto("/habits");
+  await expect(page.getByRole("button", { name: `${HABIT_NAME} — completed` })).toBeVisible();
+
+  await removeHabit(page);
+  expect(consoleErrors()).toEqual([]);
+});
+
 test("read-only mode refuses proposals server-side", async ({ page }) => {
   const consoleErrors = watchConsole(page);
   await configureAssistant(page, "Read-only");
@@ -329,6 +432,29 @@ test("recent activity shows the audit trail", async ({ page }) => {
   const audit = page.getByTestId("assistant-audit-list");
   await expect(audit).toContainText("add a task to renew my passport");
   await expect(audit).toContainText("Connection test succeeded");
+  expect(consoleErrors()).toEqual([]);
+});
+
+test("the audit log stays readable on a phone", async ({ page }) => {
+  const consoleErrors = watchConsole(page);
+  await page.setViewportSize({ width: 390, height: 844 });
+  await page.goto("/assistant");
+
+  const request = page.getByTestId("assistant-audit-request").first();
+  await expect(request).toBeVisible();
+
+  // The regression this guards: the status badge and timestamp used to sit
+  // beside the text with `shrink-0`, taking ~150px of a 390px screen and
+  // leaving the request itself a few characters wide. They wrap now.
+  const box = await request.boundingBox();
+  expect(box, "the audit request line must be measurable").toBeTruthy();
+  expect(box!.width, "the request needs most of the row, not a sliver").toBeGreaterThan(150);
+
+  const overflow = await page.evaluate(() => {
+    const root = document.scrollingElement!;
+    return root.scrollWidth - root.clientWidth;
+  });
+  expect(overflow, "the page must not scroll sideways").toBeLessThanOrEqual(0);
   expect(consoleErrors()).toEqual([]);
 });
 

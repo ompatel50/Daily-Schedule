@@ -4481,3 +4481,177 @@ lands as both a page AND a richer tool for the assistant. The first
 mechanical follow-up: a `get_habit_status` tool (habits are reachable today
 only through search and day overviews), then per-kind write tools as real
 usage asks for them.
+
+*(Both of those follow-ups are done — see Phase B.1 below.)*
+
+## Phase B.1 — finishing the assistant: habits, the last write tools, polish
+
+The mechanical follow-ups Phase B recorded, plus the polish pass that makes
+the assistant feel finished rather than merely functional. No new subsystem,
+no new provider, no change to the safety model — the confirm-before-write
+pipeline, the audit trail and the Ollama-only architecture are exactly as
+Phase B left them.
+
+### `get_habit_status` — the tool habits were missing
+
+Habits were reachable only through `search_records` and `get_day_overview`,
+which meant "did I do my habits today?" was answered by counting, and
+"what's my streak on sleep?" could not be answered at all. The new tool
+returns, for a date (today by default) and optionally one habit by name:
+
+| Field | What it carries |
+| --- | --- |
+| `totals` | The date's scheduled-opportunity counts — due / done / missed / skipped / excused / pending / rest-or-unscheduled |
+| `status`, `dueToday`, `flexibleToday` | How the date resolved per habit, and whether it placed a requirement at all |
+| `streak` | Current and longest, in **occurrences** — or in **weeks** for a times-per-week habit |
+| `week` | done / target / remaining / percent — "3 of 4", never "3 of 7" |
+| `missedThisWeek` | The actual dates already missed or skipped this week, up to the requested date |
+| `history` | 30-day opportunities, completions, misses and completion rate |
+| `nextDueDate` | The next scheduled opportunity after the date, scanned up to 60 days |
+
+It is **not a second habit system**: `getHabitStatusSummary` (in
+`src/server/habits.ts`, next to the read model it projects) is a shaping and
+bounding layer over the existing `getHabitViews` + `getHabitDayTotals`, so
+every number comes from the one schedule engine the habits page, the day
+score and the calendar already use. Rest days and unscheduled days are
+reported as neutral, never as misses — the distinction that engine exists to
+preserve.
+
+The one additive change to `HabitView` is `nextDueDate`, computed only when
+the new `nextDueScanDays` option is set. Every existing caller (Today, the
+habits page, the calendar's day detail, insights, reminders) passes nothing
+and pays nothing — the scan walks day by day, and a checklist has no use
+for it.
+
+**Bounding, learned the hard way.** An entry serializes to roughly 400 bytes
+and the registry cuts any tool result past 8 KB into an unusable fragment, so
+the habit list is capped at 12 with `matched` / `returned` reported and a
+`note` telling the model to ask by name instead. An integration test creates
+20 long-named habits and asserts the serialized result never reaches the
+ceiling — the cap is held by a test, not by an estimate.
+
+### Two more write kinds — and the ones deliberately refused
+
+The read surface had two asymmetries worth closing, and both are single
+records with an effect one sentence can describe:
+
+* **`log_habit`** `{habitId, date?, status?, value?}` → `logHabit`. The
+  natural other half of the habit tool. `notes` is excluded (the preview
+  could not quote free text the model wrote) and `excused` is excluded (a
+  different server action, and one kind maps to one action by design).
+* **`complete_inbox_item`** `{id}` → `setInboxItemStatus(id, "done")`. The
+  assistant could add inbox notes and read their ids but never close one.
+
+Both are `normal` risk: one Confirm click, like completing a task. Each is
+undone by clicking the same control in the app, and putting a restating
+dialog in front of an everyday tick trains people to click through the
+dialogs that do matter.
+
+**Refused, with reasons** (each one schema and one dispatch arm away, if real
+use asks): creating or editing habits (an effective-dated schedule, and an
+edit must choose whether it rewrites history — a decision the dialog asks
+about explicitly and a sentence cannot carry); excusing a habit day (a
+different action); marking a bill paid (advances the due date *and* writes a
+ledger entry — one confirmation covering two changes, one financial);
+rescheduling a task (no narrow due-date action exists, and routing through
+the full save would let unmentioned fields ride along); and health, budget,
+account, document, backup and import writes.
+
+### Polish and the edge cases it turned up
+
+* **Tool labels moved to the shared vocabulary** (`ASSISTANT_TOOL_LABELS` in
+  `src/lib/logic/assistant.ts`). They lived in the chat component, where
+  nothing could check them; a test now pins the registry and the label map
+  against each other in both directions, so a new tool can never show a user
+  its raw identifier mid-answer.
+* **The audit log was unreadable on a phone.** The status badge and timestamp
+  sat beside the text with `shrink-0`, taking ~150px of a 390px screen — every
+  row truncated to a few characters (`"read-onl…"`, `Tools: get_…`). They wrap
+  onto their own line now, with a floor on the text column so they wrap rather
+  than squeeze (without it, `break-words` split "Cancelled:" in two). A browser
+  test measures the request line's actual width at 390px.
+* **Raw status strings** (`ok`, `rejected`, `proposed`) are shown as plain
+  words via `assistantStatusLabel` — the activity panel was reading like a
+  database dump.
+* **A confirmed proposal whose kind this deployment no longer knows** was
+  stamped `confirmed` and then abandoned, so the trail claimed a change that
+  never ran. Unreachable before this phase; reachable the moment new kinds
+  exist and a deployment rolls back. It is stamped `failed` and audited now.
+* **`propose_action`'s kind enum** is generated from `ASSISTANT_ACTION_KINDS`
+  rather than hand-listed, and a test asserts every advertised kind is also
+  spelled out in the description — the model is never told a kind exists
+  without being told its fields.
+* **The assistant's own loading skeleton.** `(app)/loading.tsx` covered the
+  navigation with the dashboard's shape — four stat tiles and two wide panels
+  — which flashed the wrong page before the chat card arrived.
+* **Suggestion chips** now include the two habit questions the new tool
+  answers.
+
+### Schema
+
+**None.** No migration, no column, no table. The habit tool reads existing
+models; both write kinds route through existing server actions and existing
+domain schemas.
+
+### Testing
+
+| Suite | Before | After |
+| --- | --- | --- |
+| Unit (`npm test`) | 1,088 | **1,097** |
+| Integration (`npm run test:integration`) | 326 | **344** |
+| Browser (`npm run test:e2e`, `CI_SKIP_SEEDED=1`) | 49 (47 passed, 2 skipped) | **52 (50 passed, 2 skipped)** |
+
+The browser figures are for a run with `CI_SKIP_SEEDED=1`, which excludes the
+seeded-account spec exactly as CI does — that is why they are lower than the
+57 Phase B recorded from an environment that had the seeded data. The two
+skips are the pre-existing ones documented there. The assistant spec itself
+goes from 8 tests to **11**, all passing.
+
+New unit coverage: the registry pin including `get_habit_status`, every tool
+having a UI label and no label outliving its tool, `propose_action`'s kind
+enum matching the classified kinds, per-kind field clauses asserted
+individually (a planner block still advertises no `habitId`, a habit log no
+`notes`), the habit tool's argument bounds, an invented `userId` being
+dropped by the validator, and the new risk classifications and status wording.
+
+New integration coverage (real PostgreSQL): the habit tool answering
+"did I do my habits today" with counts and per-habit state; `missedThisWeek`
+naming the right dates and excluding both last week and the days still ahead;
+a past scheduled day with no log at all counted as missed while today stays
+pending; streaks and completion rates matching the engine; `nextDueDate` for
+a habit not due today; name filtering that does not leak non-matches; the
+20-habit serialization bound; archived exclusion; the empty-account answer;
+and cross-user isolation across three different argument shapes. For the
+write kinds: staging in the user's own timezone, explicit date/status/value
+previewed exactly as written, refusal of `notes` / `excused` / a smuggled
+`id` / a foreign `userId`, foreign-habit and foreign-note refusals identical
+to nonexistence, read-only and draft both refused server-side, an already-done
+inbox note refused, and the unknown-kind rollback path stamping `failed`.
+
+Browser: `get_habit_status` answered from real data (the stub reads the habit
+name, status and streak straight out of the tool result, so a green assertion
+can only mean the tool reached the database); a habit log previewed, confirmed
+on one click, and then visible on the habits checklist as completed; and the
+narrow-viewport audit-log measurement. The habit fixture is created and
+deleted through the app's own UI, so reruns start clean.
+
+### Verification
+
+* Typecheck, lint, unit (1,097), integration (344), production build: pass.
+* Full browser suite against the production build: **50 passed, 0 failed**
+  (2 skipped, both pre-existing and documented above), the assistant spec
+  green inside the full parallel run and again on its own.
+* Manual pass at 390px and 1280px against the production build: no horizontal
+  overflow at either width, and no console errors beyond the Vercel Analytics
+  404 that every local run produces and the suite already ignores.
+
+### Exact next step
+
+Unchanged from Phase B, minus the two follow-ups this phase closed: use the
+assistant daily and let real conversations decide what comes next. The
+standing candidates are still the Phase A.2 health items (goals over the new
+metrics, a correlations view, nutrition reconciliation, per-metric pages,
+health signals in the needs-attention digest), each landing as both a page
+and a richer tool. The refused write kinds above are the list to reach for if
+usage asks for them — take the cheapest one (excusing a habit day) first,
+since it is one schema and one dispatch arm.
