@@ -1,6 +1,7 @@
 import type { Metadata } from "next";
 import { Database, Keyboard } from "lucide-react";
 
+import { AssistantPanel } from "@/components/settings/assistant-panel";
 import { BackupPanel } from "@/components/settings/backup-panel";
 import { DemoPanel } from "@/components/settings/demo-panel";
 import { GoalsPanel } from "@/components/settings/goals-panel";
@@ -13,6 +14,7 @@ import { countRemainingRecoveryCodes } from "@/server/auth/recovery";
 import { PageHeader } from "@/components/shared/page-header";
 import { SectionCard } from "@/components/shared/section-card";
 import { KEYBOARD_SHORTCUTS } from "@/lib/navigation";
+import { isAssistantMode } from "@/lib/logic/assistant";
 import { parseOnboardingState } from "@/lib/logic/onboarding";
 import { getDemoStatus } from "@/server/demo";
 import { getGoalRows, getHabitOptions, getUser } from "@/server/queries";
@@ -64,6 +66,14 @@ export default async function SettingsPage() {
           habits={habits}
           weekStartsOn={settings.weekStartsOn}
           today={settings.today}
+        />
+
+        <AssistantPanel
+          initial={{
+            baseUrl: user.assistantBaseUrl,
+            model: user.assistantModel,
+            mode: isAssistantMode(user.assistantMode) ? user.assistantMode : "readonly",
+          }}
         />
 
         <NotificationsPanel />

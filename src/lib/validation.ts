@@ -23,6 +23,7 @@ import {
   SERVING_UNITS,
   WORKOUT_TYPES,
 } from "./enums";
+import { ASSISTANT_LIMITS, ASSISTANT_MODES } from "./logic/assistant";
 import { FOOD_PROVIDERS } from "./logic/food";
 import { GOAL_COMPARISONS, GOAL_SOURCES } from "./logic/goals";
 import { TEMPLATE_APPLY_MODES } from "./logic/planner";
@@ -692,6 +693,43 @@ export const scheduleTaskSchema = z
   );
 
 export type ScheduleTaskInput = z.infer<typeof scheduleTaskSchema>;
+
+// --- AI assistant ------------------------------------------------------------
+
+export const assistantSettingsSchema = z.object({
+  /** Empty string = not configured; a real value is URL-checked server-side. */
+  baseUrl: z.string().trim().max(200),
+  model: z.string().trim().max(120).nullable().optional(),
+  mode: z.enum(ASSISTANT_MODES),
+});
+export type AssistantSettingsInput = z.infer<typeof assistantSettingsSchema>;
+
+export const assistantChatSchema = z.object({
+  message: z.string().trim().min(1).max(ASSISTANT_LIMITS.maxMessageChars),
+  /**
+   * Prior turns, client-held. Roles are restricted so a request can never
+   * smuggle a system or tool message into the model's context.
+   *
+   * Over-long history is TRIMMED rather than refused: a conversation that
+   * grew past the cap must keep working (the engine re-bounds it anyway), and
+   * a hard rejection here would fail every subsequent turn of that
+   * conversation, permanently.
+   */
+  history: z
+    .array(
+      z.object({
+        role: z.enum(["user", "assistant"]),
+        content: z.string().transform((value) =>
+          value.length > ASSISTANT_LIMITS.maxHistoryChars
+            ? `${value.slice(0, ASSISTANT_LIMITS.maxHistoryChars)}…`
+            : value,
+        ),
+      }),
+    )
+    .default([])
+    .transform((entries) => entries.slice(-ASSISTANT_LIMITS.maxHistoryMessages)),
+});
+export type AssistantChatInput = z.infer<typeof assistantChatSchema>;
 
 /** Standard action result — every server action returns this shape. */
 export type ActionResult<T = unknown> =

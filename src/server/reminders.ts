@@ -43,6 +43,20 @@ export async function getReminderFeed(): Promise<ReminderOccurrence[]> {
 }
 
 /**
+ * The classic reminder ROWS (not occurrences) — what Settings edits and what
+ * the assistant lists when it needs real ids to talk about. Bounded and
+ * soonest-first; the feed above stays the authority on what actually fires.
+ */
+export async function listReminders(limit = 100) {
+  const user = await getCurrentUser();
+  return prisma.reminder.findMany({
+    where: { userId: user.id },
+    orderBy: [{ enabled: "desc" }, { remindAt: "asc" }],
+    take: Math.min(Math.max(limit, 1), 100),
+  });
+}
+
+/**
  * The same feed for an explicit user row — the scheduled push runner
  * evaluates every subscribed user outside any session, and must share this
  * exact logic so push and in-tab reminders can never disagree about what is

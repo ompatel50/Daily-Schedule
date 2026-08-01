@@ -151,6 +151,27 @@ Set on every response and verified against the running server:
 * Dynamic pages answer with `Cache-Control: private, no-cache, no-store` — no
   shared cache ever holds your data.
 
+## The AI assistant sends data to exactly one place: yours
+
+The assistant (`docs/ai-assistant.md`) talks only to the Ollama server whose
+URL you typed into Settings — a machine you run. There is no cloud AI
+provider, no API key, and no fallback endpoint; the client module builds
+every request URL from that one base, tests assert a stubbed network only
+ever sees that host, and a structural test fails the suite if the assistant's
+server code ever names a cloud AI host. The browser cannot talk to Ollama at
+all (the CSP allows same-origin requests only) — everything flows through
+this app's server, as the signed-in user.
+
+The model reads through the same ownership-checked, bounded server functions
+as the rest of the app and has no direct database access. It cannot write:
+changes are staged as proposals, validated with the app's own schemas, and
+executed only after an explicit in-app confirmation — through the same server
+actions the app's buttons call. Read-only mode (the default) refuses even the
+staging, server-side. The audit trail stores bounded, app-authored summaries
+— never transcripts — and conversations are not persisted at all. Assistant
+base URLs are validated (http/https only, no credentials, cloud-metadata
+addresses refused) and never appear in error messages or logs.
+
 ## No analytics, no trackers
 
 There is no third-party analytics, no tracking pixel, no external font or

@@ -241,6 +241,90 @@ export function nowMinuteIn(timezone?: string | null, now: Date = new Date()): n
   }
 }
 
+/**
+ * Turn a naive wall-clock string (`YYYY-MM-DDTHH:mm`) into the instant it
+ * names *in the given timezone* — the inverse of `createStableDateKey`.
+ *
+ * `new Date("2026-08-02T09:00")` is parsed in whatever zone the machine
+ * happens to be in, which on a hosted deployment is UTC — so a reminder the
+ * user set for 9am would fire at 5am their time. This resolves the offset by
+ * measuring it: format a first guess back in the target zone, and correct by
+ * the difference. Two passes because the correction can itself cross a DST
+ * boundary; the second pass settles it for every real-world zone.
+ *
+ * Returns null for a string that is not a wall clock, or an unusable zone —
+ * callers must decide what to do rather than silently storing a wrong time.
+ */
+export function wallClockToInstant(wallClock: string, timezone?: string | null): Date | null {
+  const match = /^(\d{4})-(\d{2})-(\d{2})[T ](\d{2}):(\d{2})(?::(\d{2}))?$/.exec(wallClock.trim());
+  if (!match) return null;
+  const [, year, month, day, hour, minute, second] = match;
+
+  const wanted = Date.UTC(
+    Number(year),
+    Number(month) - 1,
+    Number(day),
+    Number(hour),
+    Number(minute),
+    Number(second ?? "0"),
+  );
+  if (Number.isNaN(wanted)) return null;
+  if (!timezone) {
+    const local = new Date(
+      Number(year),
+      Number(month) - 1,
+      Number(day),
+      Number(hour),
+      Number(minute),
+      Number(second ?? "0"),
+    );
+    return Number.isNaN(local.getTime()) ? null : local;
+  }
+
+  try {
+    let instant = new Date(wanted);
+    for (let pass = 0; pass < 2; pass += 1) {
+      // What wall clock does `instant` actually show in the target zone?
+      const parts = new Intl.DateTimeFormat("en-GB", {
+        timeZone: timezone,
+        year: "numeric",
+        month: "2-digit",
+        day: "2-digit",
+        hour: "2-digit",
+        minute: "2-digit",
+        second: "2-digit",
+        hour12: false,
+      }).formatToParts(instant);
+      const at = (type: string) => Number(parts.find((part) => part.type === type)?.value ?? "0");
+      const shown = Date.UTC(
+        at("year"),
+        at("month") - 1,
+        at("day"),
+        at("hour") % 24,
+        at("minute"),
+        at("second"),
+      );
+      const drift = wanted - shown;
+      if (drift === 0) break;
+      instant = new Date(instant.getTime() + drift);
+    }
+    return Number.isNaN(instant.getTime()) ? null : instant;
+  } catch {
+    // An unknown or malformed timezone must never break the app — the same
+    // rule `createStableDateKey` follows. Fall back to the host's calendar,
+    // which is what a zone-less app would have done anyway.
+    const local = new Date(
+      Number(year),
+      Number(month) - 1,
+      Number(day),
+      Number(hour),
+      Number(minute),
+      Number(second ?? "0"),
+    );
+    return Number.isNaN(local.getTime()) ? null : local;
+  }
+}
+
 /** The browser's detected timezone, used to seed Settings on first run. */
 export function detectTimezone(): string {
   try {

@@ -5,6 +5,7 @@ import { useRouter } from "next/navigation";
 import {
   Apple,
   ArrowRight,
+  Bot,
   CalendarPlus,
   Dumbbell,
   FileDown,
@@ -138,6 +139,12 @@ export function CommandPalette() {
           <CommandItem value="quick add task schedule item new" onSelect={() => run(() => openQuickAdd())}>
             <Plus /> Quick add to planner
             <CommandShortcut>N</CommandShortcut>
+          </CommandItem>
+          <CommandItem
+            value="ask assistant ai chat question ollama"
+            onSelect={() => run(() => router.push("/assistant"))}
+          >
+            <Bot /> Ask the assistant
           </CommandItem>
           <CommandItem value="log food meal nutrition" onSelect={() => run(() => router.push("/nutrition"))}>
             <Apple /> Log food
