@@ -3,6 +3,13 @@ import "server-only";
 import { z } from "zod";
 
 import { formatMinute } from "@/lib/date";
+import {
+  FINANCE_CATEGORIES,
+  PRIORITIES,
+  SCHEDULE_CATEGORIES,
+  isBookkeepingCategory,
+} from "@/lib/enums";
+import { wallClockToInstant } from "@/lib/logic/schedule";
 import { prisma } from "@/lib/prisma";
 import {
   ASSISTANT_ACTION_META,
@@ -27,12 +34,15 @@ import type { CurrentUser } from "@/server/auth/current-user";
  * Proposals — the assistant's draft-before-write staging layer.
  *
  * A proposal is born here when the model calls `propose_action`, and it is
- * validated twice with the SAME zod schema the target server action uses:
- * once now, so the preview the user reads is exactly what would run, and
- * again at execution (both here and inside the action itself), so nothing
- * can drift between the click and the write. Execution lives in
- * src/server/actions/assistant.ts and routes through the existing server
- * actions — this module never writes domain records.
+ * validated three times before anything happens: by the narrow
+ * assistant-facing schema below (which refuses any field the preview sentence
+ * could not describe), by the domain schema at execution (`reparsePayload`),
+ * and by the target server action itself. That is what makes "the preview the
+ * user reads is exactly what would run" a property rather than a hope: the
+ * stored payload names every field the action will see, explicitly.
+ *
+ * Execution lives in src/server/actions/assistant.ts and routes through the
+ * existing server actions — this module never writes domain records.
  *
  * Rows are stamped, never deleted, so the activity feed keeps its history;
  * an undecided proposal expires after PROPOSAL_TTL_MS and stops being
@@ -44,35 +54,91 @@ const MAX_PENDING_PROPOSALS = 10;
 
 export type ProposalPreview = AssistantProposalView;
 
-/** The create-only variants: an assistant proposal must never smuggle an id
- *  into a save action and turn "create" into "overwrite". */
+/**
+ * Assistant-facing input schemas — deliberately NARROWER than the domain
+ * schemas the actions use.
+ *
+ * The proposal contract is "the preview the user reads is exactly what would
+ * run". That only holds if the assistant cannot supply a field the preview
+ * does not describe: piping the model's payload straight through the full
+ * `taskSchema`/`scheduleItemSchema` would accept `recurrenceRule`, `repeat`,
+ * `reminderEnabled`, `parentId`, `tagIds`… — none of which the preview or the
+ * tool contract mention, so a confirmed "add one planner block" could quietly
+ * write a 120-day recurring series. These schemas accept ONLY the advertised
+ * fields (`.strict()` rejects anything else, which also blocks a smuggled
+ * `id` turning a create into an overwrite), and `prepareProposal` maps them
+ * onto the domain action's input explicitly. The action then validates again.
+ */
 const createTaskSchema = z
-  .object({})
-  .passthrough()
-  .transform((value) => ({ ...value, id: undefined }))
-  .pipe(taskSchema);
-const createReminderSchema = z
-  .object({})
-  .passthrough()
-  .transform((value) => ({ ...value, id: undefined }))
-  .pipe(reminderSchema);
-const createInboxItemSchema = z
-  .object({})
-  .passthrough()
-  .transform((value) => ({ ...value, id: undefined }))
-  .pipe(inboxItemSchema);
-const createTransactionSchema = z
-  .object({})
-  .passthrough()
-  .transform((value) => ({ ...value, id: undefined }))
-  .pipe(financeTransactionSchema);
-const createPlannerBlockSchema = z
-  .object({})
-  .passthrough()
-  .transform((value) => ({ ...value, id: undefined }))
-  .pipe(scheduleItemSchema);
+  .object({
+    title: z.string().trim().min(1).max(200),
+    notes: z.string().max(5000).nullable().optional(),
+    dueDate: z
+      .string()
+      .regex(/^\d{4}-\d{2}-\d{2}$/, "Expected a YYYY-MM-DD date")
+      .optional(),
+    priority: z.enum(PRIORITIES).default("medium"),
+  })
+  .strict();
 
-const byIdSchema = z.object({ id: z.string().min(1) });
+const createReminderSchema = z
+  .object({
+    title: z.string().trim().min(1).max(160),
+    message: z.string().max(500).nullable().optional(),
+    remindAt: z.string().min(1).max(40),
+    repeat: z.enum(["none", "daily", "weekdays", "weekly"]).default("none"),
+  })
+  .strict();
+
+const createInboxItemSchema = z
+  .object({
+    title: z.string().trim().min(1).max(300),
+    notes: z.string().max(5000).nullable().optional(),
+  })
+  .strict();
+
+const createTransactionSchema = z
+  .object({
+    accountId: z.string().min(1),
+    date: z.string().regex(/^\d{4}-\d{2}-\d{2}$/, "Expected a YYYY-MM-DD date"),
+    // Signed and non-zero: negative is money out. Bounded like the domain schema.
+    amount: z
+      .number()
+      .finite()
+      .refine((value) => value !== 0, "Amount cannot be zero")
+      .refine((value) => Math.abs(value) <= 1e12, "Amount is out of range"),
+    payee: z.string().trim().min(1).max(200),
+    category: z.enum(FINANCE_CATEGORIES).default("other"),
+    notes: z.string().max(2000).nullable().optional(),
+  })
+  .strict()
+  // The assistant records ordinary spend/income, never the bookkeeping legs of
+  // a transfer or a balance adjustment — those have their own guarded actions.
+  .refine((value) => !isBookkeepingCategory(value.category), {
+    message: "Use a real spending or income category, not a transfer/adjustment.",
+    path: ["category"],
+  });
+
+const createPlannerBlockSchema = z
+  .object({
+    title: z.string().trim().min(1).max(200),
+    date: z.string().regex(/^\d{4}-\d{2}-\d{2}$/, "Expected a YYYY-MM-DD date"),
+    startMinute: z.number().int().min(0).max(1439).nullable().optional(),
+    endMinute: z.number().int().min(0).max(1439).nullable().optional(),
+    category: z.enum(SCHEDULE_CATEGORIES).default("personal"),
+  })
+  .strict()
+  .refine(
+    (value) =>
+      value.startMinute === null ||
+      value.startMinute === undefined ||
+      value.endMinute === null ||
+      value.endMinute === undefined ||
+      value.endMinute >= value.startMinute,
+    { message: "End time must be after the start time", path: ["endMinute"] },
+  );
+
+const byIdSchema = z.object({ id: z.string().min(1) }).strict();
 
 type PreviewOutcome =
   | { ok: true; proposal: ProposalPreview }
@@ -156,7 +222,19 @@ async function prepareProposal(
       ].filter(Boolean);
       return {
         ok: true,
-        payload: data,
+        // Explicit, so the task that gets created is exactly the one the
+        // sentence below describes: no repeat, no reminder, no parent, no
+        // project, no tags — the assistant proposes plain tasks.
+        payload: {
+          title: data.title,
+          notes: data.notes ?? null,
+          dueDate: data.dueDate ?? null,
+          priority: data.priority,
+          repeat: "none",
+          repeatEvery: 1,
+          reminderEnabled: false,
+          tags: [],
+        },
         summary: `Create task “${data.title}”${detail.length ? ` (${detail.join(", ")})` : ""}`,
       };
     }
@@ -171,7 +249,7 @@ async function prepareProposal(
       if (task.status !== "open") return { ok: false, error: "That task is not open." };
       return {
         ok: true,
-        payload: { id: task.id, title: task.title },
+        payload: { id: task.id },
         summary: `Mark task “${task.title}” as done`,
       };
     }
@@ -179,14 +257,27 @@ async function prepareProposal(
       const parsed = createReminderSchema.safeParse(payload);
       if (!parsed.success) return invalid(parsed.error);
       const data = parsed.data;
-      const when = new Date(data.remindAt);
-      if (Number.isNaN(when.getTime())) {
+      // The model writes the user's own wall clock ("2026-08-02T09:00"), so it
+      // must be resolved in the USER's timezone before it becomes an instant.
+      // `saveReminder` would otherwise parse it in the server's zone — UTC on
+      // a hosted deployment — and a 9am reminder would fire at 5am.
+      const when = wallClockToInstant(data.remindAt, user.timezone);
+      if (!when) {
         return { ok: false, error: "Invalid reminder time — use YYYY-MM-DDTHH:mm." };
       }
+      const shown = data.remindAt.trim().replace("T", " ").slice(0, 16);
       return {
         ok: true,
-        payload: data,
-        summary: `Create reminder “${data.title}” for ${data.remindAt.replace("T", " ")}${
+        // Stored as an absolute instant: what the user confirms is a moment,
+        // not a string that could be re-interpreted differently later.
+        payload: {
+          title: data.title,
+          message: data.message ?? null,
+          remindAt: when.toISOString(),
+          repeat: data.repeat,
+          enabled: true,
+        },
+        summary: `Create reminder “${data.title}” for ${shown}${
           data.repeat !== "none" ? ` (repeats ${data.repeat})` : ""
         }`,
       };
@@ -196,7 +287,7 @@ async function prepareProposal(
       if (!parsed.success) return invalid(parsed.error);
       return {
         ok: true,
-        payload: parsed.data,
+        payload: { title: parsed.data.title, notes: parsed.data.notes ?? null },
         summary: `Add inbox note “${parsed.data.title}”`,
       };
     }
@@ -212,7 +303,15 @@ async function prepareProposal(
       const direction = data.amount < 0 ? "out" : "in";
       return {
         ok: true,
-        payload: data,
+        payload: {
+          accountId: data.accountId,
+          date: data.date,
+          amount: data.amount,
+          payee: data.payee,
+          category: data.category,
+          notes: data.notes ?? null,
+          billId: null,
+        },
         summary: `Record ${Math.abs(data.amount).toFixed(2)} ${account.currency} ${direction} at “${data.payee}” on ${data.date} (${account.name})`,
       };
     }
@@ -220,13 +319,32 @@ async function prepareProposal(
       const parsed = createPlannerBlockSchema.safeParse(payload);
       if (!parsed.success) return invalid(parsed.error);
       const data = parsed.data;
-      const time =
-        !data.allDay && data.startMinute !== null && data.startMinute !== undefined
-          ? ` at ${formatMinute(data.startMinute)}`
-          : "";
+      const timed = data.startMinute !== null && data.startMinute !== undefined;
+      const time = timed
+        ? ` at ${formatMinute(data.startMinute as number)}${
+            data.endMinute !== null && data.endMinute !== undefined
+              ? `–${formatMinute(data.endMinute)}`
+              : ""
+          }`
+        : " (all day)";
       return {
         ok: true,
-        payload: data,
+        // Every field the action will see is set here, explicitly. A planner
+        // block the assistant proposes is always a single occurrence: no
+        // recurrence rule, no tags, no habit link — none of which the preview
+        // could honestly describe.
+        payload: {
+          title: data.title,
+          date: data.date,
+          allDay: !timed,
+          startMinute: timed ? data.startMinute : null,
+          endMinute: timed ? (data.endMinute ?? null) : null,
+          category: data.category,
+          priority: "medium",
+          status: "planned",
+          recurrenceRule: null,
+          tagIds: [],
+        },
         summary: `Add “${data.title}” to the planner on ${data.date}${time}`,
       };
     }
@@ -241,7 +359,7 @@ async function prepareProposal(
       const subtasks = task.subtasks.length;
       return {
         ok: true,
-        payload: { id: task.id, title: task.title },
+        payload: { id: task.id },
         summary: `Delete task “${task.title}”${
           subtasks > 0 ? ` and its ${subtasks} subtask${subtasks === 1 ? "" : "s"}` : ""
         } — permanent`,
@@ -257,7 +375,7 @@ async function prepareProposal(
       if (!reminder) return { ok: false, error: "Reminder not found." };
       return {
         ok: true,
-        payload: { id: reminder.id, title: reminder.title },
+        payload: { id: reminder.id },
         summary: `Delete reminder “${reminder.title}” — permanent`,
       };
     }
@@ -316,7 +434,15 @@ export function toPreview(row: {
   };
 }
 
-/** Re-parse a stored payload with the kind's schema before execution. */
+/**
+ * Re-validate a stored payload immediately before execution.
+ *
+ * `prepareProposal` stored the DOMAIN action's input (every field explicit),
+ * so this checks it against that same domain schema — the third and last
+ * validation, after the assistant-facing schema at proposal time and the
+ * action's own check at execution. A row that no longer parses is refused
+ * rather than executed on a best guess.
+ */
 export function reparsePayload(
   kind: AssistantActionKind,
   raw: string,
@@ -329,15 +455,15 @@ export function reparsePayload(
   }
   const schema =
     kind === "create_task"
-      ? createTaskSchema
+      ? taskSchema
       : kind === "create_reminder"
-        ? createReminderSchema
+        ? reminderSchema
         : kind === "create_inbox_item"
-          ? createInboxItemSchema
+          ? inboxItemSchema
           : kind === "create_transaction"
-            ? createTransactionSchema
+            ? financeTransactionSchema
             : kind === "create_planner_block"
-              ? createPlannerBlockSchema
+              ? scheduleItemSchema
               : byIdSchema;
   const checked = schema.safeParse(parsed);
   if (!checked.success) return { ok: false, error: "The stored proposal is no longer valid." };

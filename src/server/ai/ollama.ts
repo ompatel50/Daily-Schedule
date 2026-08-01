@@ -169,6 +169,10 @@ async function request<T>(
       // Nothing about the request context travels: no cookies, no referrer.
       cache: "no-store",
       referrerPolicy: "no-referrer",
+      // A redirect is never a legitimate Ollama reply, and following one
+      // would take the request to a host the user never configured — the one
+      // way the validated base URL could stop being the only destination.
+      redirect: "error",
     });
 
     if (!response.ok) {
@@ -336,6 +340,10 @@ export async function streamOllamaChat(
       }),
       cache: "no-store",
       referrerPolicy: "no-referrer",
+      // A redirect is never a legitimate Ollama reply, and following one
+      // would take the request to a host the user never configured — the one
+      // way the validated base URL could stop being the only destination.
+      redirect: "error",
     });
 
     if (!response.ok || !response.body) {
@@ -384,6 +392,34 @@ export async function streamOllamaChat(
             if (typeof name === "string") toolCalls.push(call as OllamaToolCall);
           }
         }
+      }
+    }
+
+    // A server that ends the stream without a trailing newline leaves the last
+    // object in the buffer; flushing the decoder and parsing what remains means
+    // the final token is never silently dropped.
+    buffered += decoder.decode();
+    const tail = buffered.trim();
+    if (tail) {
+      try {
+        const chunk = JSON.parse(tail) as {
+          message?: { content?: unknown; tool_calls?: unknown };
+        };
+        const token = chunk.message?.content;
+        if (typeof token === "string" && token) {
+          content += token;
+          await options.onToken(token);
+        }
+        const calls = chunk.message?.tool_calls;
+        if (Array.isArray(calls)) {
+          for (const call of calls) {
+            if (typeof (call as OllamaToolCall)?.function?.name === "string") {
+              toolCalls.push(call as OllamaToolCall);
+            }
+          }
+        }
+      } catch {
+        // An unterminated partial object is not recoverable; the rest stands.
       }
     }
 

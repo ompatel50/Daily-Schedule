@@ -625,7 +625,7 @@ const backupStatusTool: AssistantTool = {
 const proposeActionTool: AssistantTool = {
   name: "propose_action",
   description:
-    "Propose ONE change for the user to review — never performed directly. Kinds and payloads: create_task {title, notes?, dueDate?, priority?}; complete_task {id}; create_reminder {title, message?, remindAt (YYYY-MM-DDTHH:mm), repeat?}; create_inbox_item {title, notes?}; create_transaction {accountId, date, amount (signed: negative = money out), payee, category?}; create_planner_block {title, date, startMinute?, endMinute?, category?}; delete_task {id}; delete_reminder {id}. Use real ids from other tools. The user sees a preview and decides.",
+    "Propose ONE change for the user to review — never performed directly. Send ONLY the fields listed for the kind; anything else is refused. create_task {title, notes?, dueDate?, priority?} (always a plain one-off task); complete_task {id}; create_reminder {title, message?, remindAt: 'YYYY-MM-DDTHH:mm' in the user's own clock, repeat?}; create_inbox_item {title, notes?}; create_transaction {accountId, date, amount (signed: negative = money out), payee, category?, notes?}; create_planner_block {title, date, startMinute?, endMinute?, category?} (a single day, never recurring); delete_task {id}; delete_reminder {id}. Use real ids from other tools. The user sees a preview and decides.",
   parameters: {
     type: "object",
     properties: {

@@ -126,6 +126,12 @@ export async function runAssistantExchange(options: {
     };
   };
 
+  // Prose the model produced in rounds that ended in tool calls ("let me
+  // check…"). Kept so the final answer is not the only thing the user sees,
+  // but separated — concatenating it straight onto the answer reads as one
+  // run-on sentence.
+  let streamedSoFar = "";
+
   for (let round = 0; round <= ASSISTANT_LIMITS.maxToolRounds; round += 1) {
     const lastRound = round === ASSISTANT_LIMITS.maxToolRounds;
     await options.emit({ type: "status", state: "thinking" });
@@ -144,9 +150,18 @@ export async function runAssistantExchange(options: {
 
     const { content, toolCalls } = turn.data;
     if (toolCalls.length === 0) {
+      const full = streamedSoFar + content;
       const durationMs = Date.now() - started;
-      await options.emit({ type: "done", content, durationMs });
-      return { status: "ok", content, toolCalls: auditCalls, proposals, durationMs };
+      await options.emit({ type: "done", content: full, durationMs });
+      return { status: "ok", content: full, toolCalls: auditCalls, proposals, durationMs };
+    }
+
+    if (content.trim()) {
+      // The client appends tokens as they arrive, so the break has to be sent
+      // as tokens too, not only folded into the final content.
+      const separator = "\n\n";
+      streamedSoFar += `${content}${separator}`;
+      await options.emit({ type: "token", text: separator });
     }
 
     await options.emit({ type: "status", state: "tools" });

@@ -96,6 +96,19 @@ describe("refusals", () => {
   });
 });
 
+describe("the propose_action contract", () => {
+  it("advertises only the fields the previews can describe", () => {
+    const tool = ASSISTANT_TOOLS.find((entry) => entry.name === "propose_action")!;
+    // The description IS the model's contract; if it ever advertises a field
+    // the preview sentence does not mention, the "what you confirm is what
+    // runs" promise breaks. Recurrence is the specific trap: a planner block
+    // that repeats writes ~120 rows from one confirmed sentence.
+    expect(tool.description).toContain("Send ONLY the fields listed");
+    expect(tool.description).toContain("never recurring");
+    expect(tool.description).not.toMatch(/recurrenceRule|repeatEvery|parentId|tagIds|habitId/);
+  });
+});
+
 describe("bounded results", () => {
   it("passes small results through verbatim", () => {
     expect(serializeToolResult({ ok: true, result: { a: 1 } })).toBe('{"a":1}');

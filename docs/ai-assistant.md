@@ -70,11 +70,18 @@ tool stages a **proposal**; it cannot execute anything.
 
 Changes the assistant can propose: create a task, complete a task, create a
 reminder, add an inbox note, record a transaction, add a planner block, delete
-a task, delete a reminder. Each proposal is validated with the exact same
-schema the app's own forms use, previewed as one plain sentence, and executed
-— only after your confirmation — by calling the same server action the app's
-own buttons call. Everything those actions enforce (ownership, validation,
-recomputed summaries, UI refresh) applies unchanged.
+a task, delete a reminder. Each proposal is previewed as one plain sentence and
+executed — only after your confirmation — by calling the same server action the
+app's own buttons call, so everything those actions enforce (ownership,
+validation, recomputed summaries, UI refresh) applies unchanged.
+
+The proposal schemas are deliberately **narrower** than the app's own forms:
+the assistant may only send the fields the preview sentence describes, and
+anything else is refused outright. A task it creates is always a plain one-off
+task (no repeat, no reminder, no parent, no tags); a planner block is always a
+single day (never a recurring series). This is what makes "what you confirm is
+what runs" true rather than merely intended — a change the preview cannot
+describe is not a change the assistant can make.
 
 ## What it cannot do
 

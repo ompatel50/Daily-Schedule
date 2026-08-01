@@ -25,6 +25,10 @@ const STUB_PORT = 11435;
 const STUB_URL = `http://127.0.0.1:${STUB_PORT}`;
 const NONCE = `e2e-${Date.now().toString(36)}`;
 const TASK_TITLE = `Renew passport (assistant ${NONCE})`;
+/** A separate title for the read-only case, so its "nothing was created"
+ *  assertion cannot be confused by a task an earlier case legitimately made
+ *  (or an interrupted run left behind). */
+const READONLY_TITLE = `Read-only probe (assistant ${NONCE})`;
 
 const IGNORED_CONSOLE = [/_vercel\/insights/];
 
@@ -115,6 +119,12 @@ function chatResponseFor(messages: ChatMessage[]): string {
   const asked = [...messages].reverse().find((message) => message.role === "user")?.content ?? "";
   if (asked.includes("hello assistant")) {
     return textReply("Hello! ", "Everything ", "looks fine.");
+  }
+  if (asked.includes("read-only probe")) {
+    return toolReply("propose_action", {
+      kind: "create_task",
+      payload: { title: READONLY_TITLE },
+    });
   }
   if (asked.includes("add a task")) {
     return toolReply("propose_action", {
@@ -304,12 +314,12 @@ test("read-only mode refuses proposals server-side", async ({ page }) => {
   const consoleErrors = watchConsole(page);
   await configureAssistant(page, "Read-only");
 
-  await ask(page, "add a task to renew my passport");
+  await ask(page, "read-only probe: add a task");
   await expect(page.getByTestId("assistant-transcript")).toContainText("Read-only mode is on");
   await expect(page.getByTestId("assistant-proposal")).toHaveCount(0);
 
   await page.goto("/tasks");
-  await expect(page.getByText(TASK_TITLE)).toHaveCount(0);
+  await expect(page.getByText(READONLY_TITLE)).toHaveCount(0);
   expect(consoleErrors()).toEqual([]);
 });
 

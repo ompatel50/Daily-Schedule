@@ -22,6 +22,7 @@ import {
   type ScheduleRuleLike,
   type ScheduleSettings,
   type SchedulableItem,
+  wallClockToInstant,
 } from "@/lib/logic/schedule";
 
 // 2026-03-02 is a Monday. All fixtures are anchored to it so weekday maths is
@@ -639,5 +640,57 @@ describe("rule input normalisation", () => {
   it("de-duplicates and sorts weekdays", () => {
     const normalised = normalizeRuleInput({ mode: "weekdays", weekdays: [5, 1, 1, 3] });
     expect(normalised.weekdays).toEqual([1, 3, 5]);
+  });
+});
+
+describe("wallClockToInstant", () => {
+  /**
+   * The inverse of createStableDateKey: a naive "YYYY-MM-DDTHH:mm" is the
+   * user's OWN clock, so it must resolve against their timezone rather than
+   * the machine's. On a hosted deployment the machine is UTC, which is how a
+   * 9am reminder becomes a 5am one.
+   */
+  it("resolves a wall clock in the named zone, not the host's", () => {
+    // 09:00 in New York during EDT is 13:00 UTC.
+    const summer = wallClockToInstant("2026-08-02T09:00", "America/New_York");
+    expect(summer?.toISOString()).toBe("2026-08-02T13:00:00.000Z");
+
+    // The same wall clock in January is EST — 14:00 UTC.
+    const winter = wallClockToInstant("2026-01-15T09:00", "America/New_York");
+    expect(winter?.toISOString()).toBe("2026-01-15T14:00:00.000Z");
+  });
+
+  it("handles zones east of UTC and half-hour offsets", () => {
+    expect(wallClockToInstant("2026-08-02T09:00", "Europe/Berlin")?.toISOString()).toBe(
+      "2026-08-02T07:00:00.000Z",
+    );
+    expect(wallClockToInstant("2026-08-02T09:00", "Asia/Kolkata")?.toISOString()).toBe(
+      "2026-08-02T03:30:00.000Z",
+    );
+    expect(wallClockToInstant("2026-08-02T09:00", "UTC")?.toISOString()).toBe(
+      "2026-08-02T09:00:00.000Z",
+    );
+  });
+
+  it("survives a spring-forward boundary without drifting a day", () => {
+    // 2026-03-08 02:30 does not exist in New York (clocks jump 02:00 → 03:00).
+    // The result must still land on that morning, not the previous day.
+    const resolved = wallClockToInstant("2026-03-08T02:30", "America/New_York");
+    expect(resolved).not.toBeNull();
+    expect(resolved!.toISOString().slice(0, 10)).toBe("2026-03-08");
+  });
+
+  it("accepts seconds and a space separator, and refuses anything else", () => {
+    expect(wallClockToInstant("2026-08-02 09:00:30", "UTC")?.toISOString()).toBe(
+      "2026-08-02T09:00:30.000Z",
+    );
+    expect(wallClockToInstant("next tuesday", "UTC")).toBeNull();
+    expect(wallClockToInstant("2026-08-02", "UTC")).toBeNull();
+    expect(wallClockToInstant("", "UTC")).toBeNull();
+  });
+
+  it("falls back to the host clock when the zone is unusable", () => {
+    const resolved = wallClockToInstant("2026-08-02T09:00", "Not/AZone");
+    expect(resolved).not.toBeNull();
   });
 });

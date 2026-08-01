@@ -2938,6 +2938,58 @@ in every unit.
   tasks due today) to the existing three, and the candidate-key ledger
   lookup stays one round trip.
 
+### The adversarial review round, and what it found
+
+The phase was reviewed by four independent passes (security/ownership,
+safety-model bypass, correctness/regressions, tests/determinism), each finding
+verified by a separate skeptic prompted to refute it. Twelve findings, ten
+confirmed, all fixed here. The two that mattered:
+
+* **A confirmed preview could under-describe the write.** `propose_action`
+  accepted an open payload and each create-arm piped it through the *full*
+  domain schema — which accepts `recurrenceRule`, `repeat`, `reminderEnabled`,
+  `parentId`, `tagIds`. The preview sentence describes only a handful of
+  fields, so "add Standup to the planner on Sunday" could carry a recurrence
+  rule and write ~120 occurrence rows the user never saw — while the
+  destructive/sensitive dialog said "this is exactly what will happen —
+  nothing more". Fixed by giving the assistant its own **strict, narrow**
+  input schemas (only the advertised fields; anything else refused, which also
+  refuses a smuggled `id`), and having `prepareProposal` map them onto the
+  action's input **explicitly** — every field the action will see is now named
+  at staging. A task the assistant creates is a plain one-off; a planner block
+  is a single day. Pinned by integration tests per kind and by a unit test on
+  the tool description itself, since that description is the model's contract.
+* **Reminders were stored in the server's timezone.** `saveReminder` parses
+  its `remindAt` with `new Date()`, which on a hosted deployment means UTC — so
+  a 9am reminder the assistant created fired at 5am for a New York user. The
+  app had no wall-clock→instant helper (only the reverse), so this adds
+  `wallClockToInstant` beside `createStableDateKey`, resolving the offset by
+  measuring it (two passes, so a correction that crosses a DST boundary
+  settles). The proposal now stores an absolute instant, and the preview shows
+  the user's own clock. Tested across EDT/EST, half-hour offsets and a
+  spring-forward gap.
+
+The rest: long conversations no longer break permanently (history is bounded
+client-side and *trimmed* rather than refused server-side — a hard 400 would
+have failed every later turn of that conversation); `redirect: "error"` on
+both Ollama fetches, so a redirect can never take a request off the validated
+host; the NDJSON reader flushes a final line that arrives without a trailing
+newline; prose streamed before a tool round is separated from the answer
+instead of running into it; audit timestamps render in the reader's own clock
+rather than UTC; the read-only browser case uses its own task title so it
+cannot be confused by an interrupted run; and the chat route's four guard
+paths (401 signed-out, 409 unconfigured, 400 malformed, 400 smuggled `system`
+history) are now covered.
+
+One finding was **refuted** and deliberately not "fixed": that the
+cloud-metadata block is bypassable via DNS names resolving into link-local
+space. It is, in principle — but the app fetches whatever host the *account
+owner* typed into their own settings, so the only thing such a bypass buys an
+attacker is the ability to attack themselves. `redirect: "error"` closes the
+one variant that mattered (a third party's redirect steering the request), and
+a full SSRF resolver would break the LAN addresses this feature exists to
+reach.
+
 ### Exact next step
 
 Phase 32 candidates, in rough order of user value: CSV transaction import
@@ -4346,8 +4398,8 @@ delete list is untouched because nothing references these tables.
 
 | Suite | Before | After |
 | --- | --- | --- |
-| Unit (`npm test`) | 1,033 | **1,082** |
-| Integration (`npm run test:integration`) | 293 | **318** |
+| Unit (`npm test`) | 1,033 | **1,088** |
+| Integration (`npm run test:integration`) | 293 | **326** |
 | Browser (`npm run test:e2e`) | 49 | **57** (all passing, 2 skipped: the pre-existing seeded spec + fixme) |
 
 New unit coverage (`assistant-ollama`, `assistant-engine`, `assistant-tools`,

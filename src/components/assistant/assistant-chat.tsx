@@ -131,9 +131,20 @@ export function AssistantChat(props: {
     if (!message || streaming) return;
     setInput("");
 
+    // Bounded HERE, not just server-side: the request schema caps history
+    // length, so an unbounded send would start failing outright once a
+    // conversation grew — and every later turn would fail identically. The
+    // server re-bounds what it receives; this only keeps the request valid.
     const history = messages
-      .filter((entry) => !entry.error)
-      .map((entry) => ({ role: entry.role, content: entry.content }));
+      .filter((entry) => !entry.error && entry.content.trim() !== "")
+      .slice(-ASSISTANT_LIMITS.maxHistoryMessages)
+      .map((entry) => ({
+        role: entry.role,
+        content:
+          entry.content.length > ASSISTANT_LIMITS.maxHistoryChars
+            ? `${entry.content.slice(0, ASSISTANT_LIMITS.maxHistoryChars)}…`
+            : entry.content,
+      }));
 
     const userEntry: ChatMessage = {
       id: `u-${Date.now()}`,

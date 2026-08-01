@@ -1,5 +1,6 @@
 "use client";
 
+import * as React from "react";
 import {
   Activity,
   CheckCircle2,
@@ -93,7 +94,7 @@ export function AssistantActivity(props: {
             <span className="flex shrink-0 items-center gap-2">
               <StatusBadge status={entry.status} label={entry.status} />
               <time className="text-xs tabular text-muted-foreground" dateTime={entry.createdAt}>
-                {entry.createdAt.slice(0, 16).replace("T", " ")}
+                <LocalTime iso={entry.createdAt} />
               </time>
             </span>
           </li>
@@ -101,6 +102,33 @@ export function AssistantActivity(props: {
       </ul>
     </SectionCard>
   );
+}
+
+/**
+ * Audit rows carry UTC instants; showing them raw would tell a user in
+ * Chicago that they asked something "at 06:12" when they asked at midnight.
+ * Formatting happens after mount because the server and the first client
+ * render must agree — the browser's clock is not knowable during SSR.
+ */
+function LocalTime({ iso }: { iso: string }) {
+  const [text, setText] = React.useState<string | null>(null);
+
+  React.useEffect(() => {
+    const when = new Date(iso);
+    if (Number.isNaN(when.getTime())) return;
+    setText(
+      when.toLocaleString(undefined, {
+        month: "short",
+        day: "numeric",
+        hour: "2-digit",
+        minute: "2-digit",
+      }),
+    );
+  }, [iso]);
+
+  // Before hydration: the calendar day only, which is the same in the vast
+  // majority of zones and never claims a wrong wall-clock time.
+  return <>{text ?? iso.slice(0, 10)}</>;
 }
 
 function StatusBadge({ status, label }: { status: string; label: string }) {
