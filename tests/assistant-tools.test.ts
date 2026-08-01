@@ -8,7 +8,11 @@ import {
   serializeToolResult,
   toolsForMode,
 } from "@/server/ai/tools";
-import { ASSISTANT_LIMITS } from "@/lib/logic/assistant";
+import {
+  ASSISTANT_ACTION_KINDS,
+  ASSISTANT_LIMITS,
+  ASSISTANT_TOOL_LABELS,
+} from "@/lib/logic/assistant";
 
 /**
  * The tool registry's own guarantees — the parts that hold before any
@@ -30,6 +34,7 @@ describe("the registry", () => {
       "get_schedule",
       "list_tasks",
       "list_inbox",
+      "get_habit_status",
       "get_finance_overview",
       "list_transactions",
       "list_bills",
@@ -48,6 +53,19 @@ describe("the registry", () => {
       expect(tool.description.length, tool.name).toBeGreaterThan(10);
       expect(tool.parameters, tool.name).toMatchObject({ type: "object" });
       expect(tool.validate, tool.name).toBeTruthy();
+    }
+  });
+
+  it("gives every tool a human name for the activity chips", () => {
+    // Without this, a tool added to the registry shows the user its raw
+    // identifier ("get_habit_status") mid-answer.
+    for (const tool of ASSISTANT_TOOLS) {
+      expect(ASSISTANT_TOOL_LABELS[tool.name], tool.name).toBeTruthy();
+    }
+    // And nothing lingers in the map for a tool that no longer exists.
+    const names = new Set(ASSISTANT_TOOLS.map((tool) => tool.name));
+    for (const labelled of Object.keys(ASSISTANT_TOOL_LABELS)) {
+      expect(names.has(labelled), labelled).toBe(true);
     }
   });
 
@@ -97,15 +115,74 @@ describe("refusals", () => {
 });
 
 describe("the propose_action contract", () => {
+  const tool = ASSISTANT_TOOLS.find((entry) => entry.name === "propose_action")!;
+
+  /** The advertised fields for one kind, e.g. "title, notes?, dueDate?…". */
+  function clauseFor(kind: string): string {
+    const match = new RegExp(`${kind} \\{([^}]*)\\}`).exec(tool.description);
+    expect(match, `${kind} is not described`).toBeTruthy();
+    return match![1];
+  }
+
   it("advertises only the fields the previews can describe", () => {
-    const tool = ASSISTANT_TOOLS.find((entry) => entry.name === "propose_action")!;
     // The description IS the model's contract; if it ever advertises a field
     // the preview sentence does not mention, the "what you confirm is what
     // runs" promise breaks. Recurrence is the specific trap: a planner block
     // that repeats writes ~120 rows from one confirmed sentence.
     expect(tool.description).toContain("Send ONLY the fields listed");
     expect(tool.description).toContain("never recurring");
-    expect(tool.description).not.toMatch(/recurrenceRule|repeatEvery|parentId|tagIds|habitId/);
+    expect(tool.description).not.toMatch(/recurrenceRule|repeatEvery|parentId|tagIds/);
+    // A planner block is a plain block: no recurrence, no tags, and no habit
+    // link — `habitId` belongs to log_habit and nowhere else.
+    expect(clauseFor("create_planner_block")).not.toMatch(/habitId|recurrence|tag/i);
+    expect(clauseFor("create_task")).not.toMatch(/repeat|reminder|parent|tag|project/i);
+    // Notes stay out of a habit log: the preview sentence cannot quote them.
+    expect(clauseFor("log_habit")).not.toMatch(/notes/i);
+  });
+
+  it("offers exactly the kinds the safety model classifies", () => {
+    const enumerated = (
+      tool.parameters as { properties: { kind: { enum: string[] } } }
+    ).properties.kind.enum;
+    expect(enumerated).toEqual([...ASSISTANT_ACTION_KINDS]);
+    // Every advertised kind is also spelled out in the description, so the
+    // model is never told a kind exists without being told its fields.
+    for (const kind of ASSISTANT_ACTION_KINDS) {
+      expect(tool.description, kind).toContain(kind);
+    }
+  });
+});
+
+describe("get_habit_status arguments", () => {
+  const tool = ASSISTANT_TOOLS.find((entry) => entry.name === "get_habit_status")!;
+
+  it("takes no arguments at all — the common case is 'today'", () => {
+    expect(tool.validate.safeParse({}).success).toBe(true);
+  });
+
+  it("refuses a date it cannot resolve rather than guessing", async () => {
+    const outcome = await runTool({ user, settings, mode: "readonly" }, "get_habit_status", {
+      date: "yesterday",
+    });
+    expect(outcome.ok).toBe(false);
+    expect(outcome.result).toMatchObject({ error: expect.stringContaining("date") });
+  });
+
+  it("bounds the name filter", () => {
+    expect(tool.validate.safeParse({ name: "sleep" }).success).toBe(true);
+    expect(tool.validate.safeParse({ name: "x".repeat(200) }).success).toBe(false);
+    expect(tool.validate.safeParse({ name: "   " }).success).toBe(false);
+  });
+
+  it("drops a userId the model invents — identity is closed over, never sent", () => {
+    // The schema advertises no such field, and the validator strips it, so
+    // the read model can only ever be called with the signed-in user's id.
+    expect(
+      (tool.parameters as { properties: Record<string, unknown> }).properties.userId,
+    ).toBeUndefined();
+    const parsed = tool.validate.safeParse({ userId: "someone-else" });
+    expect(parsed.success).toBe(true);
+    expect(parsed.data).toEqual({});
   });
 });
 

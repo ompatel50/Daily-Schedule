@@ -49,6 +49,8 @@ export const ASSISTANT_ACTION_KINDS = [
   "create_inbox_item",
   "create_transaction",
   "create_planner_block",
+  "log_habit",
+  "complete_inbox_item",
   "delete_task",
   "delete_reminder",
 ] as const;
@@ -70,6 +72,10 @@ const ACTION_RISK: Record<AssistantActionKind, AssistantRisk> = {
   create_task: "normal",
   complete_task: "normal",
   create_inbox_item: "normal",
+  complete_inbox_item: "normal",
+  // A habit log writes one day's outcome and is undone by clicking the same
+  // checkbox — the same weight as completing a task, not a finance record.
+  log_habit: "normal",
   create_reminder: "sensitive",
   create_transaction: "sensitive",
   create_planner_block: "sensitive",
@@ -88,8 +94,38 @@ export const ASSISTANT_ACTION_META: Record<AssistantActionKind, { label: string 
   create_inbox_item: { label: "Add inbox note" },
   create_transaction: { label: "Record transaction" },
   create_planner_block: { label: "Add planner block" },
+  log_habit: { label: "Log habit" },
+  complete_inbox_item: { label: "Complete inbox note" },
   delete_task: { label: "Delete task" },
   delete_reminder: { label: "Delete reminder" },
+};
+
+/**
+ * What each tool is called while it runs, in the transcript's activity chips.
+ *
+ * Lives here rather than in the chat component so the registry and the label
+ * map can be pinned against each other by a test — a tool the UI has no name
+ * for would otherwise silently show its raw identifier to the user.
+ */
+export const ASSISTANT_TOOL_LABELS: Record<string, string> = {
+  search_records: "Searching your records",
+  get_needs_attention: "Checking what needs attention",
+  get_day_overview: "Reading the day",
+  get_week_review: "Reviewing the week",
+  get_schedule: "Reading the planner",
+  list_tasks: "Reading tasks",
+  list_inbox: "Reading the inbox",
+  get_habit_status: "Checking your habits",
+  get_finance_overview: "Reading finances",
+  list_transactions: "Reading transactions",
+  list_bills: "Reading bills",
+  list_reminders: "Reading reminders",
+  get_reminder_feed: "Checking today's reminders",
+  get_health_trends: "Reading health trends",
+  list_documents: "Reading documents",
+  get_import_history: "Reading import history",
+  get_backup_status: "Checking backup status",
+  propose_action: "Drafting a proposal",
 };
 
 export const PROPOSAL_STATUSES = [
@@ -100,6 +136,27 @@ export const PROPOSAL_STATUSES = [
   "failed",
 ] as const;
 export type ProposalStatus = (typeof PROPOSAL_STATUSES)[number];
+
+/**
+ * Plain words for the raw status strings stored on audit rows and proposals.
+ * The database keeps machine values; the activity panel should not read like
+ * a database dump.
+ */
+const STATUS_LABELS: Record<string, string> = {
+  ok: "Done",
+  error: "Failed",
+  refused: "Refused",
+  cancelled: "Cancelled",
+  proposed: "Waiting",
+  confirmed: "Confirmed",
+  rejected: "Cancelled",
+  expired: "Expired",
+  failed: "Failed",
+};
+
+export function assistantStatusLabel(status: string): string {
+  return STATUS_LABELS[status] ?? status;
+}
 
 /** How long a proposal stays executable before the sweep expires it. */
 export const PROPOSAL_TTL_MS = 60 * 60 * 1000;

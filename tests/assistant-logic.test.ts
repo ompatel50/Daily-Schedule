@@ -6,6 +6,8 @@ import {
   ASSISTANT_LIMITS,
   ASSISTANT_MODES,
   ASSISTANT_MODE_META,
+  PROPOSAL_STATUSES,
+  assistantStatusLabel,
   isAssistantActionKind,
   isAssistantMode,
   parseAuditToolCalls,
@@ -48,9 +50,32 @@ describe("action kinds and risk", () => {
     expect(riskOf("create_task")).toBe("normal");
   });
 
+  it("keeps the everyday ticks — habits and inbox notes — on one click", () => {
+    // Logging a habit and closing an inbox note are undone by clicking the
+    // same control in the app; a restating dialog for either would train the
+    // user to click through the dialogs that do matter.
+    expect(riskOf("log_habit")).toBe("normal");
+    expect(riskOf("complete_inbox_item")).toBe("normal");
+  });
+
   it("narrows unknown kinds", () => {
     expect(isAssistantActionKind("create_task")).toBe(true);
     expect(isAssistantActionKind("drop_database")).toBe(false);
+  });
+});
+
+describe("status wording", () => {
+  it("says what happened, not what the column stores", () => {
+    expect(assistantStatusLabel("ok")).toBe("Done");
+    expect(assistantStatusLabel("rejected")).toBe("Cancelled");
+    expect(assistantStatusLabel("failed")).toBe("Failed");
+    for (const status of PROPOSAL_STATUSES) {
+      expect(assistantStatusLabel(status), status).not.toBe(status);
+    }
+  });
+
+  it("passes an unknown status through rather than hiding it", () => {
+    expect(assistantStatusLabel("something-new")).toBe("something-new");
   });
 });
 

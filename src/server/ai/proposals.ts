@@ -5,11 +5,12 @@ import { z } from "zod";
 import { formatMinute } from "@/lib/date";
 import {
   FINANCE_CATEGORIES,
+  HABIT_STATUSES,
   PRIORITIES,
   SCHEDULE_CATEGORIES,
   isBookkeepingCategory,
 } from "@/lib/enums";
-import { wallClockToInstant } from "@/lib/logic/schedule";
+import { todayIn, wallClockToInstant } from "@/lib/logic/schedule";
 import { prisma } from "@/lib/prisma";
 import {
   ASSISTANT_ACTION_META,
@@ -22,6 +23,7 @@ import {
   type AssistantRisk,
 } from "@/lib/logic/assistant";
 import {
+  habitLogSchema,
   inboxItemSchema,
   financeTransactionSchema,
   reminderSchema,
@@ -137,6 +139,31 @@ const createPlannerBlockSchema = z
       value.endMinute >= value.startMinute,
     { message: "End time must be after the start time", path: ["endMinute"] },
   );
+
+/**
+ * Logging one habit day. `notes` is deliberately absent: free text the model
+ * authored would ride along in a record the preview sentence cannot quote in
+ * full, and the checkbox in the app does not write notes either. `excused` is
+ * absent too — it is a different server action, and one kind maps to one
+ * action here by design.
+ */
+const logHabitSchema = z
+  .object({
+    habitId: z.string().min(1),
+    date: z
+      .string()
+      .regex(/^\d{4}-\d{2}-\d{2}$/, "Expected a YYYY-MM-DD date")
+      .optional(),
+    status: z.enum(HABIT_STATUSES).default("done"),
+    value: z
+      .number()
+      .finite()
+      .min(0)
+      .max(1e6)
+      .nullable()
+      .optional(),
+  })
+  .strict();
 
 const byIdSchema = z.object({ id: z.string().min(1) }).strict();
 
@@ -348,6 +375,51 @@ async function prepareProposal(
         summary: `Add “${data.title}” to the planner on ${data.date}${time}`,
       };
     }
+    case "log_habit": {
+      const parsed = logHabitSchema.safeParse(payload);
+      if (!parsed.success) return invalid(parsed.error);
+      const data = parsed.data;
+      const habit = await prisma.habit.findFirst({
+        where: { id: data.habitId, userId: user.id },
+        select: { id: true, name: true, unit: true },
+      });
+      if (!habit) return { ok: false, error: "Habit not found." };
+      // The model writes a date in the user's own calendar; an omitted one
+      // means "today" in THEIR timezone, never the server's.
+      const date = data.date ?? todayIn(user.timezone);
+      const amount =
+        data.value === null || data.value === undefined
+          ? ""
+          : ` (${data.value}${habit.unit ? ` ${habit.unit}` : ""})`;
+      return {
+        ok: true,
+        // Every field `logHabit` will see, explicitly. Notes stay null: the
+        // assistant records an outcome, it does not annotate the user's day.
+        payload: {
+          habitId: habit.id,
+          date,
+          status: data.status,
+          value: data.value ?? null,
+          notes: null,
+        },
+        summary: `Log habit “${habit.name}” as ${data.status} for ${date}${amount}`,
+      };
+    }
+    case "complete_inbox_item": {
+      const parsed = byIdSchema.safeParse(payload);
+      if (!parsed.success) return invalid(parsed.error);
+      const item = await prisma.inboxItem.findFirst({
+        where: { id: parsed.data.id, userId: user.id },
+        select: { id: true, title: true, status: true },
+      });
+      if (!item) return { ok: false, error: "Inbox note not found." };
+      if (item.status !== "open") return { ok: false, error: "That inbox note is not open." };
+      return {
+        ok: true,
+        payload: { id: item.id },
+        summary: `Mark inbox note “${item.title}” as done`,
+      };
+    }
     case "delete_task": {
       const parsed = byIdSchema.safeParse(payload);
       if (!parsed.success) return invalid(parsed.error);
@@ -464,7 +536,10 @@ export function reparsePayload(
             ? financeTransactionSchema
             : kind === "create_planner_block"
               ? scheduleItemSchema
-              : byIdSchema;
+              : kind === "log_habit"
+                ? habitLogSchema
+                : // complete_task, complete_inbox_item, delete_task, delete_reminder
+                  byIdSchema;
   const checked = schema.safeParse(parsed);
   if (!checked.success) return { ok: false, error: "The stored proposal is no longer valid." };
   return { ok: true, payload: checked.data };

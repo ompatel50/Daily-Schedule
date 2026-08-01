@@ -54,33 +54,69 @@ not a UI preference. **Read-only is the default.**
 Ask things like:
 
 - “What should I focus on today?”
+- “Did I do my habits today?”
+- “Which habits am I missing this week?”
+- “What is my current streak on sleep?”
+- “What habits are due next?”
 - “Summarize my finances this month.”
 - “Find overdue bills and tasks.”
 - “Summarize my sleep and heart trends.”
 - “Show me the most important things that happened this week.”
 - “Create a reminder to renew my passport.” *(draft/confirm modes)*
+- “Mark my water habit as done.” *(draft/confirm modes)*
 - “Add this bill to my finances.” *(draft/confirm modes)*
 
 Under the hood the model never touches the database. It calls a fixed,
 server-side set of tools — search, day/week summaries, the needs-attention
-digest, tasks, inbox, finance, bills, budgets, reminders, health trends,
-documents, the planner, import history, and backup row-counts — each of which
-wraps an existing, ownership-checked, bounded read model. The one non-read
-tool stages a **proposal**; it cannot execute anything.
+digest, tasks, inbox, habits, finance, bills, budgets, reminders, health
+trends, documents, the planner, import history, and backup row-counts — each
+of which wraps an existing, ownership-checked, bounded read model. The one
+non-read tool stages a **proposal**; it cannot execute anything.
 
-Changes the assistant can propose: create a task, complete a task, create a
-reminder, add an inbox note, record a transaction, add a planner block, delete
-a task, delete a reminder. Each proposal is previewed as one plain sentence and
-executed — only after your confirmation — by calling the same server action the
-app's own buttons call, so everything those actions enforce (ownership,
-validation, recomputed summaries, UI refresh) applies unchanged.
+### Habits — `get_habit_status`
+
+Habit questions get their own tool rather than being guessed at from the day
+overview, because habits are the one area where the honest answer needs
+several numbers at once. For a date (today unless you say otherwise) it
+returns, per habit:
+
+- whether it is **due** on that date, and how the date resolved — done,
+  missed, skipped, excused, still pending, or simply not scheduled;
+- the **current and longest streak**, counted in scheduled opportunities (or
+  in weeks, for a “3× per week” habit);
+- **this week's progress** against its target — “3 of 4”, never “3 of 7”;
+- **which days this week were already missed**, so “what am I missing?” is
+  answered with dates rather than a feeling;
+- the **last 30 days'** opportunities, completions and completion rate;
+- **when it is next due**, if it is not due on that date.
+
+You can narrow it to one habit by name (“what's my streak on sleep?”), and
+archived habits are excluded unless asked for. Rest days and unscheduled days
+are reported as exactly that — they are never counted as misses, which is the
+same rule the habits page and the day score use.
+
+The list is capped so the answer stays small enough for a modest local model;
+past the cap the assistant is told the list was cut and to ask by name.
+
+### Changes it can propose
+
+Create a task, complete a task, create a reminder, add an inbox note,
+**complete an inbox note**, record a transaction, add a planner block,
+**log a habit** (one day, one habit: done, skipped or missed, with an optional
+value), delete a task, delete a reminder.
+
+Each proposal is previewed as one plain sentence and executed — only after your
+confirmation — by calling the same server action the app's own buttons call, so
+everything those actions enforce (ownership, validation, recomputed summaries,
+UI refresh) applies unchanged.
 
 The proposal schemas are deliberately **narrower** than the app's own forms:
 the assistant may only send the fields the preview sentence describes, and
 anything else is refused outright. A task it creates is always a plain one-off
 task (no repeat, no reminder, no parent, no tags); a planner block is always a
-single day (never a recurring series). This is what makes "what you confirm is
-what runs" true rather than merely intended — a change the preview cannot
+single day (never a recurring series); a habit log carries no notes, because
+the preview sentence could not quote them. This is what makes "what you confirm
+is what runs" true rather than merely intended — a change the preview cannot
 describe is not a change the assistant can make.
 
 ## What it cannot do
@@ -96,12 +132,33 @@ describe is not a change the assistant can make.
 - Restore backups, undo imports, or delete anything other than a single task
   or reminder you confirmed.
 
+### Deliberately left out
+
+These were considered and not built. Each is one schema, one preview sentence
+and one dispatch arm away, if real use asks for it:
+
+- **Creating or editing habits.** A habit carries an effective-dated schedule,
+  and an edit has to choose whether it rewrites history — a decision the
+  dialog asks about explicitly and a preview sentence cannot honestly carry.
+- **Excusing a habit day.** A different server action from logging one, and
+  one proposal kind maps to exactly one action here by design.
+- **Marking a bill paid.** It does two things at once — advances the due date
+  *and* writes a payment into the ledger — so a single confirmed sentence
+  would be describing two changes, one of them financial.
+- **Rescheduling a task.** There is no narrow "change the due date" action;
+  going through the full save would let fields the preview never mentioned
+  ride along, which is exactly the trap the narrow schemas close.
+- **Health, budget, account and document writes**, and anything touching
+  backups or imports. The read surface covers them; the write surface would
+  not be worth the blast radius.
+
 ## Confirmations
 
 - Every proposal shows **exactly** what will run — the preview sentence is
   generated from the validated payload, not from the model's own words.
-- **Normal** actions (create task, add inbox note, complete task) execute on
-  one Confirm click.
+- **Normal** actions (create task, complete task, add or complete an inbox
+  note, log a habit) execute on one Confirm click — they are the everyday
+  ticks, and each is undone by clicking the same control in the app.
 - **Sensitive** actions (finance records, reminders, planner changes) and
   **destructive** actions (any delete) open a second dialog that restates the
   action; deletes are styled and worded as deletions.

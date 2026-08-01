@@ -17,8 +17,10 @@ import {
   calculateScheduledStreak,
   calculateWeeklyProgress,
   describeSchedule,
+  getNextScheduledDate,
   getOccurrenceForDate,
   getStatusForDate,
+  getWeekBounds,
   resolveEffectiveSchedule,
   type CompletionLike,
   type DayStatus,
@@ -82,6 +84,15 @@ export interface HabitView {
   targetValue: number | null;
   unit: string | null;
 
+  /**
+   * The next scheduled opportunity strictly AFTER the requested date, or null.
+   *
+   * Only computed when `nextDueScanDays` is set — the scan walks day by day,
+   * and the surfaces that render today's checklist have no use for it, so they
+   * should not pay for it.
+   */
+  nextDueDate: DayKey | null;
+
   recentLogs: Array<{ date: string; status: string }>;
   /**
    * Resolved status per day across the history window. The habit-history strip
@@ -97,6 +108,11 @@ export interface HabitViewOptions {
   historyDays?: number;
   /** Window used for the per-day history strip. */
   stripDays?: number;
+  /**
+   * How far ahead to look for `nextDueDate`. 0 (the default) skips the scan
+   * entirely, which is what every checklist surface wants.
+   */
+  nextDueScanDays?: number;
 }
 
 /**
@@ -121,6 +137,7 @@ export async function getHabitViews(
     options.historyDays ?? 90,
     options.stripDays ?? -1,
     options.includeArchived ?? false,
+    options.nextDueScanDays ?? 0,
   );
 }
 
@@ -133,6 +150,7 @@ async function getHabitViewsImpl(
   historyDays: number,
   stripDaysOption: number,
   includeArchived: boolean,
+  nextDueScanDays: number,
 ): Promise<HabitView[]> {
   const options: HabitViewOptions = {
     historyDays,
@@ -225,6 +243,11 @@ async function getHabitViewsImpl(
       weekly,
       targetValue: habit.targetValue,
       unit: habit.unit,
+
+      nextDueDate:
+        nextDueScanDays > 0
+          ? getNextScheduledDate(item, date, settings, nextDueScanDays)
+          : null,
 
       recentLogs: habit.logs.map((log) => ({ date: log.date, status: log.status })),
       dayStates,
@@ -325,4 +348,177 @@ export async function getHabitDayTotals(
   }
 
   return totals;
+}
+
+// ---------------------------------------------------------------------------
+// Habit status — the compact summary
+// ---------------------------------------------------------------------------
+
+/**
+ * One habit reduced to the facts a status answer needs.
+ *
+ * A projection of `HabitView`, not a second model: the streaks, weekly
+ * progress and completion rates below are the same numbers the habits page
+ * renders, computed by the same schedule engine. What is dropped is
+ * presentation (icon, colour, sort order, the full day-state strip) and what
+ * is added is derived from what stays — the days already missed this week.
+ */
+export interface HabitStatusEntry {
+  id: string;
+  name: string;
+  category: string;
+  /** Human-readable recurrence, e.g. "Every day" or "3× per week". */
+  schedule: string;
+  /** Resolved status for the requested date. */
+  status: DayStatus;
+  statusLabel: string;
+  dueToday: boolean;
+  /** A times-per-week habit: available today, judged over the week. */
+  flexibleToday: boolean;
+  loggedStatus: string | null;
+  loggedValue: number | null;
+  /** e.g. "8 glasses", when the habit carries a numeric target. */
+  target: string | null;
+  streak: { current: number; longest: number; unit: "occurrences" | "weeks" };
+  /** Progress across the week containing the requested date. */
+  week: { done: number; target: number; remaining: number; percent: number };
+  /** Days in that week, up to the requested date, that were missed or skipped. */
+  missedThisWeek: DayKey[];
+  history: {
+    days: number;
+    opportunities: number;
+    completed: number;
+    missed: number;
+    /** completed / opportunities as a percentage, or null with no opportunity. */
+    completionRate: number | null;
+  };
+  /** Next scheduled opportunity after the requested date, if any is near. */
+  nextDueDate: DayKey | null;
+  archived: boolean;
+}
+
+export interface HabitStatusSummary {
+  date: DayKey;
+  week: { start: DayKey; end: DayKey };
+  /** Scheduled-opportunity counts for the requested date. */
+  totals: HabitDayTotals;
+  habits: HabitStatusEntry[];
+  /** How many habits matched before the bound below was applied. */
+  matched: number;
+  /** True when `habits` is a prefix of the matches, not all of them. */
+  truncated: boolean;
+}
+
+export interface HabitStatusOptions {
+  includeArchived?: boolean;
+  /** Case-insensitive substring match on the habit name. */
+  name?: string;
+  /** Window for the completion-rate figures. */
+  historyDays?: number;
+  /** How far ahead to look for the next scheduled day. */
+  nextDueScanDays?: number;
+  /** Hard cap on returned habits — the result must stay small. */
+  limit?: number;
+}
+
+/**
+ * Bounds, so a status answer stays a status answer.
+ *
+ * `limit` is set by the assistant's tool-result ceiling, not by taste: an
+ * entry serializes to roughly 400 bytes, and the registry cuts any result
+ * past ASSISTANT_LIMITS.maxToolResultChars (8 KB) into an unusable fragment.
+ * Twelve leaves headroom for long habit names; past that the caller is told
+ * the list was cut so it can ask by name instead.
+ */
+const HABIT_STATUS_DEFAULTS = {
+  historyDays: 30,
+  nextDueScanDays: 60,
+  limit: 12,
+} as const;
+
+/**
+ * Every habit's current standing on one date: done, missed, pending, streaks,
+ * this week's progress and when each is next due.
+ *
+ * Built on `getHabitViews`, so ownership, the schedule engine and the streak
+ * rules are the app's existing ones — this adds shaping and bounds, nothing
+ * else. `userId` is always the caller's own, resolved by the caller.
+ */
+export async function getHabitStatusSummary(
+  userId: string,
+  date: DayKey,
+  settings: ScheduleSettings,
+  options: HabitStatusOptions = {},
+): Promise<HabitStatusSummary> {
+  const historyDays = options.historyDays ?? HABIT_STATUS_DEFAULTS.historyDays;
+  const limit = Math.min(Math.max(options.limit ?? HABIT_STATUS_DEFAULTS.limit, 1), 100);
+  const week = getWeekBounds(date, settings);
+
+  const [views, totals] = await Promise.all([
+    getHabitViews(userId, date, settings, {
+      includeArchived: options.includeArchived ?? false,
+      historyDays,
+      // The strip only has to reach back to the start of the week containing
+      // `date` — at most six days — for `missedThisWeek` to be complete.
+      stripDays: 6,
+      nextDueScanDays: options.nextDueScanDays ?? HABIT_STATUS_DEFAULTS.nextDueScanDays,
+    }),
+    getHabitDayTotals(userId, date, settings),
+  ]);
+
+  const needle = options.name?.trim().toLowerCase() ?? "";
+  const matches = needle
+    ? views.filter((view) => view.name.toLowerCase().includes(needle))
+    : views;
+
+  return {
+    date,
+    week: { start: week.start, end: week.end },
+    totals,
+    matched: matches.length,
+    truncated: matches.length > limit,
+    habits: matches.slice(0, limit).map((view) => ({
+      id: view.id,
+      name: view.name,
+      category: view.category,
+      schedule: view.scheduleSummary,
+      status: view.status,
+      statusLabel: view.statusLabel,
+      dueToday: view.dueToday,
+      flexibleToday: view.flexibleToday,
+      loggedStatus: view.loggedStatus,
+      loggedValue: view.loggedValue,
+      target:
+        view.targetValue === null
+          ? null
+          : `${view.targetValue}${view.unit ? ` ${view.unit}` : ""}`,
+      streak: {
+        current: view.streak,
+        longest: view.longestStreak,
+        unit: view.streakUnit,
+      },
+      week: {
+        done: view.weekly.done,
+        target: view.weekly.target,
+        remaining: view.weekly.remaining,
+        percent: view.weekly.percent,
+      },
+      missedThisWeek: view.dayStates
+        .filter(
+          (day) =>
+            day.date >= week.start &&
+            (day.status === "missed" || day.status === "skipped"),
+        )
+        .map((day) => day.date),
+      history: {
+        days: historyDays,
+        opportunities: view.opportunities,
+        completed: view.completed,
+        missed: view.missed,
+        completionRate: view.completionRate,
+      },
+      nextDueDate: view.nextDueDate,
+      archived: view.archived,
+    })),
+  };
 }

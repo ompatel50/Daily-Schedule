@@ -13,9 +13,9 @@ import { beforeAll, beforeEach, describe, expect, it } from "vitest";
 import { prisma } from "@/lib/prisma";
 import { actAs, resetDatabase, twoUsers } from "./helpers";
 
-import { PROPOSAL_TTL_MS } from "@/lib/logic/assistant";
+import { ASSISTANT_LIMITS, PROPOSAL_TTL_MS } from "@/lib/logic/assistant";
 import { buildProposalPreview, listRecentProposals, sweepExpiredProposals } from "@/server/ai/proposals";
-import { runTool } from "@/server/ai/tools";
+import { runTool, serializeToolResult } from "@/server/ai/tools";
 import { POST as chatRoute } from "@/app/api/assistant/chat/route";
 import {
   confirmAssistantProposal,
@@ -25,6 +25,7 @@ import {
   testAssistantConnection,
 } from "@/server/actions/assistant";
 import { saveTask } from "@/server/actions/tasks";
+import { saveHabit } from "@/server/actions/habits";
 
 import type { User } from "./helpers";
 import type { ScheduleSettings } from "@/lib/logic/schedule";
@@ -527,6 +528,405 @@ describe("tool scoping", () => {
     const outcome = await runTool(toolContext(alice, "readonly"), "get_backup_status", {});
     expect(outcome.ok).toBe(true);
     expect((outcome.result as { recordCounts: { tasks: number } }).recordCounts.tasks).toBe(0);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// get_habit_status
+// ---------------------------------------------------------------------------
+
+/**
+ * The habit tool answers four questions the assistant could previously only
+ * approximate through search and day overviews: did I do them today, which am
+ * I missing this week, what is my streak, and when is each next due. Every
+ * number below comes from the app's own schedule engine — the point of these
+ * tests is that the projection carries them across faithfully, and that it
+ * carries nobody else's.
+ */
+describe("get_habit_status", () => {
+  /** A daily habit for `user`, scheduled from `from`. */
+  async function dailyHabit(user: User, name: string, from = "2026-07-01") {
+    actAs(user);
+    const saved = await saveHabit({
+      habit: { name, startDate: from },
+      schedule: { mode: "every_day" },
+    });
+    if (!saved.ok) throw new Error(saved.error);
+    actAs(alice);
+    return saved.data.id;
+  }
+
+  async function log(habitId: string, userId: string, date: string, status: string) {
+    await prisma.habitLog.create({ data: { habitId, userId, date, status } });
+  }
+
+  type StatusResult = {
+    date: string;
+    week: { start: string; end: string };
+    totals: { due: number; done: number; missed: number; pending: number };
+    matched: number;
+    returned: number;
+    note?: string;
+    habits: Array<{
+      id: string;
+      name: string;
+      status: string;
+      dueToday: boolean;
+      streak: { current: number; longest: number; unit: string };
+      week: { done: number; target: number; remaining: number };
+      missedThisWeek: string[];
+      history: { opportunities: number; completed: number; completionRate: number | null };
+      nextDueDate: string | null;
+    }>;
+  };
+
+  async function status(user: User, args: Record<string, unknown> = {}) {
+    const outcome = await runTool(toolContext(user, "readonly"), "get_habit_status", args);
+    expect(outcome.ok).toBe(true);
+    return outcome.result as StatusResult;
+  }
+
+  it("answers 'did I do my habits today' with counts and per-habit state", async () => {
+    const stretch = await dailyHabit(alice, "Stretch");
+    await dailyHabit(alice, "Read");
+    await log(stretch, alice.id, SETTINGS.today, "done");
+
+    const result = await status(alice);
+    expect(result.date).toBe(SETTINGS.today);
+    expect(result.totals).toMatchObject({ due: 2, done: 1, pending: 1 });
+
+    const byName = new Map(result.habits.map((habit) => [habit.name, habit]));
+    expect(byName.get("Stretch")).toMatchObject({ status: "completed", dueToday: true });
+    expect(byName.get("Read")).toMatchObject({ status: "pending", dueToday: true });
+  });
+
+  it("names the days already missed this week, and nothing outside it", async () => {
+    // Week of Mon 2026-07-27 … Sun 2026-08-02, with "today" the Saturday.
+    const habit = await dailyHabit(alice, "Journal", "2026-07-01");
+    for (const date of ["2026-07-27", "2026-07-29", "2026-07-31", "2026-08-01"]) {
+      await log(habit, alice.id, date, "done");
+    }
+    await log(habit, alice.id, "2026-07-28", "missed");
+    await log(habit, alice.id, "2026-07-30", "skipped");
+    // Before this week — must not appear, however it went.
+    await log(habit, alice.id, "2026-07-24", "missed");
+
+    const result = await status(alice);
+    expect(result.week).toEqual({ start: "2026-07-27", end: "2026-08-02" });
+    const journal = result.habits.find((entry) => entry.name === "Journal")!;
+    // A deliberate skip is a miss, per the app's own streak rules.
+    expect(journal.missedThisWeek).toEqual(["2026-07-28", "2026-07-30"]);
+    // Sunday is still ahead: a future scheduled day is never a miss.
+    expect(journal.missedThisWeek).not.toContain("2026-08-02");
+  });
+
+  it("counts a past scheduled day with no log at all as missed", async () => {
+    // The distinction that matters for "which habits am I missing": silence on
+    // a day that has passed is a miss, while silence on today is still pending.
+    const habit = await dailyHabit(alice, "Push-ups", "2026-07-29");
+    await log(habit, alice.id, "2026-07-30", "done");
+
+    const result = await status(alice, { name: "Push" });
+    const pushups = result.habits[0];
+    expect(pushups.missedThisWeek).toEqual(["2026-07-29", "2026-07-31"]);
+    expect(pushups.status).toBe("pending");
+  });
+
+  it("reports the streak and completion rate the schedule engine computed", async () => {
+    const habit = await dailyHabit(alice, "Sleep 8h", "2026-07-01");
+    for (const date of ["2026-07-29", "2026-07-30", "2026-07-31", "2026-08-01"]) {
+      await log(habit, alice.id, date, "done");
+    }
+
+    const result = await status(alice, { name: "sleep" });
+    expect(result.matched).toBe(1);
+    const sleep = result.habits[0];
+    expect(sleep.name).toBe("Sleep 8h");
+    expect(sleep.streak.current).toBe(4);
+    expect(sleep.streak.unit).toBe("occurrences");
+    expect(sleep.history.completed).toBe(4);
+    expect(sleep.history.opportunities).toBeGreaterThan(4);
+    expect(sleep.history.completionRate).not.toBeNull();
+  });
+
+  it("says when a habit that is not due today is next due", async () => {
+    actAs(alice);
+    const saved = await saveHabit({
+      habit: { name: "Long run", startDate: "2026-07-01" },
+      // 2026-08-01 is a Saturday; Sunday is the next scheduled day.
+      schedule: { mode: "weekdays", weekdays: [0] },
+    });
+    expect(saved.ok).toBe(true);
+    if (!saved.ok) return;
+
+    const result = await status(alice, { name: "Long run" });
+    const run = result.habits[0];
+    expect(run.dueToday).toBe(false);
+    expect(run.nextDueDate).toBe("2026-08-02");
+  });
+
+  it("filters by name without leaking the habits that did not match", async () => {
+    await dailyHabit(alice, "Water");
+    await dailyHabit(alice, "Meditate");
+
+    const result = await status(alice, { name: "wat" });
+    expect(result.matched).toBe(1);
+    expect(result.habits.map((habit) => habit.name)).toEqual(["Water"]);
+    expect(JSON.stringify(result)).not.toContain("Meditate");
+  });
+
+  it("never carries another account's habits, however the model asks", async () => {
+    const SECRET = "bob-habit-x9y8z7";
+    const bobHabit = await dailyHabit(bob, `Bob ${SECRET}`);
+    await log(bobHabit, bob.id, SETTINGS.today, "done");
+    await dailyHabit(alice, "Alice's own");
+
+    for (const args of [{}, { name: SECRET }, { includeArchived: true }]) {
+      const result = await status(alice, args);
+      expect(JSON.stringify(result), JSON.stringify(args)).not.toContain(SECRET);
+    }
+    // And bob's completion never inflates alice's counts.
+    const mine = await status(alice);
+    expect(mine.totals).toMatchObject({ due: 1, done: 0 });
+  });
+
+  it("excludes archived habits unless asked, and stays bounded", async () => {
+    const archived = await dailyHabit(alice, "Old habit");
+    await prisma.habit.update({ where: { id: archived }, data: { archived: true } });
+    await dailyHabit(alice, "Current habit");
+
+    const normal = await status(alice);
+    expect(normal.habits.map((habit) => habit.name)).toEqual(["Current habit"]);
+
+    const withArchived = await status(alice, { includeArchived: true });
+    expect(withArchived.habits.map((habit) => habit.name).sort()).toEqual([
+      "Current habit",
+      "Old habit",
+    ]);
+    expect(withArchived.note).toBeUndefined();
+  });
+
+  it("stays inside the tool-result ceiling even when the list is capped", async () => {
+    // A result cut by serializeToolResult is a fragment the model cannot use,
+    // so the cap has to be small enough that a full page never reaches it.
+    for (let index = 0; index < 20; index += 1) {
+      await dailyHabit(alice, `A fairly descriptive habit name number ${index}`);
+    }
+
+    const outcome = await runTool(toolContext(alice, "readonly"), "get_habit_status", {});
+    expect(outcome.ok).toBe(true);
+    const serialized = serializeToolResult(outcome);
+    expect(serialized.length).toBeLessThanOrEqual(ASSISTANT_LIMITS.maxToolResultChars);
+    expect(JSON.parse(serialized).truncated).toBeUndefined();
+
+    const result = outcome.result as StatusResult;
+    expect(result.matched).toBe(20);
+    expect(result.returned).toBeLessThan(20);
+    expect(result.habits).toHaveLength(result.returned);
+    // The model is told the list was cut, and what to do instead.
+    expect(result.note).toContain("name");
+
+    // Asking by name gets the whole answer for that habit, uncut.
+    const narrowed = await status(alice, { name: "number 7" });
+    expect(narrowed.matched).toBe(1);
+    expect(narrowed.note).toBeUndefined();
+  });
+
+  it("returns an empty, honest answer when there are no habits at all", async () => {
+    const result = await status(alice);
+    expect(result.habits).toEqual([]);
+    expect(result.matched).toBe(0);
+    expect(result.totals).toMatchObject({ due: 0, done: 0 });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// The per-kind write tools
+// ---------------------------------------------------------------------------
+
+describe("log_habit", () => {
+  async function habitFor(user: User, name: string) {
+    actAs(user);
+    const saved = await saveHabit({
+      habit: { name, startDate: "2026-07-01", targetValue: 8, unit: "glasses" },
+      schedule: { mode: "every_day" },
+    });
+    if (!saved.ok) throw new Error(saved.error);
+    actAs(alice);
+    return saved.data.id;
+  }
+
+  it("stages a log for today in the user's own timezone, then writes it once", async () => {
+    await prisma.user.update({
+      where: { id: alice.id },
+      data: { timezone: "America/New_York", assistantMode: "confirm" },
+    });
+    const user = await prisma.user.findUniqueOrThrow({ where: { id: alice.id } });
+    const habit = await habitFor(alice, "Water");
+
+    const preview = await buildProposalPreview(user as never, "log_habit", { habitId: habit });
+    expect(preview.ok).toBe(true);
+    if (!preview.ok) return;
+    expect(preview.proposal.risk).toBe("normal");
+    expect(preview.proposal.summary).toContain("Water");
+    expect(preview.proposal.summary).toContain("done");
+    // Nothing written until confirmation.
+    expect(await prisma.habitLog.count()).toBe(0);
+
+    const confirmed = await confirmAssistantProposal(preview.proposal.id);
+    expect(confirmed.ok).toBe(true);
+    const logs = await prisma.habitLog.findMany({ where: { userId: alice.id } });
+    expect(logs).toHaveLength(1);
+    expect(logs[0].status).toBe("done");
+    expect(logs[0].notes).toBeNull();
+    // The date is the user's calendar day, which the preview named.
+    expect(preview.proposal.summary).toContain(logs[0].date);
+  });
+
+  it("records an explicit date, status and value, exactly as previewed", async () => {
+    await setMode(alice, "confirm");
+    const habit = await habitFor(alice, "Water");
+
+    const preview = await buildProposalPreview(alice as never, "log_habit", {
+      habitId: habit,
+      date: "2026-07-30",
+      status: "skipped",
+      value: 3,
+    });
+    expect(preview.ok).toBe(true);
+    if (!preview.ok) return;
+    expect(preview.proposal.summary).toContain("skipped");
+    expect(preview.proposal.summary).toContain("2026-07-30");
+    expect(preview.proposal.summary).toContain("3 glasses");
+
+    expect((await confirmAssistantProposal(preview.proposal.id)).ok).toBe(true);
+    const log = await prisma.habitLog.findFirstOrThrow({ where: { habitId: habit } });
+    expect(log).toMatchObject({ date: "2026-07-30", status: "skipped", value: 3 });
+  });
+
+  it("refuses fields the preview cannot describe, and statuses it does not own", async () => {
+    const habit = await habitFor(alice, "Water");
+    for (const extra of [
+      { notes: "the model's own words" },
+      { status: "excused" },
+      { id: "smuggled" },
+      { userId: bob.id },
+    ]) {
+      const preview = await buildProposalPreview(alice as never, "log_habit", {
+        habitId: habit,
+        ...extra,
+      });
+      expect(preview.ok, JSON.stringify(extra)).toBe(false);
+    }
+    expect(await prisma.habitLog.count()).toBe(0);
+  });
+
+  it("cannot log against another account's habit — same answer as nonexistence", async () => {
+    const bobHabit = await habitFor(bob, "Bob's water");
+
+    const foreign = await buildProposalPreview(alice as never, "log_habit", { habitId: bobHabit });
+    expect(foreign).toEqual({ ok: false, error: "Habit not found." });
+    const missing = await buildProposalPreview(alice as never, "log_habit", { habitId: "nope" });
+    expect(missing).toEqual({ ok: false, error: "Habit not found." });
+    expect(await prisma.habitLog.count()).toBe(0);
+  });
+
+  it("is refused in read-only and draft modes, server-side", async () => {
+    const habit = await habitFor(alice, "Water");
+    const refused = await runTool(toolContext(alice, "readonly"), "propose_action", {
+      kind: "log_habit",
+      payload: { habitId: habit },
+    });
+    expect(refused.ok).toBe(false);
+    expect(await prisma.assistantProposal.count()).toBe(0);
+
+    const drafted = await runTool(toolContext(alice, "draft"), "propose_action", {
+      kind: "log_habit",
+      payload: { habitId: habit },
+    });
+    expect(drafted.ok).toBe(true);
+    await setMode(alice, "draft");
+    const blocked = await confirmAssistantProposal(drafted.proposal!.id);
+    expect(blocked.ok).toBe(false);
+    expect(await prisma.habitLog.count()).toBe(0);
+  });
+});
+
+describe("complete_inbox_item", () => {
+  it("closes an open note through the real action, with an audit row", async () => {
+    await setMode(alice, "confirm");
+    const item = await prisma.inboxItem.create({
+      data: { userId: alice.id, title: "Call the dentist" },
+    });
+
+    const preview = await buildProposalPreview(alice as never, "complete_inbox_item", {
+      id: item.id,
+    });
+    expect(preview.ok).toBe(true);
+    if (!preview.ok) return;
+    expect(preview.proposal.risk).toBe("normal");
+    expect(preview.proposal.summary).toContain("Call the dentist");
+
+    expect((await confirmAssistantProposal(preview.proposal.id)).ok).toBe(true);
+    const after = await prisma.inboxItem.findUniqueOrThrow({ where: { id: item.id } });
+    expect(after.status).toBe("done");
+    expect(after.completedAt).not.toBeNull();
+
+    const audit = await prisma.assistantAuditEntry.findFirstOrThrow({
+      where: { userId: alice.id, kind: "action" },
+    });
+    expect(audit.status).toBe("ok");
+  });
+
+  it("refuses a note that is already closed, or is not the caller's", async () => {
+    const done = await prisma.inboxItem.create({
+      data: { userId: alice.id, title: "Already handled", status: "done" },
+    });
+    const closed = await buildProposalPreview(alice as never, "complete_inbox_item", {
+      id: done.id,
+    });
+    expect(closed).toEqual({ ok: false, error: "That inbox note is not open." });
+
+    const bobNote = await prisma.inboxItem.create({
+      data: { userId: bob.id, title: "Bob's note" },
+    });
+    const foreign = await buildProposalPreview(alice as never, "complete_inbox_item", {
+      id: bobNote.id,
+    });
+    expect(foreign).toEqual({ ok: false, error: "Inbox note not found." });
+    expect(
+      (await prisma.inboxItem.findUniqueOrThrow({ where: { id: bobNote.id } })).status,
+    ).toBe("open");
+  });
+});
+
+describe("a proposal whose kind this deployment no longer knows", () => {
+  it("is stamped failed and audited, never left claiming it happened", async () => {
+    await setMode(alice, "confirm");
+    const preview = await buildProposalPreview(alice as never, "create_inbox_item", {
+      title: "From a newer build",
+    });
+    expect(preview.ok).toBe(true);
+    if (!preview.ok) return;
+
+    // What a rollback looks like from this deployment's point of view.
+    await prisma.assistantProposal.update({
+      where: { id: preview.proposal.id },
+      data: { kind: "invent_a_universe" },
+    });
+
+    const result = await confirmAssistantProposal(preview.proposal.id);
+    expect(result.ok).toBe(false);
+    const row = await prisma.assistantProposal.findUniqueOrThrow({
+      where: { id: preview.proposal.id },
+    });
+    expect(row.status).toBe("failed");
+    expect(await prisma.inboxItem.count()).toBe(0);
+
+    const audit = await prisma.assistantAuditEntry.findFirstOrThrow({
+      where: { userId: alice.id, kind: "action" },
+    });
+    expect(audit.status).toBe("error");
   });
 });
 

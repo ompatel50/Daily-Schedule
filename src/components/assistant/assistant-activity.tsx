@@ -14,6 +14,7 @@ import {
 import { Badge } from "@/components/ui/badge";
 import { SectionCard } from "@/components/shared/section-card";
 import {
+  assistantStatusLabel,
   type AssistantAuditView,
   type AssistantProposalView,
 } from "@/lib/logic/assistant";
@@ -48,22 +49,24 @@ export function AssistantActivity(props: {
             className="flex items-start gap-3 rounded-lg border px-3 py-2 text-sm"
           >
             <Zap className="mt-0.5 h-4 w-4 shrink-0 text-muted-foreground" />
-            <div className="min-w-0 flex-1">
-              <p className="truncate">{proposal.summary}</p>
+            <div className="min-w-0 flex-1 space-y-0.5">
+              <div className="flex flex-wrap items-start justify-between gap-x-3 gap-y-1">
+                <p className="line-clamp-2 min-w-[10rem] flex-1 break-words">{proposal.summary}</p>
+                <StatusBadge
+                  status={
+                    proposal.status === "confirmed"
+                      ? "ok"
+                      : proposal.status === "rejected"
+                        ? "cancelled"
+                        : "error"
+                  }
+                  label={assistantStatusLabel(proposal.status)}
+                />
+              </div>
               {proposal.resultSummary && (
                 <p className="text-xs text-muted-foreground">{proposal.resultSummary}</p>
               )}
             </div>
-            <StatusBadge
-              status={
-                proposal.status === "confirmed"
-                  ? "ok"
-                  : proposal.status === "rejected"
-                    ? "cancelled"
-                    : "error"
-              }
-              label={proposal.status}
-            />
           </li>
         ))}
         {props.entries.map((entry) => (
@@ -78,12 +81,33 @@ export function AssistantActivity(props: {
             ) : (
               <Zap className="mt-0.5 h-4 w-4 shrink-0 text-muted-foreground" />
             )}
-            <div className="min-w-0 flex-1">
-              <p className="truncate">
-                {entry.requestPreview ? `“${entry.requestPreview}”` : entry.summary}
-              </p>
+            <div className="min-w-0 flex-1 space-y-0.5">
+              {/*
+                The status and time wrap onto their own line when the row is
+                narrow. Pinned beside the text with `shrink-0` they took ~150px
+                of a phone's width, which left the request itself truncated to
+                a few characters — an audit log nobody could read. The floor on
+                the text is what makes them wrap rather than squeeze: without
+                it the column gets narrow enough to break "Cancelled:" in two.
+              */}
+              <div className="flex flex-wrap items-start justify-between gap-x-3 gap-y-1">
+                <p
+                  className="line-clamp-2 min-w-[10rem] flex-1 break-words"
+                  data-testid="assistant-audit-request"
+                >
+                  {entry.requestPreview ? `“${entry.requestPreview}”` : entry.summary}
+                </p>
+                <span className="flex shrink-0 items-center gap-2">
+                  <StatusBadge status={entry.status} label={assistantStatusLabel(entry.status)} />
+                  <time className="text-xs tabular text-muted-foreground" dateTime={entry.createdAt}>
+                    <LocalTime iso={entry.createdAt} />
+                  </time>
+                </span>
+              </div>
               {entry.requestPreview && (
-                <p className="truncate text-xs text-muted-foreground">{entry.summary}</p>
+                <p className="line-clamp-2 break-words text-xs text-muted-foreground">
+                  {entry.summary}
+                </p>
               )}
               {entry.toolCalls.length > 0 && (
                 <p className="truncate text-xs text-muted-foreground">
@@ -91,12 +115,6 @@ export function AssistantActivity(props: {
                 </p>
               )}
             </div>
-            <span className="flex shrink-0 items-center gap-2">
-              <StatusBadge status={entry.status} label={entry.status} />
-              <time className="text-xs tabular text-muted-foreground" dateTime={entry.createdAt}>
-                <LocalTime iso={entry.createdAt} />
-              </time>
-            </span>
           </li>
         ))}
       </ul>

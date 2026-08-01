@@ -5,7 +5,12 @@ import { z } from "zod";
 import { shiftDay, weekRange, type DayKey } from "@/lib/date";
 import { HEALTH_METRIC_GROUPS, type HealthMetricGroup } from "@/lib/enums";
 import { HEALTH_RANGES, type HealthRange } from "@/lib/health-ranges";
-import { ASSISTANT_LIMITS, truncateText, type AssistantMode } from "@/lib/logic/assistant";
+import {
+  ASSISTANT_ACTION_KINDS,
+  ASSISTANT_LIMITS,
+  truncateText,
+  type AssistantMode,
+} from "@/lib/logic/assistant";
 import { buildSearchHits } from "@/lib/logic/search";
 import { BACKUP_VERSION } from "@/lib/backup-format";
 import { prisma } from "@/lib/prisma";
@@ -21,6 +26,7 @@ import {
 } from "@/server/finance";
 import { getImportDashboard } from "@/server/health-import";
 import { getGroupView } from "@/server/health-module";
+import { getHabitStatusSummary } from "@/server/habits";
 import { getInboxPage } from "@/server/inbox";
 import { getWeeklyReview } from "@/server/insights";
 import { getDayOverview, getScheduleItems, searchEverything } from "@/server/queries";
@@ -296,6 +302,60 @@ const listInboxTool: AssistantTool = {
         notes: item.notes ? truncateText(item.notes, 280) : null,
       })),
       openCount: page.open.length,
+    });
+  },
+};
+
+const habitStatusTool: AssistantTool = {
+  name: "get_habit_status",
+  description:
+    "Habit standing for one date (defaults to today): which habits are due, done, missed or still pending, current and longest streaks, this week's progress against target, which days this week were missed, the last 30 days' completion rate, and when each habit is next due. Use this for any habit or streak question — never infer habits from the day overview or search. Optionally filter by name.",
+  parameters: {
+    type: "object",
+    properties: {
+      date: { type: "string", description: "YYYY-MM-DD. Defaults to today." },
+      name: {
+        type: "string",
+        description: "Only habits whose name contains this text (case-insensitive).",
+      },
+      includeArchived: {
+        type: "boolean",
+        description: "Include archived habits. Default false.",
+      },
+    },
+  },
+  validate: z.object({
+    date: dayKey.optional(),
+    name: z.string().trim().min(1).max(80).optional(),
+    includeArchived: z.boolean().optional(),
+  }),
+  async run(ctx, args) {
+    const { date, name, includeArchived } = args as {
+      date?: string;
+      name?: string;
+      includeArchived?: boolean;
+    };
+    const summary = await getHabitStatusSummary(
+      ctx.user.id,
+      (date as DayKey) ?? ctx.settings.today,
+      ctx.settings,
+      { name, includeArchived },
+    );
+    return toolOk({
+      date: summary.date,
+      week: summary.week,
+      // Scheduled-opportunity counts across the user's active habits for this
+      // date. `restOrUnscheduled` habits place no requirement on it, so they
+      // are never a failure — do not report them as missed.
+      totals: summary.totals,
+      matched: summary.matched,
+      returned: summary.habits.length,
+      ...(summary.truncated
+        ? {
+            note: `Only the first ${summary.habits.length} of ${summary.matched} habits are listed. Call this tool again with "name" to ask about a specific one.`,
+          }
+        : {}),
+      habits: summary.habits,
     });
   },
 };
@@ -625,22 +685,13 @@ const backupStatusTool: AssistantTool = {
 const proposeActionTool: AssistantTool = {
   name: "propose_action",
   description:
-    "Propose ONE change for the user to review — never performed directly. Send ONLY the fields listed for the kind; anything else is refused. create_task {title, notes?, dueDate?, priority?} (always a plain one-off task); complete_task {id}; create_reminder {title, message?, remindAt: 'YYYY-MM-DDTHH:mm' in the user's own clock, repeat?}; create_inbox_item {title, notes?}; create_transaction {accountId, date, amount (signed: negative = money out), payee, category?, notes?}; create_planner_block {title, date, startMinute?, endMinute?, category?} (a single day, never recurring); delete_task {id}; delete_reminder {id}. Use real ids from other tools. The user sees a preview and decides.",
+    "Propose ONE change for the user to review — never performed directly. Send ONLY the fields listed for the kind; anything else is refused. create_task {title, notes?, dueDate?, priority?} (always a plain one-off task); complete_task {id}; create_reminder {title, message?, remindAt: 'YYYY-MM-DDTHH:mm' in the user's own clock, repeat?}; create_inbox_item {title, notes?}; complete_inbox_item {id}; create_transaction {accountId, date, amount (signed: negative = money out), payee, category?, notes?}; create_planner_block {title, date, startMinute?, endMinute?, category?} (a single day, never recurring); log_habit {habitId, date? (defaults to today), status? ('done' | 'skipped' | 'missed', defaults to done), value?} (one day of one habit); delete_task {id}; delete_reminder {id}. Use real ids from other tools — get_habit_status for habit ids, list_inbox for inbox ids. The user sees a preview and decides.",
   parameters: {
     type: "object",
     properties: {
       kind: {
         type: "string",
-        enum: [
-          "create_task",
-          "complete_task",
-          "create_reminder",
-          "create_inbox_item",
-          "create_transaction",
-          "create_planner_block",
-          "delete_task",
-          "delete_reminder",
-        ],
+        enum: [...ASSISTANT_ACTION_KINDS],
       },
       payload: { type: "object", description: "The action's fields, per the kind." },
     },
@@ -686,6 +737,7 @@ export const ASSISTANT_TOOLS: AssistantTool[] = [
   scheduleTool,
   listTasksTool,
   listInboxTool,
+  habitStatusTool,
   financeOverviewTool,
   listTransactionsTool,
   listBillsTool,
