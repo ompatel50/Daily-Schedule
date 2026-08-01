@@ -32,6 +32,7 @@ Step-by-step documentation lives in `docs/`, written to be followed exactly:
 | [`docs/health-module.md`](docs/health-module.md) | The Health section: supported Apple Health data, duplicate and undo rules, performance |
 | [`docs/health-import-privacy.md`](docs/health-import-privacy.md) | What a health import stores, what it drops, and how to undo it |
 | [`docs/web-push-setup.md`](docs/web-push-setup.md) | Background reminder notifications (Web Push) |
+| [`docs/ai-assistant.md`](docs/ai-assistant.md) | The AI assistant: Ollama setup, modes, confirmations, audit log, privacy |
 | [`docs/security-and-privacy.md`](docs/security-and-privacy.md) | Per-account isolation guarantees, rate limits, headers, logs, and the off switches |
 | [`docs/troubleshooting.md`](docs/troubleshooting.md) | Symptoms → causes → fixes |
 | [`docs/performance-measurement.md`](docs/performance-measurement.md) | How the performance numbers were measured, and how to repeat them |
@@ -559,6 +560,31 @@ Archive keeps a lapsed policy on the record without reminding about it.
   exactly once — a ledger keyed per occurrence is shared by open tabs *and* the push runner, so no
   combination of tabs and devices double-delivers — and where browser notifications are blocked or
   unsupported, the in-app toast still appears.
+
+### 14. Assistant — `/assistant`
+
+A private AI assistant that answers questions about your data, summarizes your
+days, weeks, finances, tasks and health, searches across the app, and — only
+after you explicitly confirm each one — makes changes. It talks **only to your
+own [Ollama](https://ollama.com) server** (this machine or another on your
+network): no cloud AI, no API key, no subscription, and no fallback that sends
+data anywhere else. If Ollama is off, the assistant says so calmly and the
+rest of the app is untouched.
+
+* **Three modes, server-enforced**: read-only (default) answers only; draft
+  additionally proposes changes as previews; confirm lets a previewed change
+  execute after an explicit click — with a second, harder dialog for finance,
+  reminder and planner changes, and for every delete.
+* **Tool-based access**: the model reads through a fixed registry of
+  ownership-checked, bounded server tools (search, summaries, tasks, inbox,
+  finance, bills, budgets, reminders, health trends, documents, planner,
+  import history, backup row-counts). It has no database access of its own,
+  and confirmed writes route through the same server actions the app's own
+  buttons call.
+* **Audit log**: every exchange, decided proposal and connection test is
+  recorded append-only — bounded summaries and tool names, never transcripts.
+  Conversations themselves are deliberately not persisted.
+* Setup, model guidance and the full safety model: `docs/ai-assistant.md`.
 
 ---
 

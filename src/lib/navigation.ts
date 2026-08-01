@@ -1,5 +1,6 @@
 import {
   Apple,
+  Bot,
   CalendarDays,
   CalendarRange,
   CheckSquare,
@@ -127,6 +128,14 @@ export const NAV_ITEMS: NavItem[] = [
     accent: "text-domain-workout",
   },
   {
+    href: "/assistant",
+    label: "Assistant",
+    icon: Bot,
+    shortcut: "x",
+    description: "Ask about your data — private, local Ollama only",
+    accent: "text-violet-500",
+  },
+  {
     href: "/settings",
     label: "Settings",
     icon: Settings,
@@ -153,6 +162,7 @@ export const KEYBOARD_SHORTCUTS: Array<{ keys: string; action: string; group: st
   { keys: "G then E", action: "Go to health", group: "Navigation" },
   { keys: "G then C", action: "Go to calendar", group: "Navigation" },
   { keys: "G then I", action: "Go to insights", group: "Navigation" },
+  { keys: "G then X", action: "Go to assistant", group: "Navigation" },
   { keys: "J / K", action: "Previous / next day", group: "Planner" },
   { keys: "T", action: "Jump back to today", group: "Planner" },
 ];

@@ -4239,3 +4239,193 @@ over the new metrics through the existing goal engine; a correlations view over
 the trend series; nutrition reconciliation; per-metric detail pages; folding
 health signals into the "needs attention" digest. Staged upload for the
 **backup** import is now on that list too.
+
+## Phase B — the AI assistant: private, Ollama-only
+
+The phase every earlier phase was clearing ground for. The assistant answers
+questions about the user's data, summarizes days, weeks, finances, tasks and
+health, searches the whole app, and — only after an explicit confirmation —
+makes changes. It talks to exactly one model server: the user's own Ollama,
+on their own machine or network. No OpenAI, no Anthropic, no paid provider,
+no optional cloud fallback, no API key, no card. If Ollama is off, the
+assistant is a calm offline notice and the rest of the app does not care.
+
+### Architecture, in one pass
+
+```
+browser ──(same-origin only; CSP forbids anything else)──► /api/assistant/chat
+             │                                                    │
+             ▼                                                    ▼
+   /assistant page, proposal cards,                    engine (src/server/ai/engine.ts)
+   audit panel, settings panel                         system prompt: user's today/tz/mode
+                                                       bounded history (12 msgs × 4 KB)
+                                                                  │
+                                            ┌─────────────────────┼──────────────────────┐
+                                            ▼                     ▼                      ▼
+                                   Ollama client          tool registry           proposals + audit
+                                (src/server/ai/ollama.ts) (src/server/ai/tools.ts) (staged writes,
+                                 the ONE outbound seam:    16 read tools wrapping   append-only log)
+                                 /api/version /api/tags    existing read models,
+                                 /api/chat on the stored   1 propose_action tool
+                                 base URL, never anywhere else
+```
+
+* **Ollama layer** — clones the food-provider discipline: `server-only`,
+  outcome unions that never throw, app-authored failure prose that never
+  echoes a URL, env-free (configuration lives on the User row), short probe
+  timeout (5 s) and long generation timeout (120 s), streaming NDJSON parsed
+  line-by-line. Base URLs are validated at save AND use: http/https only, no
+  embedded credentials, no query/fragment, cloud-metadata addresses
+  (169.254.0.0/16, metadata hostnames) refused — LAN addresses deliberately
+  allowed, because "the iMac across the room" is the designed deployment.
+* **Tool layer** — the model's only route to data. Every read tool wraps an
+  existing session-scoped read model 1:1 (`searchEverything`,
+  `getCommandCenterSummary`, `getDayOverview`, `getWeeklyReview`,
+  `getTaskBoard`, `getInboxPage`, `getFinanceOverview`,
+  `getTransactionsBetween` (clamped to 92 days), `getBillViews`,
+  `listReminders` (new, small), `getReminderFeed`, `getGroupView`,
+  `getDocumentViews`, `getScheduleItems` (clamped to 31 days),
+  `getImportDashboard`+`getImportBatches`, and per-table counts for backup
+  status) and prunes the result to a compact projection. Arguments are
+  zod-validated; results are truncated past 8 KB; a model-chosen date range
+  is clamped, never trusted. No tool accepts a userId — the authenticated
+  user is closed over at the request boundary.
+* **Modes** — `readonly | draft | confirm`, a column on the User row,
+  enforced server-side at three layers: read-only mode strips
+  `propose_action` from the tool list, refuses it if called anyway, and the
+  confirm action refuses execution unless the account is in confirm mode —
+  whatever the UI claims.
+* **Proposals** — the staged-import pattern applied to writes. A proposal is
+  validated with the SAME zod schema its target action uses (create kinds
+  strip any smuggled `id`, so "create" can never become "overwrite"),
+  referenced records are ownership-checked at staging (same "not found" for
+  missing and foreign), previewed as one app-authored sentence, bounded to
+  10 undecided per account, and expires after an hour. Confirmation claims
+  the row atomically (`updateMany` on status; a double click executes once),
+  re-validates the stored payload, and dispatches to the existing server
+  action — `saveTask`, `completeTask`, `saveReminder`, `saveInboxItem`,
+  `saveTransaction`, `createScheduleItem`, `deleteTask`, `deleteReminder` —
+  so ownership, validation, summary recomputes and revalidation all apply
+  unchanged. Risk classes: deletes are `destructive`, finance/reminder/
+  planner changes `sensitive` — both get a second, restating dialog in the
+  UI; tasks and inbox notes are `normal`.
+* **Audit** — append-only `AssistantAuditEntry`: one row per exchange
+  (truncated request preview, tool names with truncated args, model,
+  duration, outcome), per decided proposal (confirmed / cancelled / failed)
+  and per explicit connection test. No transcripts, no tool payloads, no
+  model prose — and conversations themselves are deliberately not persisted
+  anywhere.
+
+### Schema (migration `20260731235635_ai_assistant` — additive only)
+
+Three columns on `User` (`assistantBaseUrl`, `assistantModel`,
+`assistantMode` default `"readonly"`) and two new tables:
+`AssistantProposal` (stamped, never deleted; `@@index([userId, status])`,
+`[userId, createdAt]`, `[expiresAt]`) and `AssistantAuditEntry` (append-only;
+`@@index([userId, createdAt])`, `[userId, kind]`). Both tables are
+deliberately EXCLUDED from `BACKUP_TABLES` — the upload-session /
+push-subscription precedent: operational records of this deployment, whose
+payloads point at ids a restore would remap out from under them. No
+`BACKUP_VERSION` bump, no restore change, and the restore's replace-mode
+delete list is untouched because nothing references these tables.
+
+### UX
+
+* `/assistant` (sidebar **Assistant**, `g x`, command-palette "Ask the
+  assistant"): status row (connected / offline badge, model, mode badge with
+  its meaning spelled out), suggestion chips, streaming transcript with
+  inline tool-activity chips ("Reading finances…"), proposal cards under
+  "Waiting for your decision", and the audit panel. Transcript is client
+  state only.
+* Settings → **AI assistant** panel: server URL, **Test connection** (shows
+  Ollama version + models found, populates the model picker), model select,
+  mode select with per-mode description, save. Unconfigured is a calm
+  EmptyState pointing at Settings, not an error.
+
+### Testing
+
+| Suite | Before | After |
+| --- | --- | --- |
+| Unit (`npm test`) | 1,033 | **1,082** |
+| Integration (`npm run test:integration`) | 293 | **318** |
+| Browser (`npm run test:e2e`) | 49 | **57** (all passing, 2 skipped: the pre-existing seeded spec + fixme) |
+
+New unit coverage (`assistant-ollama`, `assistant-engine`, `assistant-tools`,
+`assistant-logic`): the full failure matrix against a stubbed fetch (dead
+server → unavailable, abort → timeout, Ollama's own phrased errors passed
+through bounded and URL-free, malformed NDJSON survived), the wire itself
+(only the configured host, `no-store`, `no-referrer`, no credentials), the
+engine's loop mechanics (tool rounds, per-round cap honoured with in-band
+refusals, tools withheld on the final round, context bounding, prompt
+content), registry pinning and mode gating — plus a structural no-cloud test
+that fails if the assistant's server directory ever imports a raw network
+module, names a cloud AI host, or mentions an API key.
+
+New integration coverage (real PostgreSQL): settings normalization and the
+metadata-address refusal; proposal staging with normalized payloads; the
+id-smuggling defence proven end-to-end (a `create_task` proposal carrying an
+existing id creates a SECOND task and leaves the original untouched);
+readonly/draft modes refused server-side; confirm executing exactly once
+under a double click; rejection, expiry and the pending-cap; cross-user
+proposal decisions refused with the row byte-identical; a failed execution
+stamped `failed` with an `error` audit row; tool scoping (bob's secrets never
+appear in alice's `list_tasks` / `search_records` / `get_backup_status`);
+signed-out `NEXT_REDIRECT`.
+
+Browser (an 8-test spec against a scripted local HTTP stub speaking Ollama's
+API — a real listener, because the app's model calls originate in the Next
+server where `page.route()` cannot reach): settings → test-connection →
+model discovery → save; a streamed read-only answer; propose → confirm →
+the task really on `/tasks`; propose → cancel → nothing; the destructive
+delete demanding the second dialog and then really deleting (which is also
+the spec's cleanup); read-only mode refusing proposals with no card rendered;
+the audit panel showing the trail; and Ollama-down as a calm labelled state.
+Console errors fail every test. The stub's one task title carries a per-run
+nonce so reruns and parallel workers cannot collide.
+
+### Verification
+
+* Typecheck, lint, unit (1,082), integration (318), production build: pass.
+* Full browser suite against the production build: **47 passed, 0 failed**
+  (2 skipped as documented above), assistant spec green inside the full
+  parallel run, not just solo.
+* Manual flows exercised through the browser tests listed above — including
+  approved-action-changes-data, rejected-action-changes-nothing, and the
+  user-isolation and no-console-error checks the phase brief demanded.
+
+### Performance notes
+
+* Answers stream token-by-token from the first round; a round that becomes
+  tool calls simply streamed nothing first.
+* Bounded everything: 12 history messages × 4 KB, 4 tool rounds × 5 calls,
+  8 KB per tool result, pruned projections instead of raw rows, date-range
+  clamps on the two range readers. A modest 8B model gets small prompts.
+* The connection probe (5 s timeout) runs on the settings panel and once per
+  assistant-page mount — never in AppShell, so no route pays for it.
+* Hosted chat is bounded by the platform's 60 s route ceiling (literal
+  `maxDuration`, held by `tests/deploy-config.test.ts`); self-hosted has the
+  120 s per-call generation timeout only.
+
+### Deliberately not implemented
+
+* **Write tools beyond the eight kinds** (no health writes, no budget/
+  account/document mutations, no backup restore, no import undo) — the
+  read-only surface covers them; each write kind added later is one schema,
+  one dispatch arm and one risk entry.
+* **Conversation persistence** — a privacy decision, stated in the UI docs;
+  the audit trail is the durable record.
+* **Provider abstraction** — there is exactly one provider by design;
+  abstracting over it would be pretending otherwise.
+* **Embeddings / RAG** — the app's own summaries and search are the
+  retrieval layer, and they are already user-scoped and bounded.
+
+### Exact next step
+
+Wire the assistant into daily use and watch the first real conversations:
+the open candidates from Phase A.2 (health goals over new metrics, a
+correlations view, nutrition reconciliation, per-metric pages, health
+signals in the needs-attention digest) now have a second consumer — each one
+lands as both a page AND a richer tool for the assistant. The first
+mechanical follow-up: a `get_habit_status` tool (habits are reachable today
+only through search and day overviews), then per-kind write tools as real
+usage asks for them.

@@ -23,6 +23,7 @@ import {
   SERVING_UNITS,
   WORKOUT_TYPES,
 } from "./enums";
+import { ASSISTANT_LIMITS, ASSISTANT_MODES } from "./logic/assistant";
 import { FOOD_PROVIDERS } from "./logic/food";
 import { GOAL_COMPARISONS, GOAL_SOURCES } from "./logic/goals";
 import { TEMPLATE_APPLY_MODES } from "./logic/planner";
@@ -692,6 +693,32 @@ export const scheduleTaskSchema = z
   );
 
 export type ScheduleTaskInput = z.infer<typeof scheduleTaskSchema>;
+
+// --- AI assistant ------------------------------------------------------------
+
+export const assistantSettingsSchema = z.object({
+  /** Empty string = not configured; a real value is URL-checked server-side. */
+  baseUrl: z.string().trim().max(200),
+  model: z.string().trim().max(120).nullable().optional(),
+  mode: z.enum(ASSISTANT_MODES),
+});
+export type AssistantSettingsInput = z.infer<typeof assistantSettingsSchema>;
+
+export const assistantChatSchema = z.object({
+  message: z.string().trim().min(1).max(ASSISTANT_LIMITS.maxMessageChars),
+  /** Prior turns, client-held; roles restricted so a request can never smuggle
+   *  a system or tool message into the model's context. */
+  history: z
+    .array(
+      z.object({
+        role: z.enum(["user", "assistant"]),
+        content: z.string().max(20_000),
+      }),
+    )
+    .max(24)
+    .default([]),
+});
+export type AssistantChatInput = z.infer<typeof assistantChatSchema>;
 
 /** Standard action result — every server action returns this shape. */
 export type ActionResult<T = unknown> =

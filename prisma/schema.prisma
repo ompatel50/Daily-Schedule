@@ -80,6 +80,19 @@ model User {
   dayStartHour   Int    @default(6)
   dayEndHour     Int    @default(22)
 
+  // --- AI assistant (local Ollama only) --------------------------------------
+  /// Base URL of the user's own Ollama server (e.g. http://localhost:11434 or
+  /// another machine on their network). Null = the assistant is not set up.
+  /// This is the ONLY endpoint the assistant ever talks to — there is no
+  /// cloud provider, no fallback, and no API key anywhere in this feature.
+  assistantBaseUrl String?
+  /// The Ollama model name the user picked (e.g. "llama3.1"). Null until chosen.
+  assistantModel   String?
+  /// readonly | draft | confirm — how much the assistant may do
+  /// (src/lib/logic/assistant.ts). Read-only is the default on purpose:
+  /// answering questions must never be one setting away from writing data.
+  assistantMode    String  @default("readonly")
+
   scheduleItems     ScheduleItem[]
   scheduleTemplates ScheduleTemplate[]
   habits            Habit[]
@@ -116,6 +129,8 @@ model User {
   financeImportBatches FinanceImportBatch[]
   inboxItems        InboxItem[]
   documents         LifeDocument[]
+  assistantProposals AssistantProposal[]
+  assistantAuditEntries AssistantAuditEntry[]
 
   // --- day score configuration ----------------------------------------------
   /// JSON map of category → weight, e.g. {"planner":30,"habits":30,"goals":40}.
@@ -1873,5 +1888,98 @@ model FavoriteItem {
   createdAt DateTime @default(now())
 
   @@unique([userId, kind, refId])
+  @@index([userId, kind])
+}
+
+// ---------------------------------------------------------------------------
+// AI assistant (local Ollama only)
+// ---------------------------------------------------------------------------
+// Both tables are deliberately EXCLUDED from backups (src/lib/backup-format.ts
+// BACKUP_TABLES), like the other operational records (upload sessions, push
+// subscriptions, rate-limit buckets): proposals are short-lived staging rows
+// whose payloads point at records that a restore would remap out from under
+// them, and the audit log is a record of what THIS deployment did, not user
+// data worth carrying between deployments. Neither table ever stores a raw
+// model response or a raw user prompt beyond a bounded, truncated summary.
+
+/// One action the assistant proposed and the user has not yet decided on —
+/// the staged-import pattern applied to writes. The payload is validated with
+/// the SAME zod schema the target server action uses, at proposal time AND
+/// again at execution, so what the user confirms is byte-identical to what
+/// runs. Rows are never deleted, only stamped, so the activity feed can show
+/// what was proposed, confirmed, rejected or expired.
+model AssistantProposal {
+  id     String @id @default(cuid())
+  userId String
+  user   User   @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  /// What the action is — one of ASSISTANT_ACTION_KINDS
+  /// (src/lib/logic/assistant.ts): create_task | complete_task |
+  /// create_reminder | create_inbox_item | create_transaction |
+  /// create_planner_block | delete_task | delete_reminder
+  kind String
+  /// Validated, normalized action input as JSON — exactly what will execute.
+  payload String
+  /// One human sentence describing the action, shown on the proposal card.
+  summary String
+  /// normal | sensitive | destructive — drives how much confirmation the UI
+  /// demands. Derived from the kind server-side, never client-supplied.
+  risk String
+  /// Truncated user request that led to this proposal (for the activity feed).
+  requestPreview String @default("")
+
+  /// proposed | confirmed | rejected | expired | failed
+  status String @default("proposed")
+  /// Set when the user decides (confirm or reject), or the sweep expires it.
+  decidedAt DateTime?
+  /// A proposal the user never decides on stops being executable here.
+  expiresAt DateTime
+  /// Outcome of execution: created/changed record id, when there is one.
+  executedRecordId String?
+  /// App-authored one-liner about how execution went ("Task created", or the
+  /// action's own error message). Never a stack trace.
+  resultSummary String?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([userId, status])
+  @@index([userId, createdAt])
+  @@index([expiresAt])
+}
+
+/// Append-only audit trail of what the assistant did: one row per assistant
+/// exchange (kind "chat"), per decided proposal (kind "action") and per
+/// connection test (kind "connection"). Rows are never updated or deleted.
+/// Content is bounded and app-authored: a truncated request preview, tool
+/// names with truncated argument summaries, and an outcome — enough to audit
+/// and debug, never a transcript.
+model AssistantAuditEntry {
+  id     String @id @default(cuid())
+  userId String
+  user   User   @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  /// chat | action | connection
+  kind String
+  /// ok | error | refused | cancelled
+  status String
+  /// Bounded, app-authored description of what happened.
+  summary String
+  /// Truncated first line of the user's request ("" for connection tests).
+  requestPreview String @default("")
+  /// JSON array of { tool, args } with bounded, truncated argument summaries.
+  toolCalls String @default("[]")
+  /// The proposal this entry records a decision about, when kind = "action".
+  /// A plain reference (no FK): audit history must outlive nothing — it keeps
+  /// meaning even if the proposal table is ever pruned.
+  proposalId String?
+  /// The Ollama model that served the exchange, when one was involved.
+  model String?
+  /// Wall-clock duration of the exchange, for "why was that slow".
+  durationMs Int?
+
+  createdAt DateTime @default(now())
+
+  @@index([userId, createdAt])
   @@index([userId, kind])
 }
