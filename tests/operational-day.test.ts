@@ -18,6 +18,7 @@ import {
   operationalSortMinute,
   operationalWallClock,
 } from "@/lib/logic/operational-day";
+import { resolveScheduleReminder } from "@/lib/logic/reminders";
 import { DEFAULT_DAY_RESET_MINUTE as ENGINE_DEFAULT, resetMinuteOf } from "@/lib/logic/schedule";
 
 /**
@@ -222,6 +223,43 @@ describe("operationalWallClock — reminders keep their real time", () => {
 
   it("a 1:00 AM reminder on operational Wednesday is Thursday 1:00 AM — not delayed to 4:00", () => {
     expect(operationalWallClock("2026-01-14", 60, RESET)).toBe("2026-01-15T01:00:00");
+  });
+});
+
+describe("schedule reminders keep their real fire times", () => {
+  const base = {
+    kind: "habit" as const,
+    ownerId: "h1",
+    name: "Stretch",
+    date: "2026-01-14",
+    status: "pending" as const,
+    dueToday: true,
+    flexibleToday: false,
+    completedToday: false,
+    weeklyTargetMet: false,
+    reminderEnabled: true,
+    reminderMinute: null,
+    timeMinute: null,
+    archived: false,
+    deliveredKeys: new Set<string>(),
+  };
+
+  it("a 9:00 AM reminder on operational Wednesday fires Wednesday 9:00 AM", () => {
+    const resolved = resolveScheduleReminder({ ...base, reminderMinute: 9 * 60 });
+    expect(resolved.ok).toBe(true);
+    if (resolved.ok) expect(resolved.occurrence.fireAt).toBe("2026-01-14T09:00:00");
+  });
+
+  it("a 1:00 AM reminder fires Thursday 1:00 AM — its real time, not delayed to the reset", () => {
+    const resolved = resolveScheduleReminder({ ...base, reminderMinute: 60 });
+    expect(resolved.ok).toBe(true);
+    if (resolved.ok) expect(resolved.occurrence.fireAt).toBe("2026-01-15T01:00:00");
+  });
+
+  it("a zero reset keeps the historic behaviour", () => {
+    const resolved = resolveScheduleReminder({ ...base, reminderMinute: 60, dayResetMinute: 0 });
+    expect(resolved.ok).toBe(true);
+    if (resolved.ok) expect(resolved.occurrence.fireAt).toBe("2026-01-14T01:00:00");
   });
 });
 

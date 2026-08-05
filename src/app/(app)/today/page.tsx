@@ -19,6 +19,7 @@ import { surfaceHref } from "@/lib/logic/surfaces";
 import { cn, formatNumber, pct } from "@/lib/utils";
 import {
   getToday, getDayOverview } from "@/server/queries";
+import { resetMinuteOf } from "@/lib/logic/schedule";
 import { toScheduleRowItems } from "@/lib/serializers";
 
 export const metadata: Metadata = { title: "Today" };
@@ -44,7 +45,8 @@ export default async function TodayPage({
   // calendar detail and Insights read for this date.
   const { score } = overview;
 
-  const rows = toScheduleRowItems(schedule);
+  const resetMinute = resetMinuteOf(overview.settings);
+  const rows = toScheduleRowItems(schedule, resetMinute);
   const remaining = schedule.filter((item) => item.status === "planned");
   const nextUp = remaining.find((item) => !item.allDay && item.startMinute !== null) ?? remaining[0];
 
@@ -130,7 +132,13 @@ export default async function TodayPage({
               </Button>
             }
           >
-            <DaySchedule date={date} items={rows} surface="today" todayKey={todayKey} />
+            <DaySchedule
+              date={date}
+              items={rows}
+              surface="today"
+              todayKey={todayKey}
+              dayResetMinute={resetMinute}
+            />
           </SectionCard>
 
           <SectionCard

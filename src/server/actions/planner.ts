@@ -5,6 +5,12 @@ import { revalidatePath } from "next/cache";
 import { prisma } from "@/lib/db";
 import { getCurrentUser } from "@/lib/db";
 import { type DayKey, shiftDay } from "@/lib/date";
+import {
+  calendarDateForOperationalTime,
+  operationalDayOfRecord,
+  operationalDayWhere,
+} from "@/lib/logic/operational-day";
+import { resetMinuteOf } from "@/lib/logic/schedule";
 import { expandRule, parseRule, serializeRule, type RecurrenceRule } from "@/lib/logic/recurrence";
 import { parseQuickAdd } from "@/lib/logic/quick-add";
 import {
@@ -24,6 +30,7 @@ import {
   type ActionResult,
   type SeriesScope,
 } from "@/lib/validation";
+import { scheduleSettingsFor } from "@/server/schedule";
 import { extendSeriesFor, HORIZON_DAYS } from "@/server/series";
 import { recomputeDay } from "@/server/summaries";
 
@@ -35,6 +42,18 @@ async function touchDays(userId: string, days: DayKey[]) {
   for (const day of Array.from(new Set(days))) {
     await recomputeDay(userId, day);
   }
+}
+
+/**
+ * Planner dates cross this boundary as OPERATIONAL days — the day the user was
+ * looking at. Storage keeps calendar dates: a timed entry before the daily
+ * reset ("1:00 AM") lands on the next calendar date, which is the real moment
+ * it names, and resolves back to the operational day on every read. Summary
+ * recomputes are keyed by operational day, so `touchDays` receives
+ * `operationalDayOfRecord(...)` of whatever was written.
+ */
+function resetFor(user: { weekStartsOn: number; timezone: string; dayResetMinute?: number }) {
+  return resetMinuteOf(scheduleSettingsFor(user));
 }
 
 /** Prisma's "unique constraint failed" without importing the runtime error class. */
@@ -86,11 +105,6 @@ export async function createScheduleItem(input: unknown): Promise<ActionResult<{
   const refError = await checkOwnedRefs(user.id, data.habitId, data.tagIds);
   if (refError) return fail(refError);
 
-  const maxOrder = await prisma.scheduleItem.aggregate({
-    where: { userId: user.id, date: data.date },
-    _max: { sortOrder: true },
-  });
-
   const base = {
     userId: user.id,
     title: data.title,
@@ -104,10 +118,21 @@ export async function createScheduleItem(input: unknown): Promise<ActionResult<{
     habitId: data.habitId ?? null,
   };
 
+  // `data.date` is the operational day being planned; an entry timed before
+  // the daily reset stores on the next calendar date — the real moment it
+  // names — and reads back under the day the user typed it into.
+  const reset = resetFor(user);
+  const storedDate = calendarDateForOperationalTime(data.date, base.startMinute, reset);
+
+  const maxOrder = await prisma.scheduleItem.aggregate({
+    where: { userId: user.id, date: storedDate },
+    _max: { sortOrder: true },
+  });
+
   const parent = await prisma.scheduleItem.create({
     data: {
       ...base,
-      date: data.date,
+      date: storedDate,
       sortOrder: (maxOrder._max.sortOrder ?? 0) + 1,
       recurrenceRule: serializeRule(rule),
       tags: data.tagIds.length
@@ -119,6 +144,8 @@ export async function createScheduleItem(input: unknown): Promise<ActionResult<{
   const touched: DayKey[] = [data.date];
 
   if (rule) {
+    // The rule expands over operational days ("every Monday at 1:00 AM" means
+    // Monday *nights*), and each occurrence converts to its calendar date.
     const occurrences = expandRule(
       rule,
       data.date,
@@ -127,7 +154,12 @@ export async function createScheduleItem(input: unknown): Promise<ActionResult<{
     );
     if (occurrences.length > 0) {
       await prisma.scheduleItem.createMany({
-        data: occurrences.map((date) => ({ ...base, date, seriesId: parent.id, sortOrder: 0 })),
+        data: occurrences.map((date) => ({
+          ...base,
+          date: calendarDateForOperationalTime(date, base.startMinute, reset),
+          seriesId: parent.id,
+          sortOrder: 0,
+        })),
       });
       touched.push(...occurrences);
     }
@@ -192,15 +224,26 @@ export async function updateScheduleItem(
     completedAt: data.status === "done" ? (existing.completedAt ?? new Date()) : null,
   };
 
+  const reset = resetFor(user);
+  const storedDate = calendarDateForOperationalTime(data.date, fields.startMinute, reset);
+  // Re-timing across the reset boundary moves every series occurrence's
+  // calendar date by one, so it stays on the operational day it was planned
+  // for: 11:00 PM → 1:00 AM shifts each stored date forward, and back again
+  // the other way.
+  const wasBeforeReset =
+    !existing.allDay && existing.startMinute !== null && existing.startMinute < reset;
+  const nowBeforeReset = fields.startMinute !== null && fields.startMinute < reset;
+  const seriesDateShift = wasBeforeReset === nowBeforeReset ? 0 : nowBeforeReset ? 1 : -1;
+
   let updated = 1;
-  const touched: DayKey[] = [existing.date, data.date];
+  const touched: DayKey[] = [operationalDayOfRecord(existing, reset), data.date];
 
   await prisma.$transaction(async (tx) => {
     await tx.scheduleItem.update({
       where: { id: existing.id },
       data: {
         ...fields,
-        date: data.date,
+        date: storedDate,
         // Editing a single occurrence detaches it so a later series edit
         // doesn't silently overwrite the user's change.
         isException: existing.seriesId ? scope === "one" : existing.isException,
@@ -216,8 +259,8 @@ export async function updateScheduleItem(
 
     if (scope === "one") return;
 
-    // Series-wide edits carry the *details* across, never the date — moving
-    // every occurrence onto one day would collapse the series.
+    // Series-wide edits carry the *details* across, never the operational
+    // day — moving every occurrence onto one day would collapse the series.
     const seriesId = existing.seriesId ?? existing.id;
     const where = {
       userId: user.id,
@@ -227,22 +270,35 @@ export async function updateScheduleItem(
       OR: [{ seriesId }, { id: seriesId }],
     };
 
-    const affected = await tx.scheduleItem.findMany({ where, select: { date: true } });
-    touched.push(...affected.map((row) => row.date));
+    const affected = await tx.scheduleItem.findMany({ where, select: { id: true, date: true } });
+    touched.push(
+      ...affected.map((row) =>
+        operationalDayOfRecord({ date: row.date, startMinute: existing.startMinute }, reset),
+      ),
+    );
 
-    const result = await tx.scheduleItem.updateMany({
-      where,
-      data: {
-        title: fields.title,
-        notes: fields.notes,
-        startMinute: fields.startMinute,
-        endMinute: fields.endMinute,
-        allDay: fields.allDay,
-        category: fields.category,
-        priority: fields.priority,
-      },
-    });
-    updated += result.count;
+    const detailFields = {
+      title: fields.title,
+      notes: fields.notes,
+      startMinute: fields.startMinute,
+      endMinute: fields.endMinute,
+      allDay: fields.allDay,
+      category: fields.category,
+      priority: fields.priority,
+    };
+
+    if (seriesDateShift === 0) {
+      const result = await tx.scheduleItem.updateMany({ where, data: detailFields });
+      updated += result.count;
+    } else {
+      for (const row of affected) {
+        await tx.scheduleItem.update({
+          where: { id: row.id },
+          data: { ...detailFields, date: shiftDay(row.date, seriesDateShift) },
+        });
+      }
+      updated += affected.length;
+    }
   });
 
   await touchDays(user.id, touched);
@@ -261,7 +317,7 @@ export async function toggleScheduleItem(id: string): Promise<ActionResult<{ sta
     data: { status, completedAt: status === "done" ? new Date() : null },
   });
 
-  await touchDays(user.id, [item.date]);
+  await touchDays(user.id, [operationalDayOfRecord(item, resetFor(user))]);
   revalidateAll();
   return succeed({ status });
 }
@@ -279,7 +335,7 @@ export async function setScheduleItemStatus(
     data: { status, completedAt: status === "done" ? new Date() : null },
   });
 
-  await touchDays(user.id, [item.date]);
+  await touchDays(user.id, [operationalDayOfRecord(item, resetFor(user))]);
   revalidateAll();
   return succeed({ status });
 }
@@ -310,12 +366,22 @@ export async function moveScheduleItem(
   const item = await prisma.scheduleItem.findFirst({ where: { id, userId: user.id } });
   if (!item) return fail("Item not found");
 
+  // `date` is the operational day the item is being dropped onto. Resolve the
+  // calendar date first (the span planMove will keep is deterministic), so
+  // conflicts are checked against the calendar date the item actually lands
+  // on.
+  const reset = resetFor(user);
+  // Mirrors planMove's span rule: undefined keeps the item's time, null
+  // clears to all-day. All-day items carry null minutes already.
+  const nextStart = startMinute === undefined ? item.startMinute : startMinute;
+  const storedDate = calendarDateForOperationalTime(date, nextStart, reset);
+
   const targetItems = await prisma.scheduleItem.findMany({
-    where: { userId: user.id, date },
+    where: { userId: user.id, date: storedDate },
     select: { id: true, title: true, startMinute: true, endMinute: true, allDay: true, status: true },
   });
 
-  const plan = planMove({ item, date, startMinute, targetItems });
+  const plan = planMove({ item, date: storedDate, startMinute, targetItems });
 
   if (plan.conflicts.length > 0 && !options?.confirm) {
     return succeed({ status: "conflict", conflicts: plan.conflicts });
@@ -324,7 +390,7 @@ export async function moveScheduleItem(
   await prisma.scheduleItem.update({
     where: { id },
     data: {
-      date,
+      date: storedDate,
       startMinute: plan.startMinute,
       endMinute: plan.endMinute,
       allDay: plan.allDay,
@@ -333,7 +399,7 @@ export async function moveScheduleItem(
     },
   });
 
-  await touchDays(user.id, [item.date, date]);
+  await touchDays(user.id, [operationalDayOfRecord(item, reset), date]);
   revalidateAll();
   return succeed({ status: "moved", id });
 }
@@ -366,8 +432,9 @@ export async function deleteScheduleItem(
   if (!item) return fail("Item not found");
 
   const seriesId = item.seriesId ?? item.id;
+  const reset = resetFor(user);
   let deleted = 0;
-  const touched: DayKey[] = [item.date];
+  const touched: DayKey[] = [operationalDayOfRecord(item, reset)];
 
   if (scope === "one") {
     await prisma.scheduleItem.delete({ where: { id } });
@@ -378,8 +445,11 @@ export async function deleteScheduleItem(
         ? { userId: user.id, OR: [{ id: seriesId }, { seriesId }] }
         : { userId: user.id, date: { gte: item.date }, OR: [{ id: seriesId }, { seriesId }] };
 
-    const affected = await prisma.scheduleItem.findMany({ where, select: { date: true } });
-    touched.push(...affected.map((row) => row.date));
+    const affected = await prisma.scheduleItem.findMany({
+      where,
+      select: { date: true, startMinute: true },
+    });
+    touched.push(...affected.map((row) => operationalDayOfRecord(row, reset)));
     const result = await prisma.scheduleItem.deleteMany({ where });
     deleted = result.count;
   }
@@ -389,20 +459,34 @@ export async function deleteScheduleItem(
   return succeed({ deleted });
 }
 
-/** Push everything unfinished from a day to the next day. */
+/** Push everything unfinished from an operational day to the next one. */
 export async function rolloverUnfinished(from: DayKey): Promise<ActionResult<{ moved: number }>> {
   const user = await getCurrentUser();
+  const reset = resetFor(user);
   const to = shiftDay(from, 1);
   const items = await prisma.scheduleItem.findMany({
-    where: { userId: user.id, date: from, status: "planned" },
+    where: { userId: user.id, status: "planned", ...operationalDayWhere(from, reset) },
   });
 
   if (items.length === 0) return succeed({ moved: 0 });
 
-  await prisma.scheduleItem.updateMany({
-    where: { id: { in: items.map((item) => item.id) } },
-    data: { date: to, isException: true },
-  });
+  // One operational day later is one calendar date later for every record —
+  // the after-midnight tail keeps its small-hours time on the following
+  // night. Grouped so each distinct calendar date is one updateMany.
+  const byDate = new Map<DayKey, string[]>();
+  for (const item of items) {
+    const list = byDate.get(item.date) ?? [];
+    list.push(item.id);
+    byDate.set(item.date, list);
+  }
+  await prisma.$transaction(
+    [...byDate.entries()].map(([date, ids]) =>
+      prisma.scheduleItem.updateMany({
+        where: { id: { in: ids } },
+        data: { date: shiftDay(date, 1), isException: true },
+      }),
+    ),
+  );
 
   await touchDays(user.id, [from, to]);
   revalidateAll();
@@ -471,8 +555,12 @@ export async function applyScheduleTemplate(
   }
   if (!Array.isArray(items) || items.length === 0) return fail("Template has no items");
 
+  // The routine is stamped onto an OPERATIONAL day: rows timed before the
+  // daily reset (a night routine's 1:00 AM wind-down) store on the next
+  // calendar date, so the duplicate check spans both dates the day covers.
+  const reset = resetFor(user);
   const existing = await prisma.scheduleItem.findMany({
-    where: { userId: user.id, date, templateId: template.id },
+    where: { userId: user.id, templateId: template.id, ...operationalDayWhere(date, reset) },
     select: { id: true, sourceKey: true },
   });
 
@@ -510,21 +598,24 @@ export async function applyScheduleTemplate(
       }
 
       const result = await tx.scheduleItem.createMany({
-        data: plan.create.map(({ row, index, sourceKey }) => ({
-          userId: user.id,
-          title: row.title,
-          notes: row.notes ?? null,
-          date,
-          startMinute: row.allDay ? null : (row.startMinute ?? null),
-          endMinute: row.allDay ? null : (row.endMinute ?? null),
-          allDay: Boolean(row.allDay),
-          category: row.category ?? template.category,
-          priority: row.priority ?? "medium",
-          status: "planned",
-          sortOrder: offset + index,
-          templateId: template.id,
-          sourceKey,
-        })),
+        data: plan.create.map(({ row, index, sourceKey }) => {
+          const startMinute = row.allDay ? null : (row.startMinute ?? null);
+          return {
+            userId: user.id,
+            title: row.title,
+            notes: row.notes ?? null,
+            date: calendarDateForOperationalTime(date, startMinute, reset),
+            startMinute,
+            endMinute: row.allDay ? null : (row.endMinute ?? null),
+            allDay: Boolean(row.allDay),
+            category: row.category ?? template.category,
+            priority: row.priority ?? "medium",
+            status: "planned",
+            sortOrder: offset + index,
+            templateId: template.id,
+            sourceKey,
+          };
+        }),
       });
       created = result.count;
 

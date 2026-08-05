@@ -12,7 +12,7 @@ import { beforeAll, beforeEach, describe, expect, it } from "vitest";
 
 import { prisma } from "@/lib/prisma";
 import { shiftDay } from "@/lib/date";
-import { todayIn } from "@/lib/logic/schedule";
+import { scheduleSettingsFor } from "@/server/schedule";
 import { actAs, resetDatabase, twoUsers } from "./helpers";
 
 import {
@@ -48,7 +48,7 @@ let bob: User;
 /** A fixed day for rows whose date never meets "today". */
 const DAY = "2026-07-15";
 
-const aliceToday = () => todayIn(alice.timezone);
+const aliceToday = () => scheduleSettingsFor(alice).today;
 
 // --- tiny fixture builders (prisma-direct, no action layer) ------------------
 

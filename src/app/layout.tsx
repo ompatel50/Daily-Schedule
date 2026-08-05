@@ -15,9 +15,22 @@ export const metadata: Metadata = {
   manifest: "/manifest.webmanifest",
   description:
     "A private, local-first personal operating system: daily planner, habits, nutrition, workouts and health in one place.",
+  appleWebApp: {
+    capable: true,
+    title: "Personal OS",
+    statusBarStyle: "default",
+  },
+  icons: {
+    apple: "/icons/apple-touch-icon.png",
+  },
 };
 
 export const viewport: Viewport = {
+  width: "device-width",
+  initialScale: 1,
+  // Draw under the iPhone notch/home indicator; safe-area utilities in
+  // globals.css pad the shell back out where content must not sit.
+  viewportFit: "cover",
   themeColor: [
     { media: "(prefers-color-scheme: light)", color: "#fafbfc" },
     { media: "(prefers-color-scheme: dark)", color: "#0b1220" },

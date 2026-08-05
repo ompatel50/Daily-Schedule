@@ -167,7 +167,7 @@ export function MealList({ meals }: { meals: MealView[] }) {
                 <Button
                   size="icon-sm"
                   variant="ghost"
-                  className="opacity-0 transition-opacity group-hover:opacity-100"
+                  className="hover-reveal"
                   onClick={() => setEditing(entry)}
                   aria-label="Edit entry"
                 >
@@ -179,7 +179,7 @@ export function MealList({ meals }: { meals: MealView[] }) {
                     <Button
                       size="icon-sm"
                       variant="ghost"
-                      className="opacity-0 transition-opacity group-hover:opacity-100 data-[state=open]:opacity-100"
+                      className="hover-reveal"
                       aria-label="Entry actions"
                     >
                       <MoreHorizontal />

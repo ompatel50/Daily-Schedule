@@ -29,7 +29,8 @@ import {
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
 import { CATEGORY_META, PRIORITY_META, type Priority, type ScheduleCategory } from "@/lib/enums";
-import { formatTimeRange, shiftDay } from "@/lib/date";
+import { formatDay, formatTimeRange, shiftDay } from "@/lib/date";
+import { DEFAULT_DAY_RESET_MINUTE, groupedWithDayHint } from "@/lib/logic/operational-day";
 import { summarizeConflicts } from "@/lib/logic/planner";
 import { cn } from "@/lib/utils";
 import { confirmMoveToast } from "@/components/planner/move-conflict";
@@ -44,7 +45,14 @@ export interface ScheduleRowItem {
   id: string;
   title: string;
   notes: string | null;
+  /** Calendar date, `YYYY-MM-DD` — the real date of the item's times. */
   date: string;
+  /**
+   * The operational day this item groups under. Differs from `date` only for
+   * timed items before the user's daily reset (an after-midnight block
+   * belongs to the previous evening's schedule).
+   */
+  operationalDate: string;
   startMinute: number | null;
   endMinute: number | null;
   allDay: boolean;
@@ -64,6 +72,7 @@ export function ScheduleRow({
   compact = false,
   seriesActions = true,
   conflictsWith,
+  dayResetMinute = DEFAULT_DAY_RESET_MINUTE,
 }: {
   item: ScheduleRowItem;
   onEdit?: (item: ScheduleRowItem) => void;
@@ -77,6 +86,8 @@ export function ScheduleRow({
   seriesActions?: boolean;
   /** Titles of items whose time range overlaps this one. Informational only. */
   conflictsWith?: string[];
+  /** The user's daily reset, for the after-midnight grouping hint. */
+  dayResetMinute?: number;
 }) {
   const router = useRouter();
   const [pending, startTransition] = React.useTransition();
@@ -110,9 +121,13 @@ export function ScheduleRow({
 
   // "Push to tomorrow" can land on an occupied slot. The action reports the
   // clash without writing; the toast's "Move anyway" repeats it confirmed.
+  // "Tomorrow" is the next OPERATIONAL day — a 1:00 AM block pushes to the
+  // next night, not the same night again.
   const pushToTomorrow = (confirm = false) =>
     startTransition(async () => {
-      const result = await moveScheduleItem(item.id, shiftDay(item.date, 1), undefined, { confirm });
+      const result = await moveScheduleItem(item.id, shiftDay(item.operationalDate, 1), undefined, {
+        confirm,
+      });
       if (!result.ok) {
         toast.error(result.error ?? "Something went wrong");
         return;
@@ -142,7 +157,7 @@ export function ScheduleRow({
       {sortable && (
         <button
           type="button"
-          className="mt-0.5 cursor-grab text-muted-foreground/40 opacity-0 transition-opacity group-hover:opacity-100 active:cursor-grabbing"
+          className="mt-0.5 cursor-grab text-muted-foreground/40 hover-reveal active:cursor-grabbing"
           aria-label="Reorder"
           {...sortableState.attributes}
           {...sortableState.listeners}
@@ -153,7 +168,7 @@ export function ScheduleRow({
 
       <Checkbox
         checked={done}
-        className="mt-0.5"
+        className="touch-target mt-0.5"
         aria-label={done ? "Mark as not done" : "Mark as done"}
         onCheckedChange={() => act(() => toggleScheduleItem(item.id))}
       />
@@ -200,6 +215,12 @@ export function ScheduleRow({
           </p>
         )}
 
+        {item.operationalDate !== item.date && (
+          <p className="mt-1 text-[11px] text-muted-foreground">
+            {groupedWithDayHint(formatDay(item.operationalDate, "EEEE"), dayResetMinute)}
+          </p>
+        )}
+
         {!compact && item.notes && (
           <p className="mt-1 line-clamp-2 text-xs text-muted-foreground">{item.notes}</p>
         )}
@@ -210,7 +231,7 @@ export function ScheduleRow({
           <Button
             variant="ghost"
             size="icon-sm"
-            className="opacity-0 transition-opacity group-hover:opacity-100 data-[state=open]:opacity-100"
+            className="touch-target hover-reveal"
             aria-label="Item actions"
           >
             <MoreHorizontal />

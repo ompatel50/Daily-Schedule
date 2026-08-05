@@ -6,6 +6,7 @@ import { CalendarClock, TriangleAlert } from "lucide-react";
 import { EmptyState } from "@/components/shared/empty-state";
 import { CATEGORY_META, type ScheduleCategory } from "@/lib/enums";
 import { formatMinute, formatTimeRange, isToday, nowMinute } from "@/lib/date";
+import { DEFAULT_DAY_RESET_MINUTE, operationalSortMinute } from "@/lib/logic/operational-day";
 import { conflictsByItem, summarizeConflicts } from "@/lib/logic/planner";
 import { cn } from "@/lib/utils";
 import type { ScheduleRowItem } from "@/components/planner/schedule-row";
@@ -16,12 +17,17 @@ const PX_PER_MINUTE = 1.1;
  * Proportional day timeline. Overlapping blocks are laid out side by side via a
  * simple greedy column packer — enough for a personal schedule without pulling
  * in a calendar library.
+ *
+ * Positions use the operational day's extended axis: an after-midnight block
+ * renders past the 12:00 AM line at the bottom of the evening it belongs to,
+ * while its labels keep the real wall-clock time.
  */
 export function Timeline({
   date,
   items,
   startHour = 6,
   endHour = 22,
+  dayResetMinute = DEFAULT_DAY_RESET_MINUTE,
   todayKey,
   onSelect,
 }: {
@@ -29,31 +35,43 @@ export function Timeline({
   items: ScheduleRowItem[];
   startHour?: number;
   endHour?: number;
+  /** The user's daily reset (minutes after midnight). */
+  dayResetMinute?: number;
   /** "Today" in the user's timezone; see `DateNav`. */
   todayKey?: string;
   onSelect?: (item: ScheduleRowItem) => void;
 }) {
   const [now, setNow] = React.useState<number | null>(null);
 
-  // Client-only so SSR output stays deterministic.
+  // Client-only so SSR output stays deterministic. On the extended axis the
+  // small hours read as minutes past 1440, so at 1:00 AM the marker sits at
+  // the bottom of tonight's timeline instead of vanishing.
   React.useEffect(() => {
     if (!isToday(date, todayKey ?? undefined)) return;
-    setNow(nowMinute());
-    const interval = setInterval(() => setNow(nowMinute()), 60_000);
+    const tick = () => setNow(operationalSortMinute(nowMinute(), dayResetMinute));
+    tick();
+    const interval = setInterval(tick, 60_000);
     return () => clearInterval(interval);
-  }, [date, todayKey]);
+  }, [date, todayKey, dayResetMinute]);
 
   const timed = React.useMemo(
     () =>
       items
         .filter((item) => !item.allDay && item.startMinute !== null)
-        .map((item) => ({
-          ...item,
-          start: item.startMinute as number,
-          end: Math.max((item.endMinute ?? item.startMinute! + 30), item.startMinute! + 20),
-        }))
+        .map((item) => {
+          // A block's minutes all live on one calendar date, so the whole
+          // span shifts onto the extended axis together.
+          const shift =
+            dayResetMinute > 0 && (item.startMinute as number) < dayResetMinute ? 1440 : 0;
+          const start = (item.startMinute as number) + shift;
+          const end = Math.max(
+            (item.endMinute ?? (item.startMinute as number) + 30) + shift,
+            start + 20,
+          );
+          return { ...item, start, end };
+        })
         .sort((a, b) => a.start - b.start),
-    [items],
+    [items, dayResetMinute],
   );
 
   const bounds = React.useMemo(() => {

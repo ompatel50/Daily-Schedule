@@ -19,8 +19,10 @@ import {
 import { describeGoalTarget } from "@/lib/logic/goals";
 import { aggregateDay, aggregateDayAll, toDisplay, type HealthRowLike } from "@/lib/logic/health";
 import { emptySearchRows, type SearchRows } from "@/lib/logic/search";
+import { operationalDayWhere } from "@/lib/logic/operational-day";
 import {
   describeSchedule,
+  resetMinuteOf,
   resolveEffectiveSchedule,
   type DayStatus,
   type ScheduleMode,
@@ -63,30 +65,47 @@ export async function getWeekStart(): Promise<0 | 1> {
 
 // --- planner ----------------------------------------------------------------
 
+const SCHEDULE_ITEM_INCLUDE = {
+  tags: { include: { tag: true } },
+  workout: { select: { id: true, type: true, durationMin: true } },
+  habit: { select: { id: true, name: true, color: true } },
+} as const;
+
+// `nulls: "first"` pins the SQLite ordering the UI was built on: untimed
+// items sort ahead of timed ones. Postgres would otherwise put them last.
+// Date-ascending also gives operational order for free: an operational day's
+// after-midnight tail lives on the next calendar date, so it sorts last.
+const SCHEDULE_ITEM_ORDER = [
+  { date: "asc" },
+  { allDay: "desc" },
+  { startMinute: { sort: "asc", nulls: "first" } },
+  { sortOrder: "asc" },
+] as const;
+
 export async function getScheduleItems(from: DayKey, to: DayKey) {
   const user = await getCurrentUser();
   return prisma.scheduleItem.findMany({
     where: { userId: user.id, date: { gte: from, lte: to } },
-    include: {
-      tags: { include: { tag: true } },
-      workout: { select: { id: true, type: true, durationMin: true } },
-      habit: { select: { id: true, name: true, color: true } },
-    },
-    // `nulls: "first"` pins the SQLite ordering the UI was built on: untimed
-    // items sort ahead of timed ones. Postgres would otherwise put them last.
-    orderBy: [
-      { date: "asc" },
-      { allDay: "desc" },
-      { startMinute: { sort: "asc", nulls: "first" } },
-      { sortOrder: "asc" },
-    ],
+    include: SCHEDULE_ITEM_INCLUDE,
+    orderBy: [...SCHEDULE_ITEM_ORDER],
   });
 }
 
 export type ScheduleItemWithRelations = Awaited<ReturnType<typeof getScheduleItems>>[number];
 
+/**
+ * One OPERATIONAL day's schedule: the date's own records plus the
+ * after-midnight tail on the next calendar date (before the user's daily
+ * reset). Timestamps are reported untouched — grouping only.
+ */
 export async function getDaySchedule(date: DayKey) {
-  return getScheduleItems(date, date);
+  const user = await getCurrentUser();
+  const reset = resetMinuteOf(scheduleSettingsFor(user));
+  return prisma.scheduleItem.findMany({
+    where: { userId: user.id, ...operationalDayWhere(date, reset) },
+    include: SCHEDULE_ITEM_INCLUDE,
+    orderBy: [...SCHEDULE_ITEM_ORDER],
+  });
 }
 
 export async function getScheduleTemplates() {

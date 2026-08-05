@@ -34,7 +34,13 @@ function CommandDialog({
 }) {
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent className="overflow-hidden p-0 sm:max-w-2xl" hideClose>
+      {/* Top-anchored on phones: vertically centered would sit under the iOS
+          keyboard the moment the input focuses. The list gets the remaining
+          height and scrolls internally. */}
+      <DialogContent
+        className="top-[6dvh] max-h-[80dvh] translate-y-0 overflow-hidden p-0 sm:top-1/2 sm:max-h-[calc(100dvh-2rem)] sm:max-w-2xl sm:-translate-y-1/2"
+        hideClose
+      >
         <DialogTitle className="sr-only">{label}</DialogTitle>
         <Command
           className="[&_[cmdk-group-heading]]:px-3 [&_[cmdk-group-heading]]:py-1.5 [&_[cmdk-group-heading]]:text-xs [&_[cmdk-group-heading]]:font-semibold [&_[cmdk-group-heading]]:uppercase [&_[cmdk-group-heading]]:tracking-wide [&_[cmdk-group-heading]]:text-muted-foreground [&_[cmdk-input-wrapper]_svg]:h-5 [&_[cmdk-input-wrapper]_svg]:w-5 [&_[cmdk-item]]:px-3 [&_[cmdk-item]]:py-2.5 [&_[cmdk-item]_svg]:h-4 [&_[cmdk-item]_svg]:w-4"
@@ -71,7 +77,12 @@ const CommandList = React.forwardRef<
 >(({ className, ...props }, ref) => (
   <CommandPrimitive.List
     ref={ref}
-    className={cn("max-h-[420px] overflow-y-auto overflow-x-hidden p-1", className)}
+    className={cn(
+      // Bounded by the visible viewport on phones (minus the input row), a
+      // fixed comfortable height on desktop.
+      "max-h-[calc(80dvh-4rem)] overflow-y-auto overflow-x-hidden p-1 sm:max-h-[420px]",
+      className,
+    )}
     {...props}
   />
 ));

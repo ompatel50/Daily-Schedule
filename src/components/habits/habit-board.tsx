@@ -211,7 +211,7 @@ function HabitCard({
           variant="ghost"
           onClick={onEdit}
           aria-label={`Edit ${habit.name}`}
-          className="opacity-0 transition-opacity group-hover:opacity-100"
+          className="hover-reveal"
         >
           <Pencil />
         </Button>

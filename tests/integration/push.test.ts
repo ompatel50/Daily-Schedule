@@ -15,6 +15,7 @@ vi.mock("web-push", () => ({
 import webpush from "web-push";
 
 import { prisma } from "@/lib/prisma";
+import { scheduleSettingsFor } from "@/server/schedule";
 import { runScheduledReminderPush } from "@/server/push";
 import {
   getPushStatusAction,
@@ -185,7 +186,8 @@ describe("the scheduled runner", () => {
         reminderMinute: Math.max(0, nowMinute - 5),
       },
     });
-    const today = new Date().toISOString().slice(0, 10);
+    // The feed decides "today" as the operational day — the log must too.
+    const today = scheduleSettingsFor(alice).today;
     await prisma.habitLog.create({
       data: { userId: alice.id, habitId: habit.id, date: today, status: "done" },
     });

@@ -111,7 +111,7 @@ export function MealTemplateBar({
             size="icon-sm"
             variant="ghost"
             aria-label={`Rename ${template.name}`}
-            className="text-muted-foreground opacity-0 transition-opacity group-hover:opacity-100"
+            className="text-muted-foreground hover-reveal"
             onClick={() => setRenaming(template)}
           >
             <Pencil />
@@ -120,7 +120,7 @@ export function MealTemplateBar({
             size="icon-sm"
             variant="ghost"
             aria-label={`Delete ${template.name}`}
-            className="text-muted-foreground opacity-0 transition-opacity group-hover:opacity-100"
+            className="text-muted-foreground hover-reveal"
             onClick={() =>
               startTransition(async () => {
                 const result = await deleteMealTemplate(template.id);

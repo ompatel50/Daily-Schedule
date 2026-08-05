@@ -6,7 +6,8 @@ import {
   type AssistantMode,
   type AssistantStreamEvent,
 } from "@/lib/logic/assistant";
-import type { ScheduleSettings } from "@/lib/logic/schedule";
+import { resetMinuteOf, type ScheduleSettings } from "@/lib/logic/schedule";
+import { formatResetTime } from "@/lib/logic/operational-day";
 import type { CurrentUser } from "@/server/auth/current-user";
 import type { ProposalPreview } from "@/server/ai/proposals";
 import {
@@ -60,9 +61,18 @@ function systemPrompt(user: CurrentUser, settings: ScheduleSettings, mode: Assis
         ? "You are in DRAFT mode: you may propose changes with the propose_action tool. Proposals are previews only — nothing executes in draft mode, and you must say so."
         : "You are in CONFIRM mode: you may propose changes with the propose_action tool. A proposal executes ONLY after the user clicks Confirm on the preview card. Never claim a change happened — the user decides.";
 
+  // The operational day is resolved SERVER-SIDE and stated as fact. The model
+  // must never compute "today" from a wall clock — at 1:00 AM the answer
+  // would be wrong by design.
+  const reset = resetMinuteOf(settings);
+  const dateLine =
+    reset > 0
+      ? `Today is ${settings.today} in the user's timezone (${user.timezone}). The user's day resets at ${formatResetTime(reset)}, not midnight: this "today" already accounts for that, so treat it as the current day even in the small hours. "Yesterday" is the day before it, "tomorrow" the day after. When scheduling something after midnight for tonight (for example 1:00 AM), use tomorrow's calendar date with that time — it still belongs to today's schedule. The week starts on ${settings.weekStartsOn === 0 ? "Sunday" : "Monday"}. Units: ${user.unitSystem}.`
+      : `Today is ${settings.today} in the user's timezone (${user.timezone}). The week starts on ${settings.weekStartsOn === 0 ? "Sunday" : "Monday"}. Units: ${user.unitSystem}.`;
+
   return [
     "You are the private assistant inside Personal OS, the user's personal planner, finance, tasks, health and life-admin app. You run entirely on the user's own Ollama server; nothing leaves their machines.",
-    `Today is ${settings.today} in the user's timezone (${user.timezone}). The week starts on ${settings.weekStartsOn === 0 ? "Sunday" : "Monday"}. Units: ${user.unitSystem}.`,
+    dateLine,
     "Use the tools to look at the user's real data before answering questions about it. Never invent records, numbers or ids — if a tool fails or returns nothing, say so plainly. Cite what you looked at in passing (\"among your open tasks…\"), not as a list of tool names.",
     modeRule,
     "Be factual and non-judgemental: report what the data says, do not praise, scold, diagnose or give medical advice. Be concise — short paragraphs or short lists, plain text, no markdown tables or headers.",

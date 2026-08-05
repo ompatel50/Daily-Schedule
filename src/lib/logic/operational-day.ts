@@ -180,6 +180,41 @@ export function calendarDateForOperationalTime(
 }
 
 /**
+ * A Prisma-shaped filter matching exactly the planner records of one
+ * operational day — `belongsToOperationalDay` as SQL. Spread it into a
+ * `where` alongside `userId`.
+ */
+export function operationalDayWhere(
+  day: DayKey,
+  resetMinute: number,
+): { date: DayKey } | { OR: Array<Record<string, unknown>> } {
+  if (resetMinute <= 0) return { date: day };
+  return {
+    OR: [
+      { date: day, startMinute: null },
+      { date: day, startMinute: { gte: resetMinute } },
+      { date: shiftDay(day, 1), startMinute: { lt: resetMinute } },
+    ],
+  };
+}
+
+/** The range form: planner records of every operational day in `[from, to]`. */
+export function operationalRangeWhere(
+  from: DayKey,
+  to: DayKey,
+  resetMinute: number,
+): { date: { gte: DayKey; lte: DayKey } } | { OR: Array<Record<string, unknown>> } {
+  if (resetMinute <= 0) return { date: { gte: from, lte: to } };
+  return {
+    OR: [
+      { date: { gte: from, lte: to }, startMinute: null },
+      { date: { gte: from, lte: to }, startMinute: { gte: resetMinute } },
+      { date: { gte: shiftDay(from, 1), lte: shiftDay(to, 1) }, startMinute: { lt: resetMinute } },
+    ],
+  };
+}
+
+/**
  * The naive wall-clock string (`YYYY-MM-DDTHH:mm:00`) at which a reminder
  * minute on an operational day actually occurs. A 9:00 AM reminder for
  * operational Wednesday is Wednesday 9:00 AM; a 1:00 AM reminder is Thursday

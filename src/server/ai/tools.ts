@@ -31,7 +31,8 @@ import { getInboxPage } from "@/server/inbox";
 import { getWeeklyReview } from "@/server/insights";
 import { getDayOverview, getScheduleItems, searchEverything } from "@/server/queries";
 import { getReminderFeed, listReminders } from "@/server/reminders";
-import type { ScheduleSettings } from "@/lib/logic/schedule";
+import { resetMinuteOf, type ScheduleSettings } from "@/lib/logic/schedule";
+import { operationalDayOfRecord } from "@/lib/logic/operational-day";
 import { getTaskBoard } from "@/server/tasks";
 import { buildProposalPreview, type ProposalPreview } from "@/server/ai/proposals";
 
@@ -573,7 +574,7 @@ const listDocumentsTool: AssistantTool = {
 const scheduleTool: AssistantTool = {
   name: "get_schedule",
   description:
-    "Planner/calendar blocks in a date range (up to 31 days, defaults to the next 7 starting today). Times are minutes from midnight in the user's day.",
+    "Planner/calendar blocks in a date range of operational days (up to 31, defaults to the next 7 starting today). Times are minutes from midnight. `day` is the day a block belongs to under the user's daily reset; `date` is its real calendar date — they differ only for after-midnight blocks, which group with the previous day.",
   parameters: {
     type: "object",
     properties: {
@@ -586,12 +587,20 @@ const scheduleTool: AssistantTool = {
     const rawFrom = ((args as { from?: string }).from as DayKey) ?? ctx.settings.today;
     const rawTo = ((args as { to?: string }).to as DayKey) ?? shiftDay(rawFrom, 6);
     const { from, to } = clampRange(rawFrom, rawTo, ctx.settings.today, 31);
-    const items = await getScheduleItems(from, to);
+    // One calendar date past the range: each operational day's after-midnight
+    // tail lives on the next calendar date.
+    const reset = resetMinuteOf(ctx.settings);
+    const items = await getScheduleItems(from, shiftDay(to, 1));
+    const inRange = items.filter((item) => {
+      const day = operationalDayOfRecord(item, reset);
+      return day >= from && day <= to;
+    });
     return toolOk({
       from,
       to,
-      items: items.slice(0, 200).map((item) => ({
+      items: inRange.slice(0, 200).map((item) => ({
         id: item.id,
+        day: operationalDayOfRecord(item, reset),
         date: item.date,
         title: item.title,
         status: item.status,

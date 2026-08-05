@@ -28,6 +28,7 @@ export function PlannerView({
   weekStartsOn,
   dayStartHour,
   dayEndHour,
+  dayResetMinute,
   todayKey,
 }: {
   date: string;
@@ -37,6 +38,8 @@ export function PlannerView({
   weekStartsOn: 0 | 1;
   dayStartHour: number;
   dayEndHour: number;
+  /** The user's daily reset (minutes after midnight). */
+  dayResetMinute: number;
   /** "Today" in the user's timezone, so every grid highlights the same day. */
   todayKey: string;
 }) {
@@ -65,7 +68,10 @@ export function PlannerView({
       id: item.id,
       title: item.title,
       notes: item.notes,
-      date: item.date,
+      // The dialog edits the OPERATIONAL day — the day the user sees the item
+      // under. The server converts a pre-reset time back to its real calendar
+      // date on save, so the round trip is stable.
+      date: item.operationalDate,
       startMinute: item.startMinute,
       endMinute: item.endMinute,
       allDay: item.allDay,
@@ -108,7 +114,13 @@ export function PlannerView({
       {view === "day" && (
         <div className="grid gap-6 xl:grid-cols-5">
           <div className="xl:col-span-3">
-            <DaySchedule date={date} items={dayItems} surface="planner" todayKey={todayKey} />
+            <DaySchedule
+              date={date}
+              items={dayItems}
+              surface="planner"
+              todayKey={todayKey}
+              dayResetMinute={dayResetMinute}
+            />
           </div>
           <div className="xl:col-span-2">
             <Timeline
@@ -116,6 +128,7 @@ export function PlannerView({
               items={dayItems}
               startHour={dayStartHour}
               endHour={dayEndHour}
+              dayResetMinute={dayResetMinute}
               todayKey={todayKey}
               onSelect={open}
             />

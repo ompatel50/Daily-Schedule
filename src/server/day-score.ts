@@ -19,7 +19,8 @@ import {
   type ScoreExclusion,
   type ScoreOpportunity,
 } from "@/lib/logic/day-score";
-import { getStatusForDate, type ScheduleSettings } from "@/lib/logic/schedule";
+import { operationalDayWhere } from "@/lib/logic/operational-day";
+import { getStatusForDate, resetMinuteOf, type ScheduleSettings } from "@/lib/logic/schedule";
 import { evaluateGoalsForDate } from "@/server/goals";
 import { loadSchedules, toSchedulable } from "@/server/schedule";
 
@@ -70,8 +71,11 @@ async function getDayScoreImpl(
   const isToday = date === settings.today;
 
   // --- planner --------------------------------------------------------------
+  // The operational day's records: its own date plus the after-midnight tail
+  // on the next calendar date, so a 1:00 AM block scores with the evening it
+  // belongs to.
   const items = await prisma.scheduleItem.findMany({
-    where: { userId, date },
+    where: { userId, ...operationalDayWhere(date, resetMinuteOf(settings)) },
     select: { id: true, title: true, status: true, priority: true },
   });
 
