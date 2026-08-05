@@ -73,7 +73,7 @@ export function Topbar({
           <Command />
         </Button>
 
-        <Button size="sm" className="touch-target gap-1.5" onClick={() => openQuickAdd()}>
+        <Button size="sm" className="touch-target gap-1.5" aria-label="Quick add" onClick={() => openQuickAdd()}>
           <Plus />
           <span className="hidden sm:inline">Add</span>
         </Button>

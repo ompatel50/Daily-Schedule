@@ -28,7 +28,6 @@ import {
   CommandInput,
   CommandItem,
   CommandList,
-  CommandSeparator,
   CommandShortcut,
 } from "@/components/ui/command";
 import { readUIState, writeUIState } from "@/lib/client-state";
@@ -289,7 +288,6 @@ export function CommandPalette() {
           ))}
         </CommandGroup>
 
-        <CommandSeparator />
 
         <CommandGroup heading="Go to">
           {NAV_ITEMS.map((item) => (
@@ -305,7 +303,6 @@ export function CommandPalette() {
           ))}
         </CommandGroup>
 
-        <CommandSeparator />
 
         <CommandGroup heading="Preferences">
           <CommandItem

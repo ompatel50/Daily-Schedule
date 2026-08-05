@@ -69,10 +69,14 @@ test.describe("PWA meta", () => {
     expect(viewport).toContain("viewport-fit=cover");
     expect(viewport).toContain("width=device-width");
 
-    await expect(page.locator('meta[name="apple-mobile-web-app-capable"]').first()).toHaveAttribute(
+    // Next emits the modern name for appleWebApp.capable.
+    await expect(page.locator('meta[name="mobile-web-app-capable"]').first()).toHaveAttribute(
       "content",
       "yes",
     );
+    await expect(
+      page.locator('meta[name="apple-mobile-web-app-title"]').first(),
+    ).toHaveAttribute("content", "Personal OS");
     await expect(page.locator('link[rel="apple-touch-icon"]').first()).toHaveAttribute(
       "href",
       /apple-touch-icon/,

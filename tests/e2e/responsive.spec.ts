@@ -37,9 +37,21 @@ const ROUTES = [
 ];
 
 async function measureOverflow(page: import("@playwright/test").Page): Promise<number> {
-  return page.evaluate(() => {
-    const root = document.scrollingElement!;
-    return root.scrollWidth - root.clientWidth;
+  // Charts animate to their measured width on mount, and under full parallel
+  // load that window stretches; a mid-animation measurement reads a
+  // transiently wide document. Poll briefly: a real overflow never resolves,
+  // a mount animation does.
+  return page.evaluate(async () => {
+    const measure = () => {
+      const root = document.scrollingElement!;
+      return root.scrollWidth - root.clientWidth;
+    };
+    let overflow = measure();
+    for (let attempt = 0; attempt < 8 && overflow > 0; attempt += 1) {
+      await new Promise((resolve) => setTimeout(resolve, 250));
+      overflow = measure();
+    }
+    return overflow;
   });
 }
 

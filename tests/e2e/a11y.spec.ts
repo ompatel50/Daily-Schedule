@@ -1,12 +1,16 @@
 import { readFileSync } from "node:fs";
-import { createRequire } from "node:module";
+import path from "node:path";
 
 import { expect, test } from "@playwright/test";
 
 import { STORAGE } from "./auth";
 
-const require = createRequire(import.meta.url);
-const AXE_SOURCE = readFileSync(require.resolve("axe-core/axe.min.js"), "utf8");
+// Plain path, not require.resolve: Playwright's spec transform runs these
+// files in an ESM scope where `require` does not exist.
+const AXE_SOURCE = readFileSync(
+  path.join(process.cwd(), "node_modules", "axe-core", "axe.min.js"),
+  "utf8",
+);
 
 interface AxeViolation {
   id: string;

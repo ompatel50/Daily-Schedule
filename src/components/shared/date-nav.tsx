@@ -7,6 +7,7 @@ import { ChevronLeft, ChevronRight } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import {
   type DayKey,
+  formatDay,
   formatDayLong,
   formatMonthTitle,
   formatWeekRange,
@@ -97,13 +98,19 @@ export function DateNav({
       : scope === "week"
         ? formatWeekRange(date, weekStartsOn)
         : formatDayLong(date);
+  // "Wednesday, August 5, 2026" alone is wider than a 320px header allows;
+  // phones get "Wed, Aug 5" and the full form returns from `sm:` up.
+  const shortTitle = scope === "day" ? formatDay(date, "EEE, MMM d") : title;
 
   return (
-    <div className="flex items-center gap-1.5">
+    <div className="flex flex-wrap items-center gap-1.5">
       <Button variant="outline" size="icon-sm" onClick={() => step(-1)} aria-label="Previous">
         <ChevronLeft />
       </Button>
-      <div className="min-w-[190px] px-1 text-center text-sm font-medium">{title}</div>
+      <div className="min-w-0 px-1 text-center text-sm font-medium sm:min-w-[190px]">
+        <span className="sm:hidden">{shortTitle}</span>
+        <span className="hidden sm:inline">{title}</span>
+      </div>
       <Button variant="outline" size="icon-sm" onClick={() => step(1)} aria-label="Next">
         <ChevronRight />
       </Button>

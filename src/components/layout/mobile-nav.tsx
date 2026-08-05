@@ -49,7 +49,14 @@ export function MobileNav({ account }: { account?: { name: string; email: string
           <Menu />
         </Button>
       </SheetTrigger>
-      <SheetContent side="left" className="px-0 pt-safe" aria-label="Navigation">
+      {/* aria-labelledby wins over aria-label, and Radix wires it to the
+          visible title. Clear it so screen readers announce "Navigation". */}
+      <SheetContent
+        side="left"
+        className="px-0 pt-safe"
+        aria-label="Navigation"
+        aria-labelledby={undefined}
+      >
         <SheetHeader className="border-b px-4 pb-3 pt-4">
           <SheetTitle className="flex items-center gap-2">
             <Sparkles className="h-4 w-4 text-primary" aria-hidden />

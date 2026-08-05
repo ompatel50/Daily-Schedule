@@ -36,6 +36,8 @@ Step-by-step documentation lives in `docs/`, written to be followed exactly:
 | [`docs/security-and-privacy.md`](docs/security-and-privacy.md) | Per-account isolation guarantees, rate limits, headers, logs, and the off switches |
 | [`docs/troubleshooting.md`](docs/troubleshooting.md) | Symptoms → causes → fixes |
 | [`docs/performance-measurement.md`](docs/performance-measurement.md) | How the performance numbers were measured, and how to repeat them |
+| [`docs/operational-day.md`](docs/operational-day.md) | The daily reset time: how a 4:00 AM day boundary works, what regroups and what never does |
+| [`docs/responsive-and-pwa.md`](docs/responsive-and-pwa.md) | The phone experience: navigation drawer, responsive architecture, iPhone home-screen install, offline behaviour |
 
 ## Quick start
 
@@ -109,6 +111,20 @@ locally with zero configuration.
 ---
 
 ## What's in it
+
+**Days end when yours do.** A configurable **daily reset time** (Settings,
+default 4:00 AM) makes the whole app treat the small hours as the tail of the
+previous day: a 1:00 AM planner block, a habit ticked after midnight, and
+"what's left today" in the assistant all belong to the evening's schedule,
+while every actual timestamp stays untouched and reminders still fire at
+their real times. See [`docs/operational-day.md`](docs/operational-day.md).
+
+**It fits in a pocket.** Every surface works at iPhone widths — a slide-over
+navigation drawer, touch-sized controls, phone-first dialogs, a stacked week
+view, a native-feeling assistant chat — and the app installs to the iPhone
+home screen as a PWA with honest offline behaviour (private data is never
+cached). Desktop keeps its sidebar, drag & drop and keyboard-first speed.
+See [`docs/responsive-and-pwa.md`](docs/responsive-and-pwa.md).
 
 ### 1. Planner — `/planner`
 

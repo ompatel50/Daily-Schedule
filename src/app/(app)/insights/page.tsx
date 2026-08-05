@@ -191,8 +191,10 @@ export default async function InsightsPage() {
         />
       </div>
 
+      {/* min-w-0: grid items default to min-content width, and one wide
+          intrinsic child would otherwise prop the column past a phone. */}
       <div className="grid gap-6 lg:grid-cols-3">
-        <div className="space-y-6 lg:col-span-2">
+        <div className="min-w-0 space-y-6 lg:col-span-2">
           <SectionCard
             title={`Weekly review · ${review.label}`}
             icon={Sparkles}
@@ -209,7 +211,7 @@ export default async function InsightsPage() {
 
               <div className="space-y-1.5">
                 {review.areas.map((area) => (
-                  <div key={area.key} className="flex items-center gap-3 text-sm">
+                  <div key={area.key} className="flex flex-wrap items-center gap-x-3 gap-y-0.5 text-sm">
                     <span className="w-20 shrink-0 text-muted-foreground">{area.label}</span>
                     <span className="tabular w-24 shrink-0">
                       {area.scheduled === 0 ? "—" : `${area.completed} of ${area.scheduled}`}
@@ -346,7 +348,7 @@ export default async function InsightsPage() {
           </div>
         </div>
 
-        <div className="space-y-6">
+        <div className="min-w-0 space-y-6">
           <SectionCard title="Focus next" icon={Lightbulb} accent="text-amber-500">
             <p className="rounded-lg bg-amber-500/10 px-3 py-3 text-sm">{focus}</p>
           </SectionCard>

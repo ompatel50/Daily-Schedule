@@ -4655,3 +4655,139 @@ health signals in the needs-attention digest), each landing as both a page
 and a richer tool. The refused write kinds above are the list to reach for if
 usage asks for them — take the cheapest one (excusing a habit day) first,
 since it is one schema and one dispatch arm.
+
+## Phase C — the operational day, the phone, and the polish pass
+
+One phase, three promises: the app's day now ends when the user's does
+(a configurable **daily reset**, default 4:00 AM), every surface earns its
+keep at iPhone widths, and the seams — loading, errors, offline, undo, the
+palette — stop being seams. No new life-management section, no new provider,
+no change to the assistant's confirmation model, backups, or Apple Health
+semantics.
+
+### The operational day
+
+`User.dayResetMinute` (additive migration, default 240) plus one authority:
+`src/lib/logic/operational-day.ts` — instant→operational date, date→real
+start/end instants (DST-safe through the existing two-pass wall-clock
+resolver: the day containing spring-forward is 23 real hours, fall-back 25),
+grouping predicates, Prisma `where` builders, the write-path inverse, an
+extended sort axis (1:00 AM → minute 1500), reminder wall-clocks, and the
+display hint. `scheduleSettingsFor()` now emits the operational **today**, so
+every read model, action and assistant tool inherited the boundary from the
+one producer it already used — the injected-`settings.today` architecture
+paid for itself in an afternoon.
+
+The planner is the one store whose records carry both a date and a time, so
+it converts at the boundary in both directions: a block entered as 1:00 AM
+while planning Wednesday is stored on Thursday's calendar date (its real
+moment, timestamp untouched) and resolves back under Wednesday on every read
+— day list, week/month grids, day score, summaries, the assistant's
+`get_schedule` (which now reports `day` and `date` separately), rollover,
+routines, and "push to tomorrow" (one night forward, not zero). Re-timing a
+series across the boundary shifts each occurrence's stored date so the series
+stays on its operational days. After-midnight rows say "Grouped with
+Wednesday because your day resets at 4:00 AM"; the timeline extends past the
+12 AM line and parks the now-marker there in the small hours.
+
+What deliberately did **not** move: reminders (a 1:00 AM reminder fires at
+1:00 AM on its true calendar date — `operationalWallClock` dates the
+occurrence, the push runner's same-calendar-date gate still works, and
+`DUE_REMINDER_MINUTE` at 9:00 AM can never precede the 6:00 AM reset
+ceiling); finance transactions (date-only bank records); raw Apple Health
+data (sleep keeps Apple's the-night-belongs-to-the-morning rule); and the
+insights trailing-window facts (weekly aggregates where a boundary record is
+noise). `docs/operational-day.md` records the full split.
+
+The 3 AM lesson: the first full integration run after the switch failed five
+tests — the suites derived "today" as the calendar day while the app now
+answers operationally, and the run happened at 3:25 AM New York time, inside
+the reset window. The helpers now resolve today through
+`scheduleSettingsFor` exactly like the app, which is itself the regression
+test: any future drift between the two definitions fails CI for four hours
+every night.
+
+### The phone
+
+Below `lg` the sidebar yields to a safe-area-aware sticky header whose menu
+button opens a slide-over drawer on a new `Sheet` primitive (Radix Dialog
+underneath: focus trap, focus return, Escape, backdrop, scroll lock,
+`aria-modal` — all free; the drawer adds close-on-navigate and the grouped
+destination list with account + sign-out). `viewport-fit=cover` with
+`pt/pb/px-safe` utilities, phone-first `DialogContent` on `dvh` (nothing
+hides under the iOS keyboard), a top-anchored palette, 16px inputs on touch
+(no iOS zoom), `.touch-target` (~44px hit areas without visual change) and
+`.hover-reveal` (hover-only row controls become always-visible on touch —
+one utility replaced ten hand-rolled `opacity-0 group-hover` sites).
+
+The planner: week view stacks into seven readable day sections below `md`
+(drag & drop stays desktop; explicit controls move things on phones), month
+cells drop to category dots below `sm`, the day view is the focused
+single-day experience the spec asked for. The assistant reads as a native
+chat: dvh-bounded transcript, auto-growing composer, 92%-width wrapped
+bubbles, 44px confirm/cancel, collapsed audit tool lists, a memoized
+activity panel against streaming re-renders. The two real tables (Health
+sleep and workouts) become stacked record cards on phones and keep their
+desktop tables. Finance/inbox/documents/tasks rows wrap their control
+clusters under the title instead of squeezing it; the workout template
+editor scrolls its seven-column grid inside the dialog; settings panels,
+nutrition rows and the import wizard wrap and stack.
+
+### PWA, honestly
+
+The manifest gains a stable `id`; `apple-touch-icon` and Apple web-app
+metadata land; the service worker gains a deliberately narrow cache —
+content-hashed `/_next/static`, icons, manifest, **nothing else**: never
+HTML, never `/api`, never anything authenticated, because a private app must
+not risk serving one account's cached bytes to another. Updates wait: a new
+worker parks in `waiting`, the app shows one "new version ready" toast, and
+Reload posts `SKIP_WAITING`. Offline is detected and announced (slim banner,
+"back online" toast), typed input survives failures, and **no writes are
+queued, by design** — a replayed finance change is a correctness risk, not a
+convenience. Sign-out sweeps the session-scoped UI memory.
+
+### Quality of life
+
+Durable Undo where the inverse is real: task completion (reopenTask) and
+inbox done/archive (status back to open) — and deliberately **no** Undo on a
+repeating task's completion, because the advanced due date cannot be
+restored. Page-shaped loading skeletons for eight routes; an in-shell
+not-found page; the palette gains capture/log-habit actions, session-scoped
+recents (ids only), and loses its duplicate navigation entry; dashboard
+quick actions add the assistant; Settings' timezone becomes a datalist of
+real zone names next to the new daily-reset time input.
+
+### Verification
+
+* Typecheck, lint, unit **1,097 → 1,128**, integration **344 → 354**,
+  migration diff, production build: all green. Bundle sizes moved noise-level
+  (planner 219→221 kB first-load, assistant 149→147 kB); charts were already
+  lazy and the shell's new pieces are a drawer and a banner.
+* Full browser suite against the production build: **114 passed, 0
+  failed** (2 skipped — the pre-existing documented pair), across 20 spec
+  files, up from 15: drawer behaviour (focus
+  trap/return, Escape, backdrop, scroll lock, close-on-navigate,
+  `aria-current`), horizontal-overflow sweeps at 320/375/390/430 px plus
+  tablet portrait across every major route and all three planner views, the
+  1:00 AM grouping round trip through the real UI (create → grouped under
+  the planned day with hint → absent from the next day → deleted), PWA
+  manifest/icons/worker/meta assertions, and an axe pass (serious+critical)
+  over six routes plus the open drawer and palette.
+* Flake classes found and handled en route: local e2e needs
+  `AUTH_TRUST_HOST=true` exactly as CI sets it, or every sign-in times out;
+  chart-mount animation can transiently widen a page under parallel load, so
+  the overflow measurement polls until a real overflow would remain; and one
+  run crossed 4:00 AM New York mid-suite and caught a hydration flicker at
+  the exact day-flip instant — the same once-a-day, seconds-wide race the
+  app always had at midnight, now living at the reset time. The axe pass
+  also paid for itself immediately: it caught the header's Add button losing
+  its accessible name below `sm`, a `role=separator` inside the palette's
+  listbox, and the drawer being announced by its brand title instead of
+  "Navigation" (aria-labelledby beats aria-label).
+
+### Exact next step
+
+Live with it on a phone for a week. The obvious follow-ups if usage asks:
+a bottom-sheet presentation for the biggest form dialogs (the primitive is
+already there), palette recents surfacing habit names once that feels safe,
+and the excused-habit-day assistant write kind Phase B.1 queued first.

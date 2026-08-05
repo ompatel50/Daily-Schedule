@@ -113,7 +113,7 @@ export default async function NutritionPage({
         title="Nutrition"
         description="Search, log, and keep an eye on the trend — not just the day."
         actions={
-          <div className="flex items-center gap-2">
+          <div className="flex flex-wrap items-center gap-2">
             <CustomFoodDialog />
             <DateNav date={date} weekStartsOn={user.weekStartsOn === 0 ? 0 : 1} />
           </div>
