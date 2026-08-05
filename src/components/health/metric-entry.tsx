@@ -98,7 +98,8 @@ export function MetricEntry({
           </Select>
         </div>
 
-        <div className="w-32 space-y-1.5">
+        {/* Grows to fill its own wrapped row on phones; fixed on wide screens. */}
+        <div className="min-w-[8rem] flex-1 space-y-1.5 sm:w-32 sm:flex-none">
           <Label htmlFor="metric-value">Value {unitLabel && `(${unitLabel})`}</Label>
           <Input
             id="metric-value"
@@ -123,7 +124,7 @@ export function MetricEntry({
       {withDetails && (
         <>
           <div className="flex flex-wrap items-end gap-2">
-            <div className="w-40 space-y-1.5">
+            <div className="min-w-[10rem] flex-1 space-y-1.5 sm:w-40 sm:flex-none">
               <Label htmlFor="metric-date">Date</Label>
               <Input
                 id="metric-date"
@@ -133,7 +134,7 @@ export function MetricEntry({
                 onChange={(event) => setEntryDate(event.target.value)}
               />
             </div>
-            <div className="w-32 space-y-1.5">
+            <div className="min-w-[8rem] flex-1 space-y-1.5 sm:w-32 sm:flex-none">
               <Label htmlFor="metric-time">Time (optional)</Label>
               <Input
                 id="metric-time"
@@ -154,8 +155,8 @@ export function MetricEntry({
               />
             </div>
           </div>
-          <div className="flex items-center justify-between gap-3">
-            <p className="text-xs text-muted-foreground">
+          <div className="flex flex-wrap items-center justify-between gap-3">
+            <p className="min-w-[12rem] flex-1 text-xs text-muted-foreground">
               Sets the day&apos;s manual value for the metric — logging again replaces it. Imported
               records are never overwritten.
             </p>

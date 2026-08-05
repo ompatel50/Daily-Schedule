@@ -196,7 +196,8 @@ export function BackupPanel() {
       >
         <div className="space-y-4">
           <div className="flex flex-wrap items-end gap-3">
-            <div className="flex-1">
+            {/* min-w keeps the copy readable at 320px — the button wraps below. */}
+            <div className="min-w-[12rem] flex-1">
               <p className="text-sm font-medium">Full JSON backup</p>
               <p className="text-xs text-muted-foreground">
                 Everything, restorable back into this app.
@@ -325,7 +326,7 @@ export function BackupPanel() {
 
       <SectionCard title="Danger zone" icon={AlertTriangle} accent="text-destructive">
         <div className="flex flex-wrap items-center justify-between gap-3">
-          <div>
+          <div className="min-w-[12rem] flex-1">
             <p className="text-sm font-medium">Delete all data</p>
             <p className="text-xs text-muted-foreground">
               Clears every record in the local database. This cannot be undone.

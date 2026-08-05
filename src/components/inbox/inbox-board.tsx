@@ -128,7 +128,29 @@ export function InboxBoard({
     startTransition(async () => {
       const result = await setInboxItemStatus(item.id, status);
       if (result.ok) {
-        toast.success(message);
+        // Done/archived keep the record, so Undo is a durable rollback: it
+        // calls the same status action back to "open" (and clears the
+        // optimistic tick, or the row would come back pre-checked).
+        const undo = () =>
+          startTransition(async () => {
+            const undone = await setInboxItemStatus(item.id, "open");
+            if (undone.ok) {
+              toast.success("Back in the inbox");
+              setResolving((state) => {
+                const { [item.id]: _removed, ...rest } = state;
+                return rest;
+              });
+            } else {
+              toast.error(undone.error);
+            }
+            router.refresh();
+          });
+        toast.success(
+          message,
+          status === "done" || status === "archived"
+            ? { action: { label: "Undo", onClick: undo } }
+            : undefined,
+        );
       } else {
         toast.error(result.error);
         setResolving((state) => {
@@ -176,68 +198,82 @@ export function InboxBoard({
                 {open.map((item) => {
                   const checked = Boolean(resolving[item.id]);
                   return (
-                    <div key={item.id} className="flex items-start gap-3 rounded-lg border px-3 py-2">
+                    // The trailing controls wrap under the title at phone
+                    // widths instead of squeezing it to nothing.
+                    <div
+                      key={item.id}
+                      className="flex flex-wrap items-start gap-x-3 gap-y-1 rounded-lg border px-3 py-2"
+                    >
                       <Checkbox
-                        className="mt-0.5 rounded-full"
+                        className="touch-target mt-0.5 rounded-full"
                         checked={checked}
                         disabled={checked}
                         onCheckedChange={() => setStatus(item, "done", "Done")}
                         aria-label={`Mark "${item.title}" done`}
                       />
-                      <div className="min-w-0 flex-1">
-                        <p className={cn("text-sm", checked && "text-muted-foreground line-through")}>
+                      <div className="min-w-0 flex-[1_1_9rem]">
+                        <p
+                          className={cn(
+                            "break-words text-sm",
+                            checked && "text-muted-foreground line-through",
+                          )}
+                        >
                           {item.title}
                         </p>
                         {item.notes && (
                           <p className="truncate text-xs text-muted-foreground">{item.notes}</p>
                         )}
                       </div>
-                      <span className="mt-0.5 shrink-0 text-xs text-muted-foreground">
-                        {relativeDayLabel(item.createdDay, today)}
-                      </span>
-                      {item.taskId === null ? (
+                      <div className="ml-auto flex items-center gap-1">
+                        <span className="text-xs text-muted-foreground">
+                          {relativeDayLabel(item.createdDay, today)}
+                        </span>
+                        {item.taskId === null ? (
+                          <Tooltip>
+                            <TooltipTrigger asChild>
+                              <Button
+                                size="icon-sm"
+                                variant="ghost"
+                                className="touch-target"
+                                aria-label={`Make ${item.title} a task`}
+                                onClick={() =>
+                                  setConverting({
+                                    id: item.id,
+                                    title: item.title,
+                                    notes: item.notes,
+                                  })
+                                }
+                              >
+                                <ListTodo />
+                              </Button>
+                            </TooltipTrigger>
+                            <TooltipContent>Make a task</TooltipContent>
+                          </Tooltip>
+                        ) : (
+                          <Badge variant="outline" className="text-[10px]">
+                            Task
+                          </Badge>
+                        )}
                         <Tooltip>
                           <TooltipTrigger asChild>
                             <Button
                               size="icon-sm"
                               variant="ghost"
-                              aria-label={`Make ${item.title} a task`}
-                              onClick={() =>
-                                setConverting({
-                                  id: item.id,
-                                  title: item.title,
-                                  notes: item.notes,
-                                })
-                              }
+                              className="touch-target"
+                              aria-label={`Archive ${item.title}`}
+                              onClick={() => setStatus(item, "archived", "Archived")}
                             >
-                              <ListTodo />
+                              <Archive />
                             </Button>
                           </TooltipTrigger>
-                          <TooltipContent>Make a task</TooltipContent>
+                          <TooltipContent>Archive</TooltipContent>
                         </Tooltip>
-                      ) : (
-                        <Badge variant="outline" className="mt-0.5 shrink-0 text-[10px]">
-                          Task
-                        </Badge>
-                      )}
-                      <Tooltip>
-                        <TooltipTrigger asChild>
-                          <Button
-                            size="icon-sm"
-                            variant="ghost"
-                            aria-label={`Archive ${item.title}`}
-                            onClick={() => setStatus(item, "archived", "Archived")}
-                          >
-                            <Archive />
-                          </Button>
-                        </TooltipTrigger>
-                        <TooltipContent>Archive</TooltipContent>
-                      </Tooltip>
-                      <ItemMenu
-                        title={item.title}
-                        onEdit={() => openEdit(item)}
-                        onDelete={() => run(() => deleteInboxItem(item.id), "Item deleted")}
-                      />
+                        <ItemMenu
+                          title={item.title}
+                          onEdit={() => openEdit(item)}
+                          onDelete={() => run(() => deleteInboxItem(item.id), "Item deleted")}
+                        />
+                      </div>
                     </div>
                   );
                 })}
@@ -262,68 +298,71 @@ export function InboxBoard({
                 {resolved.map((item) => {
                   const meta = INBOX_STATUS_META[item.status];
                   return (
-                    <div key={item.id} className="flex items-center gap-2 rounded-md px-1 py-1">
+                    <div
+                      key={item.id}
+                      className="flex flex-wrap items-center gap-x-2 gap-y-0.5 rounded-md px-1 py-1"
+                    >
                       <span
                         className={cn(
-                          "min-w-0 flex-1 truncate text-sm text-muted-foreground",
+                          "min-w-0 flex-[1_1_8rem] truncate text-sm text-muted-foreground",
                           item.status === "done" && "line-through",
                         )}
                       >
                         {item.title}
                       </span>
-                      {item.taskId !== null ? (
-                        <Badge variant="outline" className="shrink-0 gap-1 text-[10px]">
-                          <ListTodo className="h-2.5 w-2.5" aria-hidden="true" /> Became a task
-                        </Badge>
-                      ) : (
-                        meta && (
-                          <Badge
-                            variant="outline"
-                            className={cn("shrink-0 text-[10px]", meta.chip)}
-                          >
-                            {meta.label}
+                      <div className="ml-auto flex items-center gap-1.5">
+                        {item.taskId !== null ? (
+                          <Badge variant="outline" className="gap-1 text-[10px]">
+                            <ListTodo className="h-2.5 w-2.5" aria-hidden="true" /> Became a task
                           </Badge>
-                        )
-                      )}
-                      <span className="shrink-0 text-xs text-muted-foreground">
-                        {relativeDayLabel(item.resolvedDay, today)}
-                      </span>
-                      <Tooltip>
-                        <TooltipTrigger asChild>
+                        ) : (
+                          meta && (
+                            <Badge variant="outline" className={cn("text-[10px]", meta.chip)}>
+                              {meta.label}
+                            </Badge>
+                          )
+                        )}
+                        <span className="text-xs text-muted-foreground">
+                          {relativeDayLabel(item.resolvedDay, today)}
+                        </span>
+                        <Tooltip>
+                          <TooltipTrigger asChild>
+                            <Button
+                              size="icon-sm"
+                              variant="ghost"
+                              className="touch-target"
+                              aria-label={`Reopen ${item.title}`}
+                              onClick={() => setStatus(item, "open", "Back in the inbox")}
+                            >
+                              <Undo2 />
+                            </Button>
+                          </TooltipTrigger>
+                          <TooltipContent>Reopen</TooltipContent>
+                        </Tooltip>
+                        {confirmingDeleteId === item.id ? (
+                          <Button
+                            size="sm"
+                            variant="destructive"
+                            className="touch-target h-7 px-2 text-xs"
+                            onClick={() => {
+                              setConfirmingDeleteId(null);
+                              run(() => deleteInboxItem(item.id), "Item deleted");
+                            }}
+                          >
+                            Sure?
+                          </Button>
+                        ) : (
                           <Button
                             size="icon-sm"
                             variant="ghost"
-                            aria-label={`Reopen ${item.title}`}
-                            onClick={() => setStatus(item, "open", "Back in the inbox")}
+                            className="touch-target text-muted-foreground hover:text-destructive"
+                            aria-label={`Delete ${item.title}`}
+                            onClick={() => setConfirmingDeleteId(item.id)}
                           >
-                            <Undo2 />
+                            <Trash2 />
                           </Button>
-                        </TooltipTrigger>
-                        <TooltipContent>Reopen</TooltipContent>
-                      </Tooltip>
-                      {confirmingDeleteId === item.id ? (
-                        <Button
-                          size="sm"
-                          variant="destructive"
-                          className="h-7 px-2 text-xs"
-                          onClick={() => {
-                            setConfirmingDeleteId(null);
-                            run(() => deleteInboxItem(item.id), "Item deleted");
-                          }}
-                        >
-                          Sure?
-                        </Button>
-                      ) : (
-                        <Button
-                          size="icon-sm"
-                          variant="ghost"
-                          className="text-muted-foreground hover:text-destructive"
-                          aria-label={`Delete ${item.title}`}
-                          onClick={() => setConfirmingDeleteId(item.id)}
-                        >
-                          <Trash2 />
-                        </Button>
-                      )}
+                        )}
+                      </div>
                     </div>
                   );
                 })}
@@ -357,7 +396,7 @@ function ItemMenu({
   return (
     <DropdownMenu onOpenChange={(open) => !open && setConfirmingDelete(false)}>
       <DropdownMenuTrigger asChild>
-        <Button size="icon-sm" variant="ghost" aria-label={`Actions for ${title}`}>
+        <Button size="icon-sm" variant="ghost" className="touch-target" aria-label={`Actions for ${title}`}>
           <MoreHorizontal />
         </Button>
       </DropdownMenuTrigger>

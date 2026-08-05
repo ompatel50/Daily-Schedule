@@ -131,8 +131,8 @@ export function DemoPanel({
       <div className="space-y-3">
         {demoLoaded ? (
           <div className="flex flex-wrap items-center justify-between gap-3">
-            <div>
-              <div className="flex items-center gap-2 text-sm font-medium">
+            <div className="min-w-[12rem] flex-1">
+              <div className="flex flex-wrap items-center gap-2 text-sm font-medium">
                 Sample data is loaded
                 <Badge variant="muted" className="text-[10px]">
                   {formatNumber(demoRecordCount)} records
@@ -150,7 +150,7 @@ export function DemoPanel({
           </div>
         ) : canLoad ? (
           <div className="flex flex-wrap items-center justify-between gap-3">
-            <div>
+            <div className="min-w-[12rem] flex-1">
               <p className="text-sm font-medium">Load ten weeks of demo history</p>
               <p className="text-xs text-muted-foreground">
                 Every chart, streak and heatmap gets something to show. Removable again in one step.

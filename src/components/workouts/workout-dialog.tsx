@@ -196,7 +196,7 @@ export function WorkoutDialog({
         </DialogHeader>
 
         <div className="space-y-4">
-          <div className="grid grid-cols-2 gap-3">
+          <div className="grid gap-3 sm:grid-cols-2">
             <div className="space-y-1.5">
               <Label htmlFor="w-name">Name</Label>
               <Input
@@ -224,7 +224,7 @@ export function WorkoutDialog({
             </div>
           </div>
 
-          <div className="grid grid-cols-4 gap-3">
+          <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
             <div className="space-y-1.5">
               <Label htmlFor="w-date">Date</Label>
               <Input
@@ -273,7 +273,7 @@ export function WorkoutDialog({
             </div>
           </div>
 
-          <div className="grid grid-cols-4 gap-3">
+          <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
             <div className="space-y-1.5">
               <Label htmlFor="w-kcal">Calories</Label>
               <Input
@@ -401,7 +401,7 @@ export function WorkoutDialog({
                       <Button
                         size="icon-sm"
                         variant="ghost"
-                        className="text-destructive"
+                        className="touch-target text-destructive"
                         aria-label="Remove set"
                         onClick={() =>
                           setForm((current) => ({

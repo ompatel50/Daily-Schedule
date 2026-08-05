@@ -411,6 +411,7 @@ export function GoalDialog({
               </div>
               <Switch
                 id="goal-active"
+                className="touch-target shrink-0"
                 checked={draft.active}
                 onCheckedChange={(checked) => patch({ active: checked })}
               />

@@ -16,6 +16,7 @@ import {
 import { Button } from "@/components/ui/button";
 import { isNavItemActive, NAV_GROUPS, NAV_ITEMS } from "@/lib/navigation";
 import { cn } from "@/lib/utils";
+import { clearClientUIState } from "@/lib/client-state";
 import { signOutAction } from "@/server/actions/auth";
 
 /**
@@ -109,7 +110,10 @@ export function MobileNav({ account }: { account?: { name: string; email: string
                 size="icon"
                 className="touch-target shrink-0"
                 aria-label="Sign out"
-                onClick={() => void signOutAction()}
+                onClick={() => {
+                  clearClientUIState();
+                  void signOutAction();
+                }}
               >
                 <LogOut />
               </Button>

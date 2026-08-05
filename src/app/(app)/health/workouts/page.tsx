@@ -70,7 +70,42 @@ export default async function HealthWorkoutsPage({
           </div>
 
           <SectionCard title="Sessions" icon={Dumbbell} accent="text-domain-workout">
-            <div className="overflow-x-auto">
+            {/* Phones get the same sessions as stacked cards; the table needs 640px. */}
+            <div className="space-y-2 md:hidden">
+              {workouts.map((workout) => {
+                const shown =
+                  workout.distanceKm === null
+                    ? null
+                    : toDisplay("distance_km", workout.distanceKm, user.unitSystem);
+                return (
+                  <div key={workout.id} className="rounded-lg border p-3">
+                    <div className="flex items-start justify-between gap-2">
+                      <p className="min-w-0 truncate text-sm font-medium">{workout.name}</p>
+                      <Badge
+                        variant={workout.imported ? "muted" : "outline"}
+                        className="shrink-0 text-[10px]"
+                      >
+                        {workout.source}
+                      </Badge>
+                    </div>
+                    <p className="mt-0.5 text-xs text-muted-foreground">
+                      {formatDay(workout.date, "MMM d, yyyy")}
+                      {workout.time ? ` · ${workout.time}` : ""}
+                    </p>
+                    <p className="tabular mt-1 text-xs">
+                      {workout.durationMin} min
+                      {shown ? ` · ${formatNumber(shown.value, 2)} ${shown.unit}` : ""}
+                      {workout.caloriesBurned === null
+                        ? ""
+                        : ` · ${formatNumber(workout.caloriesBurned)} kcal`}
+                      {workout.avgHeartRate === null ? "" : ` · ${workout.avgHeartRate} bpm`}
+                    </p>
+                  </div>
+                );
+              })}
+            </div>
+
+            <div className="hidden overflow-x-auto md:block">
               <table className="w-full min-w-[640px] text-sm">
                 <thead>
                   <tr className="border-b text-left text-xs uppercase tracking-wide text-muted-foreground">

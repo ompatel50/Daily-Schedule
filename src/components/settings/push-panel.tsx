@@ -205,6 +205,7 @@ export function PushPanel() {
                     <Button
                       variant="ghost"
                       size="icon"
+                      className="touch-target shrink-0"
                       aria-label={`Remove ${subscription.deviceLabel ?? "device"}`}
                       onClick={() => void revoke(subscription.id)}
                       disabled={busy}

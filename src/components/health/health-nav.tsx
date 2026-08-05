@@ -31,9 +31,10 @@ export const HEALTH_TABS = [
 export function HealthNav() {
   const pathname = usePathname();
 
+  // py-1/-my-1 give focus rings room inside the scroll container's clip.
   return (
-    <nav aria-label="Health sections" className="mb-6 -mx-1 overflow-x-auto pb-1">
-      <ul className="flex min-w-max items-center gap-1 px-1">
+    <nav aria-label="Health sections" className="-mx-1 -my-1 mb-5 overflow-x-auto pb-1">
+      <ul className="flex min-w-max items-center gap-1 px-1 py-1">
         {HEALTH_TABS.map((tab) => {
           // `/health` must not light up for `/health/sleep`, so the overview
           // matches exactly and every other tab matches its own subtree.
@@ -47,7 +48,7 @@ export function HealthNav() {
                 href={tab.href}
                 aria-current={active ? "page" : undefined}
                 className={cn(
-                  "inline-flex items-center rounded-lg px-3 py-1.5 text-sm font-medium transition-colors",
+                  "inline-flex min-h-10 items-center rounded-lg px-3 py-1.5 text-sm font-medium transition-colors",
                   active
                     ? "bg-domain-health/10 text-domain-health"
                     : "text-muted-foreground hover:bg-accent hover:text-foreground",

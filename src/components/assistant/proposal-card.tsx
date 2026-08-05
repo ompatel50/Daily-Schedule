@@ -93,13 +93,16 @@ export function ProposalCard(props: {
           <Badge variant="warning">Sensitive</Badge>
         ) : null}
       </div>
-      <p className="text-sm">{proposal.summary}</p>
+      <p className="break-words text-sm">{proposal.summary}</p>
+      {/* On phones the buttons split the row at thumb height; from sm up they
+          shrink back to the usual inline pair. */}
       <div className="flex flex-wrap items-center gap-2">
         {mode === "confirm" ? (
           needsGuard ? (
             <Button
               size="sm"
               variant={proposal.risk === "destructive" ? "destructive" : "default"}
+              className="h-11 flex-1 sm:h-8 sm:flex-none"
               onClick={() => setGuardOpen(true)}
               disabled={busy !== null}
               data-testid="assistant-proposal-confirm"
@@ -109,6 +112,7 @@ export function ProposalCard(props: {
           ) : (
             <Button
               size="sm"
+              className="h-11 flex-1 sm:h-8 sm:flex-none"
               onClick={() => void execute()}
               disabled={busy !== null}
               data-testid="assistant-proposal-confirm"
@@ -124,6 +128,7 @@ export function ProposalCard(props: {
         <Button
           size="sm"
           variant="outline"
+          className="h-11 flex-1 sm:h-8 sm:flex-none"
           onClick={() => void reject()}
           disabled={busy !== null}
           data-testid="assistant-proposal-cancel"
@@ -142,13 +147,21 @@ export function ProposalCard(props: {
               This is exactly what will happen — nothing more:
             </DialogDescription>
           </DialogHeader>
-          <p className="rounded-lg border bg-muted/40 px-3 py-2.5 text-sm">{proposal.summary}</p>
+          <p className="break-words rounded-lg border bg-muted/40 px-3 py-2.5 text-sm">
+            {proposal.summary}
+          </p>
           <DialogFooter>
-            <Button variant="outline" onClick={() => setGuardOpen(false)} disabled={busy !== null}>
+            <Button
+              variant="outline"
+              className="h-11 sm:h-9"
+              onClick={() => setGuardOpen(false)}
+              disabled={busy !== null}
+            >
               Keep everything as it is
             </Button>
             <Button
               variant={proposal.risk === "destructive" ? "destructive" : "default"}
+              className="h-11 sm:h-9"
               onClick={() => void execute()}
               disabled={busy !== null}
               data-testid="assistant-proposal-guard-confirm"

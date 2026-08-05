@@ -415,6 +415,7 @@ function FoodList({
               <Button
                 size="icon-sm"
                 variant="ghost"
+                className="touch-target"
                 aria-label="Toggle favourite"
                 onClick={() =>
                   startTransition(async () => {
@@ -438,6 +439,7 @@ function FoodList({
             <Button
               size="icon-sm"
               variant="secondary"
+              className="touch-target"
               onClick={() => onPick(food)}
               aria-label={`Log ${food.name}`}
             >

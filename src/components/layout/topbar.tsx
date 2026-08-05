@@ -16,6 +16,7 @@ import {
 } from "@/components/ui/dropdown-menu";
 import { MobileNav } from "@/components/layout/mobile-nav";
 import { ThemeToggle } from "@/components/layout/theme-toggle";
+import { clearClientUIState } from "@/lib/client-state";
 import { signOutAction } from "@/server/actions/auth";
 import { useUIStore } from "@/store/ui-store";
 
@@ -111,7 +112,12 @@ export function Topbar({
                 ) : null}
               </DropdownMenuLabel>
               <DropdownMenuSeparator />
-              <DropdownMenuItem onSelect={() => void signOutAction()}>
+              <DropdownMenuItem
+                onSelect={() => {
+                  clearClientUIState();
+                  void signOutAction();
+                }}
+              >
                 <LogOut className="h-4 w-4" />
                 Sign out
               </DropdownMenuItem>

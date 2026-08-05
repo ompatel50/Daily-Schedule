@@ -232,6 +232,7 @@ export function GoalsPanel({
 
                 <div className="flex items-center gap-1">
                   <Switch
+                    className="touch-target"
                     checked={goal.active}
                     aria-label={`${goal.active ? "Disable" : "Enable"} ${goal.label}`}
                     disabled={pending && pendingId === goal.id}
@@ -246,6 +247,7 @@ export function GoalsPanel({
                   <Button
                     size="icon-sm"
                     variant="ghost"
+                    className="touch-target"
                     aria-label={`Edit ${goal.label}`}
                     onClick={() => openEdit(goal)}
                   >
@@ -254,6 +256,7 @@ export function GoalsPanel({
                   <Button
                     size="icon-sm"
                     variant="ghost"
+                    className="touch-target"
                     aria-label={`Archive ${goal.label}`}
                     disabled={pending && pendingId === goal.id}
                     onClick={() =>
@@ -337,7 +340,7 @@ export function GoalsPanel({
                     <Button
                       size="icon-sm"
                       variant="ghost"
-                      className="text-destructive"
+                      className="touch-target text-destructive"
                       aria-label={`Delete ${goal.label} permanently`}
                       onClick={() => setConfirmingDelete(goal.id)}
                     >
