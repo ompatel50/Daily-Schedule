@@ -239,6 +239,7 @@ export async function getReminderFeedFor(user: {
       timeMinute: habit.timeMinute,
       archived: habit.archived,
       deliveredKeys,
+      dayResetMinute: settings.dayResetMinute,
     });
     if (resolved.ok) occurrences.push(resolved.occurrence);
   }
@@ -260,6 +261,7 @@ export async function getReminderFeedFor(user: {
       timeMinute: evaluation.occurrence.timeMinute,
       archived: false, // evaluateGoalsForDate already filters archived goals
       deliveredKeys,
+      dayResetMinute: settings.dayResetMinute,
     });
     if (resolved.ok) occurrences.push(resolved.occurrence);
   }

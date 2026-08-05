@@ -415,6 +415,7 @@ function FoodList({
               <Button
                 size="icon-sm"
                 variant="ghost"
+                className="touch-target"
                 aria-label="Toggle favourite"
                 onClick={() =>
                   startTransition(async () => {
@@ -429,7 +430,7 @@ function FoodList({
                     "h-3.5 w-3.5",
                     favorite
                       ? "fill-amber-400 text-amber-400"
-                      : "text-muted-foreground opacity-0 transition-opacity group-hover:opacity-100",
+                      : "text-muted-foreground hover-reveal",
                   )}
                 />
               </Button>
@@ -438,6 +439,7 @@ function FoodList({
             <Button
               size="icon-sm"
               variant="secondary"
+              className="touch-target"
               onClick={() => onPick(food)}
               aria-label={`Log ${food.name}`}
             >

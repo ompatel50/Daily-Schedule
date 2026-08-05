@@ -11,7 +11,7 @@ import { beforeAll, beforeEach, describe, expect, it } from "vitest";
 
 import { prisma } from "@/lib/prisma";
 import { shiftDay, weekRange } from "@/lib/date";
-import { todayIn } from "@/lib/logic/schedule";
+import { scheduleSettingsFor } from "@/server/schedule";
 import { lowBalanceReminderKey } from "@/lib/logic/reminders";
 import { actAs, resetDatabase, twoUsers } from "./helpers";
 
@@ -42,7 +42,7 @@ let bob: User;
 
 const DAY = "2026-07-15";
 
-const aliceToday = () => todayIn(alice.timezone);
+const aliceToday = () => scheduleSettingsFor(alice).today;
 
 function makeAccount(userId: string, overrides: Record<string, unknown> = {}) {
   return prisma.financeAccount.create({

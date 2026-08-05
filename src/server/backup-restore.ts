@@ -232,6 +232,7 @@ const SAFE_PROFILE_FIELDS = [
   "unitSystem",
   "dayStartHour",
   "dayEndHour",
+  "dayResetMinute",
   "scoreWeights",
   "scoreOptionalTasks",
   "onboardingState",

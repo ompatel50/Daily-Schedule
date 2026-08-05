@@ -89,9 +89,12 @@ export function MealTemplateBar({
   return (
     <div className="flex flex-wrap gap-2">
       {templates.map((template) => (
-        <div key={template.id} className="group flex items-center gap-2 rounded-lg border px-3 py-2">
+        <div
+          key={template.id}
+          className="group flex max-w-full items-center gap-2 rounded-lg border px-3 py-2"
+        >
           <Utensils className="h-3.5 w-3.5 shrink-0 text-domain-nutrition" />
-          <div className="min-w-0">
+          <div className="min-w-0 flex-1">
             <p className="truncate text-sm font-medium">{template.name}</p>
             <p className="tabular truncate text-xs text-muted-foreground">
               {template.itemCount} items · {formatNumber(template.calories)} kcal ·{" "}
@@ -111,7 +114,7 @@ export function MealTemplateBar({
             size="icon-sm"
             variant="ghost"
             aria-label={`Rename ${template.name}`}
-            className="text-muted-foreground opacity-0 transition-opacity group-hover:opacity-100"
+            className="touch-target text-muted-foreground hover-reveal"
             onClick={() => setRenaming(template)}
           >
             <Pencil />
@@ -120,7 +123,7 @@ export function MealTemplateBar({
             size="icon-sm"
             variant="ghost"
             aria-label={`Delete ${template.name}`}
-            className="text-muted-foreground opacity-0 transition-opacity group-hover:opacity-100"
+            className="touch-target text-muted-foreground hover-reveal"
             onClick={() =>
               startTransition(async () => {
                 const result = await deleteMealTemplate(template.id);

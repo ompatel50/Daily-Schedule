@@ -278,7 +278,7 @@ export function ImportWizard({
                 <DialogTitle className="flex items-center gap-2">
                   <FileUp className="h-5 w-5" /> Preview — nothing saved yet
                 </DialogTitle>
-                <DialogDescription>
+                <DialogDescription className="break-words">
                   {preview.fileName} · {formatBytes(preview.fileSize)} ·{" "}
                   {formatNumber(preview.examined)} records examined in{" "}
                   {(preview.parseMs / 1000).toFixed(1)}s
@@ -450,7 +450,7 @@ function StagePanel({
       <div className="flex flex-wrap items-center justify-between gap-2">
         <p className="truncate text-xs font-medium">{fileLabel ?? "Health export"}</p>
         {onCancel && (
-          <Button variant="ghost" size="sm" className="h-6 px-2 text-xs" onClick={onCancel}>
+          <Button variant="ghost" size="sm" className="touch-target h-6 px-2 text-xs" onClick={onCancel}>
             Cancel upload
           </Button>
         )}

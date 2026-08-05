@@ -35,6 +35,16 @@ interface DayConflicts {
  * it, keeping its time-of-day. This is the fastest way to reshuffle a week when
  * plans change, which is the whole point of the planner.
  */
+
+/**
+ * In-cell ordering on the operational day's extended axis: an after-midnight
+ * item (grouped under the previous day) sorts after the evening's blocks.
+ */
+function sortMinute(item: ScheduleRowItem): number {
+  if (item.startMinute === null) return 1e9;
+  return item.operationalDate === item.date ? item.startMinute : item.startMinute + 1440;
+}
+
 export function WeekGrid({
   anchor,
   items,
@@ -62,13 +72,13 @@ export function WeekGrid({
   const byDay = React.useMemo(() => {
     const map = new Map<string, ScheduleRowItem[]>(days.map((day) => [day, []]));
     for (const item of items) {
-      const day = pendingMove[item.id] ?? item.date;
+      const day = pendingMove[item.id] ?? item.operationalDate;
       map.get(day)?.push(item);
     }
     for (const list of map.values()) {
       list.sort((a, b) => {
         if (a.allDay !== b.allDay) return a.allDay ? 1 : -1;
-        return (a.startMinute ?? 1e9) - (b.startMinute ?? 1e9);
+        return sortMinute(a) - sortMinute(b);
       });
     }
     return map;
@@ -123,7 +133,7 @@ export function WeekGrid({
     if (!targetDay) return;
 
     const item = items.find((candidate) => candidate.id === itemId);
-    if (!item || item.date === targetDay) return;
+    if (!item || item.operationalDate === targetDay) return;
 
     move(itemId, targetDay, false);
   }
@@ -136,7 +146,24 @@ export function WeekGrid({
       collisionDetection={pointerWithin}
       onDragEnd={onDragEnd}
     >
-      <div className="grid grid-cols-7 gap-2">
+      {/* Phones get a readable stacked week — seven columns in 360px is a
+          wall of truncated 10px text. Moving between days there uses each
+          card's editor / "push to tomorrow" instead of drag & drop. */}
+      <div className="space-y-3 md:hidden">
+        {days.map((day) => (
+          <WeekListDay
+            key={day}
+            day={day}
+            items={byDay.get(day) ?? []}
+            conflicts={conflictsByDay.get(day)}
+            todayKey={todayKey}
+            onSelect={onSelect}
+            onAdd={() => openQuickAdd(day)}
+          />
+        ))}
+      </div>
+
+      <div className="hidden grid-cols-7 gap-2 md:grid">
         {days.map((day) => (
           <DayColumn
             key={day}
@@ -150,6 +177,114 @@ export function WeekGrid({
         ))}
       </div>
     </DndContext>
+  );
+}
+
+/** One day of the stacked phone week: a header row plus full-width tap targets. */
+function WeekListDay({
+  day,
+  items,
+  conflicts,
+  todayKey,
+  onSelect,
+  onAdd,
+}: {
+  day: string;
+  items: ScheduleRowItem[];
+  conflicts?: DayConflicts;
+  todayKey?: string;
+  onSelect?: (item: ScheduleRowItem) => void;
+  onAdd: () => void;
+}) {
+  const done = items.filter((item) => item.status === "done").length;
+  const pairs = conflicts?.pairs ?? 0;
+
+  return (
+    <section
+      aria-label={formatDay(day, "EEEE, MMM d")}
+      className={cn(
+        "rounded-lg border bg-card/40",
+        isToday(day, todayKey) && "border-domain-planner/50 bg-domain-planner/[0.04]",
+      )}
+    >
+      <div className="flex items-center justify-between gap-2 border-b px-3 py-2">
+        <p
+          className={cn(
+            "text-sm font-semibold",
+            isToday(day, todayKey) && "text-domain-planner",
+          )}
+        >
+          {formatDay(day, "EEE d")}
+          {isToday(day, todayKey) && <span className="ml-1.5 text-xs font-normal">Today</span>}
+        </p>
+        <div className="flex items-center gap-2">
+          {pairs > 0 && (
+            <span className="inline-flex items-center gap-1 text-[11px] text-amber-800 dark:text-amber-400">
+              <TriangleAlert className="h-3 w-3" aria-hidden />
+              {pairs} overlap{pairs === 1 ? "" : "s"}
+            </span>
+          )}
+          {items.length > 0 && (
+            <span className="tabular text-xs text-muted-foreground">
+              {done}/{items.length}
+            </span>
+          )}
+          <button
+            type="button"
+            onClick={onAdd}
+            className="touch-target inline-flex items-center gap-1 rounded-md px-1.5 py-1 text-xs text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"
+          >
+            <Plus className="h-3.5 w-3.5" aria-hidden /> Add
+          </button>
+        </div>
+      </div>
+
+      {items.length === 0 ? (
+        <p className="px-3 py-2.5 text-xs text-muted-foreground">Nothing planned.</p>
+      ) : (
+        <ul className="divide-y">
+          {items.map((item) => {
+            const meta = CATEGORY_META[item.category as ScheduleCategory] ?? CATEGORY_META.personal;
+            const clash = summarizeConflicts(conflicts?.byItem.get(item.id) ?? []);
+            return (
+              <li key={item.id}>
+                <button
+                  type="button"
+                  onClick={() => onSelect?.(item)}
+                  className={cn(
+                    "flex min-h-11 w-full items-center gap-2.5 border-l-[3px] px-3 py-2 text-left transition-colors hover:bg-accent/40",
+                    meta.bar,
+                    item.status === "done" && "opacity-55",
+                    item.status === "skipped" && "opacity-45",
+                  )}
+                >
+                  <span
+                    className={cn(
+                      "min-w-0 flex-1 truncate text-sm",
+                      item.status === "done" && "line-through",
+                    )}
+                  >
+                    {clash && (
+                      <TriangleAlert
+                        className="mr-1 inline h-3 w-3 -translate-y-px text-amber-800 dark:text-amber-400"
+                        aria-hidden
+                      />
+                    )}
+                    {item.title}
+                    {clash && <span className="sr-only">, overlaps {clash}</span>}
+                  </span>
+                  {!item.allDay && item.startMinute !== null && (
+                    <span className="tabular shrink-0 text-xs text-muted-foreground">
+                      {formatTimeRange(item.startMinute, item.endMinute, false)}
+                    </span>
+                  )}
+                </button>
+              </li>
+            );
+          })}
+        </ul>
+      )}
+    </section>
   );
 }
 

@@ -213,9 +213,17 @@ export function TaskBoard({ board }: { board: TaskBoardData }) {
       const result = await completeTask(id);
       if (result.ok) {
         if (result.data.status === "advanced" && result.data.nextDue) {
+          // No Undo here: completing a repeating task advanced its due date,
+          // and "reopen" could not restore the previous one reliably.
           toast.success(`Done — next on ${formatDay(result.data.nextDue)}`);
         } else {
-          toast.success("Task completed");
+          // Real rollback, not a visual one: Undo calls the reopen action.
+          toast.success("Task completed", {
+            action: {
+              label: "Undo",
+              onClick: () => run(() => reopenTask(id), "Task reopened"),
+            },
+          });
         }
       } else {
         toast.error(result.error);
@@ -282,7 +290,7 @@ export function TaskBoard({ board }: { board: TaskBoardData }) {
                   aria-pressed={active}
                   onClick={() => toggleTag(tag.name)}
                   className={cn(
-                    "rounded-full border px-2 py-0.5 text-xs transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring",
+                    "inline-flex min-h-8 items-center rounded-full border px-2.5 py-0.5 text-xs transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring",
                     active
                       ? "border-domain-task/40 bg-domain-task/10 font-medium text-domain-task"
                       : "text-muted-foreground hover:text-foreground",
@@ -297,7 +305,7 @@ export function TaskBoard({ board }: { board: TaskBoardData }) {
               <button
                 type="button"
                 onClick={() => router.replace(pathname, { scroll: false })}
-                className="rounded-full px-2 py-0.5 text-xs text-muted-foreground underline-offset-2 hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                className="inline-flex min-h-8 items-center rounded-full px-2 py-0.5 text-xs text-muted-foreground underline-offset-2 hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
               >
                 Clear
               </button>
@@ -439,6 +447,7 @@ export function TaskBoard({ board }: { board: TaskBoardData }) {
                       <Button
                         size="icon-sm"
                         variant="ghost"
+                        className="touch-target"
                         aria-label={`Reopen ${task.title}`}
                         onClick={() => run(() => reopenTask(task.id), "Task reopened")}
                       >
@@ -524,7 +533,7 @@ function TaskRow({
           onClick={() => onToggleDone(task.id, "open")}
           disabled={checked}
           aria-label={`Complete ${task.title}`}
-          className="mt-0.5 shrink-0 rounded-full text-muted-foreground/60 transition-colors hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring disabled:pointer-events-none"
+          className="touch-target mt-0.5 shrink-0 rounded-full text-muted-foreground/60 transition-colors hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring disabled:pointer-events-none"
         >
           {checked ? (
             <CheckCircle2 className="h-5 w-5 text-emerald-500" />
@@ -535,7 +544,12 @@ function TaskRow({
 
         <div className="min-w-0 flex-1">
           <div className="flex flex-wrap items-center gap-x-2 gap-y-1">
-            <span className={cn("text-sm font-medium", checked && "line-through opacity-70")}>
+            <span
+              className={cn(
+                "min-w-0 break-words text-sm font-medium",
+                checked && "line-through opacity-70",
+              )}
+            >
               {task.title}
             </span>
             {task.project && (
@@ -594,7 +608,7 @@ function TaskRow({
                   type="button"
                   onClick={onToggleExpand}
                   aria-expanded={expanded}
-                  className="tabular inline-flex items-center gap-0.5 rounded transition-colors hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                  className="touch-target tabular inline-flex items-center gap-0.5 rounded transition-colors hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
                 >
                   {subtasksDone}/{countable.length}
                   <ChevronDown
@@ -619,7 +633,7 @@ function TaskRow({
                       aria-label={
                         subChecked ? `Reopen ${subtask.title}` : `Complete ${subtask.title}`
                       }
-                      className="shrink-0 rounded-full text-muted-foreground/60 transition-colors hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring disabled:pointer-events-none"
+                      className="touch-target shrink-0 rounded-full text-muted-foreground/60 transition-colors hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring disabled:pointer-events-none"
                     >
                       {subChecked ? (
                         <CheckCircle2 className="h-4 w-4 text-emerald-500" />
@@ -644,7 +658,7 @@ function TaskRow({
 
         <DropdownMenu onOpenChange={(open) => !open && setConfirmingDelete(false)}>
           <DropdownMenuTrigger asChild>
-            <Button size="icon-sm" variant="ghost" aria-label={`Actions for ${task.title}`}>
+            <Button size="icon-sm" variant="ghost" className="touch-target" aria-label={`Actions for ${task.title}`}>
               <MoreHorizontal />
             </Button>
           </DropdownMenuTrigger>
@@ -713,7 +727,7 @@ function ProjectRow({
         )}
         <DropdownMenu onOpenChange={(open) => !open && setConfirmingDelete(false)}>
           <DropdownMenuTrigger asChild>
-            <Button size="icon-sm" variant="ghost" aria-label={`Actions for ${project.name}`}>
+            <Button size="icon-sm" variant="ghost" className="touch-target" aria-label={`Actions for ${project.name}`}>
               <MoreHorizontal />
             </Button>
           </DropdownMenuTrigger>

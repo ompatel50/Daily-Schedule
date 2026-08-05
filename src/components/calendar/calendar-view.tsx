@@ -122,7 +122,7 @@ export function CalendarView({
         description={`${windowDays.length} days · click any square to open that day`}
         action={
           <Tabs value={filter} onValueChange={(value) => setFilter(value as HeatFilter)}>
-            <TabsList className="h-8">
+            <TabsList className="h-auto flex-wrap justify-start sm:h-8 sm:flex-nowrap">
               {FILTERS.map((option) => (
                 <TabsTrigger key={option.value} value={option.value} className="px-2.5 py-0.5 text-xs">
                   {option.label}

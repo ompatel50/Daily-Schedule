@@ -79,6 +79,11 @@ model User {
   unitSystem     String @default("imperial") // imperial | metric
   dayStartHour   Int    @default(6)
   dayEndHour     Int    @default(22)
+  /// The daily reset time, minutes after midnight (240 = 4:00 AM). Activity
+  /// between midnight and this time is *grouped* with the previous day's
+  /// schedule — the "operational day" (src/lib/logic/operational-day.ts).
+  /// Timestamps themselves are never rewritten. 0 restores midnight days.
+  dayResetMinute Int    @default(240)
 
   // --- AI assistant (local Ollama only) --------------------------------------
   /// Base URL of the user's own Ollama server (e.g. http://localhost:11434 or

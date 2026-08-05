@@ -368,7 +368,7 @@ export function SessionPanel({ session }: { session: SessionView }) {
               <Button
                 size="sm"
                 variant="ghost"
-                className="h-7 px-2 text-xs text-muted-foreground"
+                className="touch-target h-7 px-2 text-xs text-muted-foreground"
                 onClick={enableAlerts}
               >
                 <Bell className="h-3.5 w-3.5" /> Enable alerts
@@ -485,7 +485,7 @@ function RestControl({
       <Button
         size="sm"
         variant="ghost"
-        className="h-7 px-2 text-xs text-muted-foreground"
+        className="touch-target h-7 px-2 text-xs text-muted-foreground"
         aria-label={`${label}: ${valueSec !== null ? formatRest(valueSec) : offLabel} — edit`}
         disabled={disabled}
         onClick={() => {
@@ -522,6 +522,7 @@ function RestControl({
       <Button
         size="icon-sm"
         variant="ghost"
+        className="touch-target"
         aria-label={`Cancel editing ${label}`}
         onClick={() => setEditing(false)}
       >
@@ -594,7 +595,14 @@ function SetRow({
                   : `target ${describeSetTarget(set)}`}
             </span>
           )}
-          <Button size="icon-sm" variant="ghost" aria-label="Undo set" onClick={onUndo} disabled={disabled}>
+          <Button
+            size="icon-sm"
+            variant="ghost"
+            className="touch-target"
+            aria-label="Undo set"
+            onClick={onUndo}
+            disabled={disabled}
+          >
             <X className="h-3.5 w-3.5" />
           </Button>
         </>
@@ -627,6 +635,7 @@ function SetRow({
             <Button
               size="sm"
               variant="secondary"
+              className="touch-target"
               aria-label={`Complete set ${index + 1}`}
               disabled={disabled}
               onClick={() =>
@@ -642,6 +651,7 @@ function SetRow({
             <Button
               size="icon-sm"
               variant="ghost"
+              className="touch-target"
               aria-label={`Remove set ${index + 1}`}
               disabled={disabled}
               onClick={onRemove}

@@ -50,12 +50,15 @@ export function DaySchedule({
   items: initialItems,
   surface = "planner",
   todayKey,
+  dayResetMinute,
 }: {
   date: string;
   items: ScheduleRowItem[];
   surface?: DayListSurface;
   /** "Today" in the user's timezone; see `DateNav`. */
   todayKey?: string;
+  /** The user's daily reset, for after-midnight grouping hints. */
+  dayResetMinute?: number;
 }) {
   const router = useRouter();
   const can = dayListCapabilities(surface);
@@ -115,7 +118,9 @@ export function DaySchedule({
       id: item.id,
       title: item.title,
       notes: item.notes,
-      date: item.date,
+      // The dialog edits the OPERATIONAL day; the server stores the real
+      // calendar date for pre-reset times, so the round trip is stable.
+      date: item.operationalDate,
       startMinute: item.startMinute,
       endMinute: item.endMinute,
       allDay: item.allDay,
@@ -202,6 +207,7 @@ export function DaySchedule({
                   onEdit={edit}
                   seriesActions={can.seriesActions}
                   conflictsWith={conflicts.get(item.id)}
+                  dayResetMinute={dayResetMinute}
                 />
               ))}
             </div>

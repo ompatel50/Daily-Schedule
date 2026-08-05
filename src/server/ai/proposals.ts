@@ -10,7 +10,8 @@ import {
   SCHEDULE_CATEGORIES,
   isBookkeepingCategory,
 } from "@/lib/enums";
-import { todayIn, wallClockToInstant } from "@/lib/logic/schedule";
+import { wallClockToInstant } from "@/lib/logic/schedule";
+import { scheduleSettingsFor } from "@/server/schedule";
 import { prisma } from "@/lib/prisma";
 import {
   ASSISTANT_ACTION_META,
@@ -386,7 +387,7 @@ async function prepareProposal(
       if (!habit) return { ok: false, error: "Habit not found." };
       // The model writes a date in the user's own calendar; an omitted one
       // means "today" in THEIR timezone, never the server's.
-      const date = data.date ?? todayIn(user.timezone);
+      const date = data.date ?? scheduleSettingsFor(user).today;
       const amount =
         data.value === null || data.value === undefined
           ? ""

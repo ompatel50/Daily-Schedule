@@ -24,7 +24,7 @@ export default async function AssistantPage() {
   ]);
 
   return (
-    <div className="mx-auto max-w-4xl">
+    <div className="mx-auto max-w-4xl pb-safe">
       <PageHeader
         title="Assistant"
         description="Ask about your days, tasks, money and health. Runs only on your own Ollama server — nothing leaves your machines."

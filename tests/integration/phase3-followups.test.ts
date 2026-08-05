@@ -13,7 +13,7 @@ import { prisma } from "@/lib/prisma";
 import { BACKUP_VERSION } from "@/lib/backup-format";
 import { monthRange, shiftDay, weekRange } from "@/lib/date";
 import { budgetThresholdReminderKey, dueReminderKey } from "@/lib/logic/reminders";
-import { todayIn } from "@/lib/logic/schedule";
+import { scheduleSettingsFor } from "@/server/schedule";
 import { actAs, resetDatabase, twoUsers } from "./helpers";
 
 import {
@@ -35,7 +35,7 @@ import type { User } from "./helpers";
 let alice: User;
 let bob: User;
 
-const aliceToday = () => todayIn(alice.timezone);
+const aliceToday = () => scheduleSettingsFor(alice).today;
 
 beforeAll(async () => {
   await resetDatabase();

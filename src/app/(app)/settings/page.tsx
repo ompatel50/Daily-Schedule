@@ -57,6 +57,7 @@ export default async function SettingsPage() {
             unitSystem: user.unitSystem,
             dayStartHour: user.dayStartHour,
             dayEndHour: user.dayEndHour,
+            dayResetMinute: user.dayResetMinute,
           }}
           latestWeight={weight?.value ?? null}
         />

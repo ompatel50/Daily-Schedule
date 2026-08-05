@@ -370,7 +370,9 @@ test("imports an Apple Health export end to end, then undoes it", async ({ page 
   await page.goto("/health/sleep");
   await expect(page.getByRole("columnheader", { name: "Asleep" })).toBeVisible();
   await page.goto("/health/workouts");
-  await expect(page.getByText("Apple Health").first()).toBeVisible();
+  // Both the phone cards and the desktop table carry the badge; assert the
+  // one this viewport actually shows.
+  await expect(page.getByText("Apple Health").locator("visible=true").first()).toBeVisible();
 
   // --- re-importing the same file writes nothing -----------------------------
   await upload(page);

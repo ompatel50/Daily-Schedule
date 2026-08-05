@@ -17,6 +17,8 @@
 import { prisma } from "@/lib/prisma";
 import { type DayKey, dayRange, daysBetween, shiftDay, weekRange } from "@/lib/date";
 import { aggregateDayAll } from "@/lib/logic/health";
+import { operationalDayWhere } from "@/lib/logic/operational-day";
+import { resetMinuteOf } from "@/lib/logic/schedule";
 import { round, sum } from "@/lib/utils";
 import { getDayScore, scoreOptionsFor } from "@/server/day-score";
 import { getHabitDayTotals } from "@/server/habits";
@@ -37,6 +39,7 @@ export async function recomputeDay(userId: string, date: DayKey): Promise<void> 
     select: {
       weekStartsOn: true,
       timezone: true,
+      dayResetMinute: true,
       scoreWeights: true,
       scoreOptionalTasks: true,
     },
@@ -44,7 +47,13 @@ export async function recomputeDay(userId: string, date: DayKey): Promise<void> 
   const settings = scheduleSettingsFor(user ?? { weekStartsOn: 1, timezone: "UTC" });
 
   const [items, habitTotals, meals, workouts, metrics, dayScore] = await Promise.all([
-    prisma.scheduleItem.findMany({ where: { userId, date }, select: { status: true } }),
+    // Planner records of the OPERATIONAL day — includes the after-midnight
+    // tail on the next calendar date. Every other record type here stores its
+    // operational day directly in `date`.
+    prisma.scheduleItem.findMany({
+      where: { userId, ...operationalDayWhere(date, resetMinuteOf(settings)) },
+      select: { status: true },
+    }),
     // Habit due-ness comes from the shared schedule engine, so a weekday habit
     // contributes nothing on a Saturday rather than counting as unmet.
     getHabitDayTotals(userId, date, settings),

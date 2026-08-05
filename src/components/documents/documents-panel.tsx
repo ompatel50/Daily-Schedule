@@ -197,6 +197,7 @@ export function DocumentsPanel({
                       <Button
                         size="icon-sm"
                         variant="ghost"
+                        className="touch-target"
                         aria-label={`Actions for ${document.name}`}
                       >
                         <MoreHorizontal />

@@ -4,7 +4,6 @@ import { revalidatePath } from "next/cache";
 
 import { getCurrentUser, prisma } from "@/lib/db";
 import { type DayKey } from "@/lib/date";
-import { todayIn } from "@/lib/logic/schedule";
 import {
   dateOverrideSchema,
   fail,
@@ -17,6 +16,7 @@ import {
 import {
   clearDateOverride,
   deleteSchedule,
+  scheduleSettingsFor,
   setDateOverride,
   setScheduleEnabled,
   writeSchedule,
@@ -42,7 +42,7 @@ export async function saveGoalWithSchedule(
   if (!parsed.success) return fromZod(parsed.error);
 
   const user = await getCurrentUser();
-  const today = todayIn(user.timezone);
+  const today = scheduleSettingsFor(user).today;
   const { goal: goalInput, schedule, apply } = parsed.data;
   const { id, ...fields } = goalInput;
 
@@ -111,7 +111,7 @@ export async function setGoalEnabled(
   await prisma.goal.update({ where: { id }, data: { active: enabled } });
   await setScheduleEnabled(user.id, "goal", id, enabled);
 
-  await recomputeDay(user.id, todayIn(user.timezone));
+  await recomputeDay(user.id, scheduleSettingsFor(user).today);
   revalidateAll();
   return succeed({ enabled });
 }
@@ -131,7 +131,7 @@ export async function archiveGoal(id: string, archived = true): Promise<ActionRe
   });
   await setScheduleEnabled(user.id, "goal", id, !archived && goal.active);
 
-  await recomputeDay(user.id, todayIn(user.timezone));
+  await recomputeDay(user.id, scheduleSettingsFor(user).today);
   revalidateAll();
   return succeed(null);
 }
@@ -147,7 +147,7 @@ export async function deleteGoalPermanently(id: string): Promise<ActionResult<nu
   ]);
   await deleteSchedule(user.id, "goal", id);
 
-  await recomputeDay(user.id, todayIn(user.timezone));
+  await recomputeDay(user.id, scheduleSettingsFor(user).today);
   revalidateAll();
   return succeed(null);
 }

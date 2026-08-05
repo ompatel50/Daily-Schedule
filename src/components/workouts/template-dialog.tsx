@@ -166,7 +166,7 @@ export function TemplateDialog({
         </DialogHeader>
 
         <div className="space-y-4">
-          <div className="grid grid-cols-2 gap-3">
+          <div className="grid gap-3 sm:grid-cols-2">
             <div className="space-y-1.5">
               <Label htmlFor="t-name">Name</Label>
               <Input
@@ -247,112 +247,116 @@ export function TemplateDialog({
                 No exercises yet — each row becomes that many sets in the session.
               </p>
             ) : (
-              <div className="space-y-1.5">
-                <div className="grid grid-cols-[1fr_52px_56px_72px_64px_84px_32px] gap-2 px-1 text-[10px] uppercase tracking-wide text-muted-foreground">
-                  <span>Exercise</span>
-                  <span>Sets</span>
-                  <span>Reps</span>
-                  <span>Kg</span>
-                  <span>Rest s</span>
-                  <span>Group</span>
-                  <span />
-                </div>
-                {form.exercises.map((row, index) => (
-                  <div key={index} className="grid grid-cols-[1fr_52px_56px_72px_64px_84px_32px] gap-2">
-                    <Input
-                      list="template-exercise-names"
-                      value={row.exercise}
-                      onChange={(event) => updateExercise(index, { exercise: event.target.value })}
-                      placeholder="Bench press"
-                      className="h-8"
-                      aria-label={`Exercise ${index + 1}`}
-                    />
-                    <Input
-                      type="number"
-                      min={1}
-                      max={30}
-                      value={row.sets}
-                      onChange={(event) =>
-                        updateExercise(index, { sets: Number(event.target.value) || 1 })
-                      }
-                      className="h-8"
-                      aria-label={`Sets for exercise ${index + 1}`}
-                    />
-                    <Input
-                      type="number"
-                      min={0}
-                      value={row.reps ?? ""}
-                      onChange={(event) =>
-                        updateExercise(index, {
-                          reps: event.target.value === "" ? null : Number(event.target.value),
-                        })
-                      }
-                      className="h-8"
-                      aria-label={`Reps for exercise ${index + 1}`}
-                    />
-                    <Input
-                      type="number"
-                      min={0}
-                      step={0.5}
-                      value={row.weightKg ?? ""}
-                      onChange={(event) =>
-                        updateExercise(index, {
-                          weightKg: event.target.value === "" ? null : Number(event.target.value),
-                        })
-                      }
-                      className="h-8"
-                      aria-label={`Weight for exercise ${index + 1}`}
-                    />
-                    <Input
-                      type="number"
-                      min={0}
-                      max={3600}
-                      value={row.restSec ?? ""}
-                      onChange={(event) =>
-                        updateExercise(index, {
-                          restSec: event.target.value === "" ? null : Number(event.target.value),
-                        })
-                      }
-                      className="h-8"
-                      aria-label={`Rest seconds for exercise ${index + 1}`}
-                    />
-                    <Select
-                      value={row.group || NO_GROUP}
-                      onValueChange={(value) =>
-                        updateExercise(index, { group: value === NO_GROUP ? "" : value })
-                      }
-                    >
-                      <SelectTrigger
-                        className="h-8"
-                        aria-label={`Group for exercise ${index + 1}`}
-                      >
-                        <SelectValue />
-                      </SelectTrigger>
-                      <SelectContent>
-                        <SelectItem value={NO_GROUP}>—</SelectItem>
-                        {GROUP_KEYS.map((key) => (
-                          <SelectItem key={key} value={key}>
-                            {key}
-                          </SelectItem>
-                        ))}
-                      </SelectContent>
-                    </Select>
-                    <Button
-                      size="icon-sm"
-                      variant="ghost"
-                      className="text-destructive"
-                      aria-label={`Remove exercise ${index + 1}`}
-                      onClick={() =>
-                        setForm((current) => ({
-                          ...current,
-                          exercises: current.exercises.filter((_, i) => i !== index),
-                        }))
-                      }
-                    >
-                      <Trash2 />
-                    </Button>
+              // The seven fixed columns need ~480px; on phones the rows scroll
+              // sideways inside the dialog rather than blowing its width out.
+              <div className="overflow-x-auto">
+                <div className="min-w-[480px] space-y-1.5">
+                  <div className="grid grid-cols-[1fr_52px_56px_72px_64px_84px_32px] gap-2 px-1 text-[10px] uppercase tracking-wide text-muted-foreground">
+                    <span>Exercise</span>
+                    <span>Sets</span>
+                    <span>Reps</span>
+                    <span>Kg</span>
+                    <span>Rest s</span>
+                    <span>Group</span>
+                    <span />
                   </div>
-                ))}
+                  {form.exercises.map((row, index) => (
+                    <div key={index} className="grid grid-cols-[1fr_52px_56px_72px_64px_84px_32px] gap-2">
+                      <Input
+                        list="template-exercise-names"
+                        value={row.exercise}
+                        onChange={(event) => updateExercise(index, { exercise: event.target.value })}
+                        placeholder="Bench press"
+                        className="h-8"
+                        aria-label={`Exercise ${index + 1}`}
+                      />
+                      <Input
+                        type="number"
+                        min={1}
+                        max={30}
+                        value={row.sets}
+                        onChange={(event) =>
+                          updateExercise(index, { sets: Number(event.target.value) || 1 })
+                        }
+                        className="h-8"
+                        aria-label={`Sets for exercise ${index + 1}`}
+                      />
+                      <Input
+                        type="number"
+                        min={0}
+                        value={row.reps ?? ""}
+                        onChange={(event) =>
+                          updateExercise(index, {
+                            reps: event.target.value === "" ? null : Number(event.target.value),
+                          })
+                        }
+                        className="h-8"
+                        aria-label={`Reps for exercise ${index + 1}`}
+                      />
+                      <Input
+                        type="number"
+                        min={0}
+                        step={0.5}
+                        value={row.weightKg ?? ""}
+                        onChange={(event) =>
+                          updateExercise(index, {
+                            weightKg: event.target.value === "" ? null : Number(event.target.value),
+                          })
+                        }
+                        className="h-8"
+                        aria-label={`Weight for exercise ${index + 1}`}
+                      />
+                      <Input
+                        type="number"
+                        min={0}
+                        max={3600}
+                        value={row.restSec ?? ""}
+                        onChange={(event) =>
+                          updateExercise(index, {
+                            restSec: event.target.value === "" ? null : Number(event.target.value),
+                          })
+                        }
+                        className="h-8"
+                        aria-label={`Rest seconds for exercise ${index + 1}`}
+                      />
+                      <Select
+                        value={row.group || NO_GROUP}
+                        onValueChange={(value) =>
+                          updateExercise(index, { group: value === NO_GROUP ? "" : value })
+                        }
+                      >
+                        <SelectTrigger
+                          className="h-8"
+                          aria-label={`Group for exercise ${index + 1}`}
+                        >
+                          <SelectValue />
+                        </SelectTrigger>
+                        <SelectContent>
+                          <SelectItem value={NO_GROUP}>—</SelectItem>
+                          {GROUP_KEYS.map((key) => (
+                            <SelectItem key={key} value={key}>
+                              {key}
+                            </SelectItem>
+                          ))}
+                        </SelectContent>
+                      </Select>
+                      <Button
+                        size="icon-sm"
+                        variant="ghost"
+                        className="touch-target text-destructive"
+                        aria-label={`Remove exercise ${index + 1}`}
+                        onClick={() =>
+                          setForm((current) => ({
+                            ...current,
+                            exercises: current.exercises.filter((_, i) => i !== index),
+                          }))
+                        }
+                      >
+                        <Trash2 />
+                      </Button>
+                    </div>
+                  ))}
+                </div>
               </div>
             )}
 

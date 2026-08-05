@@ -38,6 +38,7 @@ import { describeDueDistance } from "@/lib/logic/due";
 import { formatMoney } from "@/lib/logic/finance";
 import { parseOnboardingState } from "@/lib/logic/onboarding";
 import { trendDelta } from "@/lib/logic/scoring";
+import { nowMinuteIn } from "@/lib/logic/schedule";
 import { SURFACE_ROLES, surfaceHref } from "@/lib/logic/surfaces";
 import { cn, formatNumber, pct, pluralize, sum } from "@/lib/utils";
 import { PRIORITY_META, type Priority } from "@/lib/enums";
@@ -120,7 +121,7 @@ export default async function DashboardPage() {
   return (
     <div className="mx-auto max-w-7xl">
       <PageHeader
-        title={`${greeting()}, ${user.name.split(" ")[0]}`}
+        title={`${greeting(user.timezone)}, ${user.name.split(" ")[0]}`}
         description={summaryLine(overview.planned, overview.completed, dueHabits.length, habitsDone)}
         actions={
           <Button asChild variant="outline" size="sm">
@@ -675,8 +676,9 @@ function HealthRow({
   );
 }
 
-function greeting(): string {
-  const hour = new Date().getHours();
+function greeting(timezone: string): string {
+  // The USER's wall clock, not the server's — a hosted deployment runs in UTC.
+  const hour = Math.floor(nowMinuteIn(timezone) / 60);
   if (hour < 5) return "Still up";
   if (hour < 12) return "Good morning";
   if (hour < 18) return "Good afternoon";

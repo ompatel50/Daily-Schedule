@@ -1,5 +1,6 @@
 import { daysBetween, type DayKey } from "@/lib/date";
-import type { DayStatus } from "@/lib/logic/schedule";
+import { operationalWallClock } from "@/lib/logic/operational-day";
+import { DEFAULT_DAY_RESET_MINUTE, type DayStatus } from "@/lib/logic/schedule";
 
 /**
  * Schedule-aware reminder decisions — pure.
@@ -63,6 +64,14 @@ export function classicReminderKey(reminderId: string, remindAtIso: string): str
   return `reminder:${reminderId}:${remindAtIso}`;
 }
 
+/**
+ * Naive wall clock for a minute on a calendar date. Only correct when the
+ * minute cannot fall before the daily reset — true for `DUE_REMINDER_MINUTE`
+ * (9:00 AM, always past the 6:00 AM reset ceiling). Anything carrying a
+ * user-chosen time must go through `operationalWallClock` instead, so a
+ * 1:00 AM reminder on operational Wednesday fires Thursday 1:00 AM — its
+ * real time — rather than a day early.
+ */
 export function minuteToWallClock(date: DayKey, minute: number): string {
   const hours = String(Math.floor(minute / 60)).padStart(2, "0");
   const minutes = String(minute % 60).padStart(2, "0");
@@ -142,6 +151,12 @@ export interface ScheduleReminderInput {
   timeMinute: number | null;
   archived: boolean;
   deliveredKeys: ReadonlySet<string>;
+  /**
+   * The user's daily reset (minutes after midnight). `date` is an operational
+   * day, so a reminder time before the reset belongs to the *next* calendar
+   * date — it still fires at its real wall-clock time.
+   */
+  dayResetMinute?: number;
 }
 
 const NEUTRAL_SUPPRESSIONS: Partial<Record<DayStatus, ReminderSuppression>> = {
@@ -187,7 +202,11 @@ export function resolveScheduleReminder(
       kind: input.kind,
       title: input.name,
       message: input.kind === "habit" ? "Habit scheduled today" : "Goal scheduled today",
-      fireAt: minuteToWallClock(input.date, minute),
+      fireAt: operationalWallClock(
+        input.date,
+        minute,
+        input.dayResetMinute ?? DEFAULT_DAY_RESET_MINUTE,
+      ),
       reminderId: null,
     },
   };

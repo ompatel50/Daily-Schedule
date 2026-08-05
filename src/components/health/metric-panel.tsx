@@ -26,7 +26,9 @@ export function MetricPanel({ series, chart = "area" }: { series: MetricSeries; 
 
   return (
     <section
-      className="rounded-xl border p-4"
+      // min-w-0 lets the panel shrink inside its grid track instead of
+      // widening the page at narrow viewports.
+      className="min-w-0 rounded-xl border p-4"
       aria-label={series.label}
       data-testid={`metric-${series.type}`}
     >
@@ -51,7 +53,7 @@ export function MetricPanel({ series, chart = "area" }: { series: MetricSeries; 
 
       {hasData ? (
         <>
-          <div className="mt-3">
+          <div className="mt-3 overflow-hidden">
             {chart === "area" ? (
               <TrendAreaChart
                 data={data}

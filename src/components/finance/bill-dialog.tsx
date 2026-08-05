@@ -192,7 +192,7 @@ export function BillDialog({
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent className="max-h-[92vh] max-w-lg overflow-y-auto">
+      <DialogContent>
         <form onSubmit={submit}>
           <DialogHeader>
             <DialogTitle>{isEdit ? "Edit bill" : "New bill"}</DialogTitle>

@@ -80,6 +80,16 @@ export function AssistantChat(props: {
   const [connectionError, setConnectionError] = React.useState<string | null>(null);
   const bottomRef = React.useRef<HTMLDivElement | null>(null);
   const abortRef = React.useRef<AbortController | null>(null);
+  const inputRef = React.useRef<HTMLTextAreaElement | null>(null);
+
+  // The composer grows with its content up to ~6 rows, then scrolls inside.
+  // Runs after the DOM holds the new value, so clearing on send shrinks too.
+  React.useEffect(() => {
+    const el = inputRef.current;
+    if (!el) return;
+    el.style.height = "auto";
+    el.style.height = `${Math.min(el.scrollHeight, 144)}px`;
+  }, [input]);
 
   // Passive status probe after mount — never during render, and not recorded
   // in the audit log (only explicit tests from Settings are).
@@ -282,7 +292,7 @@ export function AssistantChat(props: {
   return (
     <div className="space-y-6">
       <div
-        className="flex flex-wrap items-center gap-2 rounded-lg border px-3 py-2 text-sm"
+        className="flex flex-wrap items-center gap-x-2 gap-y-1.5 rounded-lg border px-3 py-2 text-sm"
         data-testid="assistant-status"
       >
         {reachable === null ? (
@@ -298,7 +308,10 @@ export function AssistantChat(props: {
             <XCircle className="mr-1 h-3 w-3" /> Ollama offline
           </Badge>
         )}
-        <Badge variant="outline">{props.model}</Badge>
+        {/* Model tags ("llama3.1:70b-instruct-q4_K_M") outgrow a 320px row. */}
+        <Badge variant="outline" className="max-w-full">
+          <span className="truncate">{props.model}</span>
+        </Badge>
         <Badge
           variant={props.mode === "confirm" ? "warning" : "secondary"}
           data-testid="assistant-mode-badge"
@@ -312,8 +325,10 @@ export function AssistantChat(props: {
           )}
           {modeMeta.label}
         </Badge>
-        <span className="text-xs text-muted-foreground">{modeMeta.description}</span>
-        <Button asChild variant="ghost" size="sm" className="ml-auto">
+        <span className="w-full break-words text-xs text-muted-foreground sm:w-auto">
+          {modeMeta.description}
+        </span>
+        <Button asChild variant="ghost" size="sm" className="touch-target ml-auto">
           <Link href="/settings#assistant">
             <Settings2 /> Settings
           </Link>
@@ -323,7 +338,7 @@ export function AssistantChat(props: {
       {reachable === false && (
         <div className="flex items-start gap-2 rounded-lg border border-dashed px-3 py-2.5 text-sm text-muted-foreground">
           <CircleSlash className="mt-0.5 h-4 w-4 shrink-0" />
-          <span>
+          <span className="min-w-0 break-words">
             {connectionError ?? "Could not reach the Ollama server."} Everything else in the app
             works normally; the assistant will answer again once the server is reachable.
           </span>
@@ -331,7 +346,12 @@ export function AssistantChat(props: {
       )}
 
       <div className="rounded-xl border bg-card shadow-sm">
-        <div className="max-h-[52vh] min-h-48 space-y-4 overflow-y-auto p-4" data-testid="assistant-transcript">
+        {/* dvh, not vh: dvh shrinks with the iOS keyboard, keeping the composer
+            visible; the 640px cap stops the card growing endless on desktop. */}
+        <div
+          className="max-h-[min(60dvh,640px)] min-h-48 space-y-4 overflow-y-auto overscroll-contain p-3 sm:p-4"
+          data-testid="assistant-transcript"
+        >
           {messages.length === 0 ? (
             <div className="space-y-3">
               <p className="text-sm text-muted-foreground">
@@ -345,7 +365,7 @@ export function AssistantChat(props: {
                     type="button"
                     onClick={() => void send(suggestion)}
                     disabled={streaming}
-                    className="rounded-full border px-3 py-1 text-xs text-muted-foreground transition-colors hover:bg-accent hover:text-accent-foreground"
+                    className="touch-target rounded-full border px-3 py-1.5 text-xs text-muted-foreground transition-colors hover:bg-accent hover:text-accent-foreground"
                   >
                     <Sparkles className="mr-1 inline h-3 w-3" />
                     {suggestion}
@@ -358,7 +378,7 @@ export function AssistantChat(props: {
               <div key={entry.id} className={cn("flex", entry.role === "user" && "justify-end")}>
                 <div
                   className={cn(
-                    "max-w-[85%] space-y-2 rounded-lg px-3 py-2 text-sm",
+                    "min-w-0 max-w-[92%] space-y-2 rounded-lg px-3 py-2 text-sm sm:max-w-[85%]",
                     entry.role === "user"
                       ? "bg-primary text-primary-foreground"
                       : "border bg-muted/40",
@@ -383,9 +403,13 @@ export function AssistantChat(props: {
                       ))}
                     </div>
                   )}
-                  {entry.content && <p className="whitespace-pre-wrap">{entry.content}</p>}
+                  {/* anywhere, not break-word: pasted URLs and code have no
+                      soft break points and would otherwise force overflow. */}
+                  {entry.content && (
+                    <p className="whitespace-pre-wrap [overflow-wrap:anywhere]">{entry.content}</p>
+                  )}
                   {entry.error && (
-                    <p className="text-red-600 dark:text-red-400">{entry.error}</p>
+                    <p className="break-words text-red-600 dark:text-red-400">{entry.error}</p>
                   )}
                   {entry.role === "assistant" &&
                     !entry.content &&
@@ -411,6 +435,7 @@ export function AssistantChat(props: {
           }}
         >
           <Textarea
+            ref={inputRef}
             value={input}
             onChange={(event) => setInput(event.target.value)}
             onKeyDown={(event) => {
@@ -425,13 +450,14 @@ export function AssistantChat(props: {
                 : "Ask about your data… (Enter to send)"
             }
             maxLength={ASSISTANT_LIMITS.maxMessageChars}
-            rows={2}
-            className="min-h-0 resize-none"
+            rows={1}
+            className="max-h-36 min-h-0 resize-none"
             data-testid="assistant-input"
           />
           <Button
             type="submit"
             size="icon"
+            className="touch-target shrink-0"
             disabled={streaming || input.trim() === ""}
             aria-label="Send"
             data-testid="assistant-send"

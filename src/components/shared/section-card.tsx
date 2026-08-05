@@ -25,7 +25,9 @@ export function SectionCard({
 }) {
   return (
     <Card className={className}>
-      <CardHeader className="flex-row items-center justify-between space-y-0 pb-3">
+      {/* flex-wrap: a wide action (tabs, a button pair) drops below the title
+          on phones instead of forcing the card past the viewport. */}
+      <CardHeader className="flex-row flex-wrap items-center justify-between gap-y-2 space-y-0 pb-3">
         <div className="flex min-w-0 items-center gap-2">
           {Icon && <Icon className={cn("h-4 w-4 shrink-0", accent)} />}
           <div className="min-w-0">

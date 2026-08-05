@@ -4,7 +4,7 @@ import { revalidatePath } from "next/cache";
 
 import { getCurrentUser, prisma } from "@/lib/db";
 import { PROJECT_STATUSES, type ProjectStatus } from "@/lib/enums";
-import { todayIn } from "@/lib/logic/schedule";
+import { scheduleSettingsFor } from "@/server/schedule";
 import { nextDueAfterCompletion } from "@/lib/logic/tasks";
 import {
   fail,
@@ -188,7 +188,7 @@ export async function completeTask(id: string): Promise<ActionResult<CompleteTas
   if (!task) return fail("Task not found");
   if (task.status !== "open") return fail("This task is not open");
 
-  const nextDue = nextDueAfterCompletion(task, todayIn(user.timezone));
+  const nextDue = nextDueAfterCompletion(task, scheduleSettingsFor(user).today);
   if (nextDue) {
     await prisma.task.update({ where: { id }, data: { dueDate: nextDue } });
     revalidateAll();

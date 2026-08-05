@@ -14,13 +14,14 @@ import { Prisma } from "@prisma/client";
 import { prisma } from "@/lib/prisma";
 import { type DayKey, shiftDay } from "@/lib/date";
 import {
+  DEFAULT_DAY_RESET_MINUTE,
   normalizeRuleInput,
   type SchedulableItem,
   type ScheduleOverrideLike,
   type ScheduleRuleLike,
   type ScheduleSettings,
-  todayIn,
 } from "@/lib/logic/schedule";
+import { currentOperationalDay, isValidDayResetMinute } from "@/lib/logic/operational-day";
 
 /**
  * Persistence for the schedule engine.
@@ -155,16 +156,28 @@ export function toSchedulable(
   };
 }
 
-/** The engine's settings, derived from the user record. */
+/**
+ * The engine's settings, derived from the user record.
+ *
+ * `today` is the *operational* date: with the default 4:00 AM reset, the day
+ * key only advances at 4:00 AM in the user's timezone, so 1:00 AM activity
+ * still lands on the evening's schedule. Every read model and action that
+ * says "today" resolves it through here — nothing else may compute it.
+ */
 export function scheduleSettingsFor(user: {
   weekStartsOn: number;
   timezone: string;
+  dayResetMinute?: number;
 }): ScheduleSettings {
   const timezone = user.timezone || "UTC";
+  const dayResetMinute = isValidDayResetMinute(user.dayResetMinute)
+    ? user.dayResetMinute
+    : DEFAULT_DAY_RESET_MINUTE;
   return {
     weekStartsOn: user.weekStartsOn === 0 ? 0 : 1,
     timezone,
-    today: todayIn(timezone),
+    today: currentOperationalDay(timezone, dayResetMinute),
+    dayResetMinute,
   };
 }
 

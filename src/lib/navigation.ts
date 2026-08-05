@@ -145,6 +145,26 @@ export const NAV_ITEMS: NavItem[] = [
   },
 ];
 
+/**
+ * The one active-route rule, shared by the sidebar, the mobile drawer and the
+ * topbar title. Root matches exactly; everything else matches its subtree.
+ */
+export function isNavItemActive(href: string, pathname: string): boolean {
+  return href === "/" ? pathname === "/" : pathname.startsWith(href);
+}
+
+/**
+ * Drawer sections. Everything stays one tap away — grouping is headings, not
+ * folding — but the phone drawer reads as four short lists instead of one
+ * fourteen-item column.
+ */
+export const NAV_GROUPS: Array<{ label: string; hrefs: string[] }> = [
+  { label: "Plan", hrefs: ["/", "/today", "/planner", "/tasks", "/inbox"] },
+  { label: "Track", hrefs: ["/habits", "/nutrition", "/workouts", "/health"] },
+  { label: "Review", hrefs: ["/calendar", "/insights", "/finance"] },
+  { label: "App", hrefs: ["/assistant", "/settings"] },
+];
+
 export const KEYBOARD_SHORTCUTS: Array<{ keys: string; action: string; group: string }> = [
   { keys: "⌘K / Ctrl K", action: "Open command palette", group: "Global" },
   { keys: "N", action: "Quick add to the planner", group: "Global" },

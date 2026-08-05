@@ -185,8 +185,11 @@ export function WorkoutManager({
             {templates.map((template) => {
               const meta = WORKOUT_TYPE_META[template.type as WorkoutType] ?? WORKOUT_TYPE_META.custom;
               return (
-                <div key={template.id} className="flex items-center gap-2 rounded-lg border px-3 py-2">
-                  <div className="min-w-0">
+                <div
+                  key={template.id}
+                  className="flex max-w-full items-center gap-2 rounded-lg border px-3 py-2"
+                >
+                  <div className="min-w-0 flex-1">
                     <p className="truncate text-sm font-medium">{template.name}</p>
                     <p className="truncate text-xs text-muted-foreground">
                       {meta.label} · {formatDuration(template.durationMin)}
@@ -205,6 +208,7 @@ export function WorkoutManager({
                   <Button
                     size="icon-sm"
                     variant="ghost"
+                    className="touch-target"
                     aria-label={`Edit template ${template.name}`}
                     disabled={busy !== null}
                     onClick={() => editTemplate(template)}
@@ -275,6 +279,7 @@ export function WorkoutManager({
                     <Button
                       size="icon-sm"
                       variant="ghost"
+                      className="touch-target"
                       aria-label="Repeat today"
                       disabled={busy !== null}
                       onClick={() => repeat(workout)}
@@ -284,6 +289,7 @@ export function WorkoutManager({
                     <Button
                       size="icon-sm"
                       variant="ghost"
+                      className="touch-target"
                       aria-label="Edit workout"
                       onClick={() => {
                         setEditing(workout);

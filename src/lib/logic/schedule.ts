@@ -95,9 +95,17 @@ export interface ScheduleSettings {
   /**
    * "Today" in the user's timezone. Injected rather than read from the clock so
    * that every caller in one render agrees on the date, and so tests are
-   * deterministic.
+   * deterministic. Since the operational-day work this is the *operational*
+   * date — between midnight and the user's daily reset it is still the
+   * previous calendar date (see src/lib/logic/operational-day.ts).
    */
   today: DayKey;
+  /**
+   * The user's daily reset, minutes after midnight (240 = 4:00 AM). Optional
+   * so long-lived callers and tests that predate the setting keep working;
+   * absent means the default reset. Read it via `resetMinuteOf`.
+   */
+  dayResetMinute?: number;
 }
 
 /**
@@ -602,6 +610,14 @@ export function isFutureOccurrence(date: DayKey, settings: ScheduleSettings): bo
   return daysBetween(settings.today, date) > 0;
 }
 
+/** 4:00 AM — the default daily reset (see src/lib/logic/operational-day.ts). */
+export const DEFAULT_DAY_RESET_MINUTE = 4 * 60;
+
+/** The daily reset for a settings object that may predate the setting. */
+export function resetMinuteOf(settings: Pick<ScheduleSettings, "dayResetMinute">): number {
+  return settings.dayResetMinute ?? DEFAULT_DAY_RESET_MINUTE;
+}
+
 /**
  * Overdue = a required occurrence, in the past or already past its time today,
  * with nothing recorded against it.
@@ -620,7 +636,12 @@ export function isOverdueOccurrence(
   if (date === settings.today) {
     if (occurrence.timeMinute === null) return false; // no time set — the day isn't over
     const now = options.nowMinute ?? nowMinuteIn(settings.timezone);
-    return now > occurrence.timeMinute;
+    // Compare on the operational day's extended axis: with a 4:00 AM reset,
+    // 1:00 AM "now" sits at the *end* of today, past a 11:00 PM occurrence
+    // but before a 1:30 AM one.
+    const reset = resetMinuteOf(settings);
+    const extend = (minute: number) => (reset > 0 && minute < reset ? minute + 1440 : minute);
+    return extend(now) > extend(occurrence.timeMinute);
   }
 
   return true;

@@ -193,8 +193,8 @@ export function ImportHistory({ batches }: { batches: BatchSummary[] }) {
       {/* The controls earn their space only once there is something to sift:
           below three rows, every answer is already on screen. */}
       {batches.length > 2 && (
-        <div className="flex flex-wrap items-center gap-2">
-          <div className="relative min-w-[12rem] flex-1">
+        <div className="flex flex-col gap-2 sm:flex-row sm:items-center">
+          <div className="relative sm:min-w-[12rem] sm:flex-1">
             <Search className="pointer-events-none absolute left-2.5 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-muted-foreground" />
             <Input
               value={query}
@@ -204,7 +204,7 @@ export function ImportHistory({ batches }: { batches: BatchSummary[] }) {
               className="h-9 pl-8"
             />
           </div>
-          <div className="flex gap-1" role="group" aria-label="Filter by status">
+          <div className="flex flex-wrap gap-1" role="group" aria-label="Filter by status">
             {FILTERS.map((filter) => (
               <Button
                 key={filter.key}

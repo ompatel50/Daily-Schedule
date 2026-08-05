@@ -8,9 +8,11 @@ import { DateNav } from "@/components/shared/date-nav";
 import { PageHeader } from "@/components/shared/page-header";
 import { SectionCard } from "@/components/shared/section-card";
 import { Button } from "@/components/ui/button";
-import { isDayKey, monthGridDays, weekRange } from "@/lib/date";
+import { isDayKey, monthGridDays, shiftDay, weekRange } from "@/lib/date";
+import { resetMinuteOf } from "@/lib/logic/schedule";
 import { SURFACE_ROLES, surfaceHref } from "@/lib/logic/surfaces";
 import { toScheduleRowItems } from "@/lib/serializers";
+import { scheduleSettingsFor } from "@/server/schedule";
 import { extendSeriesFor } from "@/server/series";
 import {
   getToday, getScheduleItems, getScheduleTemplates, getUser } from "@/server/queries";
@@ -49,13 +51,19 @@ export default async function PlannerPage({
           })()
         : { from: date, to: date };
 
+  // Fetch one calendar date past the range: each operational day's
+  // after-midnight tail lives on the next calendar date. Rows carry their
+  // operational day; grouping below never rewrites a timestamp.
+  const resetMinute = resetMinuteOf(scheduleSettingsFor(user));
   const [rangeItems, templates] = await Promise.all([
-    getScheduleItems(range.from, range.to),
+    getScheduleItems(range.from, shiftDay(range.to, 1)),
     getScheduleTemplates(),
   ]);
 
-  const rows = toScheduleRowItems(rangeItems);
-  const dayItems = rows.filter((item) => item.date === date);
+  const rows = toScheduleRowItems(rangeItems, resetMinute).filter(
+    (item) => item.operationalDate >= range.from && item.operationalDate <= range.to,
+  );
+  const dayItems = rows.filter((item) => item.operationalDate === date);
 
   return (
     <div className="mx-auto max-w-7xl">
@@ -104,6 +112,7 @@ export default async function PlannerPage({
           weekStartsOn={weekStartsOn}
           dayStartHour={user.dayStartHour}
           dayEndHour={user.dayEndHour}
+          dayResetMinute={resetMinute}
           todayKey={todayKey}
         />
       </div>

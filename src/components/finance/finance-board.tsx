@@ -194,7 +194,7 @@ export function FinanceBoard({
           accent="text-domain-finance"
           description="Newest first — the ledger every balance derives from"
           action={
-            <div className="flex items-center gap-1">
+            <div className="flex flex-wrap items-center justify-end gap-1">
               {activeAccounts.length > 0 && (
                 <Button size="sm" variant="ghost" onClick={() => setImportOpen(true)}>
                   <FileUp /> Import CSV
@@ -364,7 +364,7 @@ export function FinanceBoard({
                 <button
                   type="button"
                   onClick={() => setShowArchivedAccounts((current) => !current)}
-                  className="text-xs text-muted-foreground transition-colors hover:text-foreground"
+                  className="touch-target text-xs text-muted-foreground transition-colors hover:text-foreground"
                 >
                   {showArchivedAccounts ? "Hide" : "Show"} {archivedAccounts.length} archived
                 </button>
@@ -668,30 +668,33 @@ function BudgetRow({
   const periodLabel = budget.period === "weekly" ? "Weekly" : "Monthly";
   return (
     <div className="rounded-lg border px-3 py-2.5">
-      <div className="flex items-center gap-1">
-        <p className="min-w-0 flex-1 truncate text-sm font-medium">{budget.label}</p>
-        <Badge variant="muted" className="text-[10px]">
-          {periodLabel}
-        </Badge>
-        {budget.over ? (
-          <Badge variant="outline" className="gap-1 border-red-500/30 text-[10px] text-red-700 dark:text-red-400">
-            <TriangleAlert className="h-2.5 w-2.5" aria-hidden="true" />
-            Over by {formatMoney(budget.spent - budget.amount, currency)}
+      {/* The "Over by …" badge is wide; at phone widths it wraps under the label. */}
+      <div className="flex flex-wrap items-center gap-1">
+        <p className="min-w-0 flex-[1_1_8rem] truncate text-sm font-medium">{budget.label}</p>
+        <div className="ml-auto flex flex-wrap items-center justify-end gap-1">
+          <Badge variant="muted" className="text-[10px]">
+            {periodLabel}
           </Badge>
-        ) : budget.thresholdReached ? (
-          <Badge
-            variant="outline"
-            className="gap-1 border-amber-500/30 text-[10px] text-amber-800 dark:text-amber-400"
-          >
-            <BellRing className="h-2.5 w-2.5" aria-hidden="true" />
-            Past {budget.threshold}%
-          </Badge>
-        ) : null}
-        <RowMenu
-          label={`Actions for the ${budget.label} budget`}
-          items={[{ label: "Edit", icon: Pencil, onClick: onEdit }]}
-          onDelete={onDelete}
-        />
+          {budget.over ? (
+            <Badge variant="outline" className="gap-1 border-red-500/30 text-[10px] text-red-700 dark:text-red-400">
+              <TriangleAlert className="h-2.5 w-2.5" aria-hidden="true" />
+              Over by {formatMoney(budget.spent - budget.amount, currency)}
+            </Badge>
+          ) : budget.thresholdReached ? (
+            <Badge
+              variant="outline"
+              className="gap-1 border-amber-500/30 text-[10px] text-amber-800 dark:text-amber-400"
+            >
+              <BellRing className="h-2.5 w-2.5" aria-hidden="true" />
+              Past {budget.threshold}%
+            </Badge>
+          ) : null}
+          <RowMenu
+            label={`Actions for the ${budget.label} budget`}
+            items={[{ label: "Edit", icon: Pencil, onClick: onEdit }]}
+            onDelete={onDelete}
+          />
+        </div>
       </div>
       <Progress
         value={Math.min(100, budget.percent)}
@@ -779,8 +782,10 @@ function BillRow({
     BILL_RECURRENCE_META[bill.recurrence as BillRecurrence]?.label ?? bill.recurrence;
 
   return (
-    <div className="flex items-center gap-3 rounded-lg border px-3 py-2">
-      <div className="min-w-0 flex-1">
+    // Phone widths can't fit name + amount + two controls on one line; the
+    // basis lets the trailing cluster wrap under the name, right-aligned.
+    <div className="flex flex-wrap items-center gap-x-3 gap-y-1 rounded-lg border px-3 py-2">
+      <div className="min-w-0 flex-[1_1_10rem]">
         <div className="flex flex-wrap items-center gap-2">
           <p className="truncate text-sm font-medium">{bill.name}</p>
           {bill.kind === "subscription" && (
@@ -804,20 +809,22 @@ function BillRow({
           </span>
         </p>
       </div>
-      <span className="tabular shrink-0 text-sm font-semibold">
-        {formatMoney(bill.amount, bill.currency)}
-      </span>
-      <Button size="sm" variant="outline" className="shrink-0" onClick={onMarkPaid}>
-        Mark paid
-      </Button>
-      <RowMenu
-        label={`Actions for ${bill.name}`}
-        items={[
-          { label: "Edit", icon: Pencil, onClick: onEdit },
-          { label: "Archive", icon: Archive, onClick: onArchive },
-        ]}
-        onDelete={onDelete}
-      />
+      <div className="ml-auto flex items-center gap-3">
+        <span className="tabular text-sm font-semibold">
+          {formatMoney(bill.amount, bill.currency)}
+        </span>
+        <Button size="sm" variant="outline" className="shrink-0" onClick={onMarkPaid}>
+          Mark paid
+        </Button>
+        <RowMenu
+          label={`Actions for ${bill.name}`}
+          items={[
+            { label: "Edit", icon: Pencil, onClick: onEdit },
+            { label: "Archive", icon: Archive, onClick: onArchive },
+          ]}
+          onDelete={onDelete}
+        />
+      </div>
     </div>
   );
 }
@@ -897,24 +904,26 @@ function GoalRow({
 }) {
   return (
     <div className="rounded-lg border px-3 py-2.5">
-      <div className="flex items-center gap-1">
-        <p className="min-w-0 flex-1 truncate text-sm font-medium">{goal.name}</p>
-        {goal.complete && (
-          <Badge variant="success" className="text-[10px]">
-            Funded
-          </Badge>
-        )}
-        <Button size="sm" variant="ghost" onClick={onAdjust}>
-          <Plus /> Add
-        </Button>
-        <RowMenu
-          label={`Actions for ${goal.name}`}
-          items={[
-            { label: "Edit", icon: Pencil, onClick: onEdit },
-            { label: "Archive", icon: Archive, onClick: onArchive },
-          ]}
-          onDelete={onDelete}
-        />
+      <div className="flex flex-wrap items-center gap-1">
+        <p className="min-w-0 flex-[1_1_8rem] truncate text-sm font-medium">{goal.name}</p>
+        <div className="ml-auto flex items-center gap-1">
+          {goal.complete && (
+            <Badge variant="success" className="text-[10px]">
+              Funded
+            </Badge>
+          )}
+          <Button size="sm" variant="ghost" onClick={onAdjust}>
+            <Plus /> Add
+          </Button>
+          <RowMenu
+            label={`Actions for ${goal.name}`}
+            items={[
+              { label: "Edit", icon: Pencil, onClick: onEdit },
+              { label: "Archive", icon: Archive, onClick: onArchive },
+            ]}
+            onDelete={onDelete}
+          />
+        </div>
       </div>
       <Progress value={goal.percent} className="mt-2 h-1.5" indicatorClassName="bg-domain-finance" />
       <div className="mt-1.5 flex items-center justify-between gap-2 text-xs text-muted-foreground">
@@ -983,7 +992,7 @@ function RowMenu({
   return (
     <DropdownMenu onOpenChange={(open) => !open && setConfirming(false)}>
       <DropdownMenuTrigger asChild>
-        <Button size="icon-sm" variant="ghost" className="shrink-0" aria-label={label}>
+        <Button size="icon-sm" variant="ghost" className="touch-target shrink-0" aria-label={label}>
           <MoreHorizontal />
         </Button>
       </DropdownMenuTrigger>

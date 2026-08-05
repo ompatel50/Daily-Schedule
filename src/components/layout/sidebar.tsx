@@ -4,7 +4,7 @@ import Link from "next/link";
 import { usePathname } from "next/navigation";
 import { Command, Plus, Sparkles } from "lucide-react";
 
-import { NAV_ITEMS } from "@/lib/navigation";
+import { isNavItemActive, NAV_ITEMS } from "@/lib/navigation";
 import { cn } from "@/lib/utils";
 import { Button } from "@/components/ui/button";
 import { useUIStore } from "@/store/ui-store";
@@ -38,7 +38,7 @@ export function Sidebar({ userName }: { userName: string }) {
 
       <nav className="flex-1 space-y-0.5 overflow-y-auto px-3 pb-3">
         {NAV_ITEMS.map((item) => {
-          const active = item.href === "/" ? pathname === "/" : pathname.startsWith(item.href);
+          const active = isNavItemActive(item.href, pathname);
           const Icon = item.icon;
           return (
             <Link

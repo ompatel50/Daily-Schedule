@@ -11,6 +11,13 @@ import type { ScheduleRowItem } from "@/components/planner/schedule-row";
 const MAX_VISIBLE = 3;
 
 /** Month overview. Clicking a day deep-links to that day's planner view. */
+
+/** After-midnight items sort at the end of the day they group under. */
+function sortMinute(item: ScheduleRowItem): number {
+  if (item.startMinute === null) return 1e9;
+  return item.operationalDate === item.date ? item.startMinute : item.startMinute + 1440;
+}
+
 export function MonthGrid({
   anchor,
   items,
@@ -26,7 +33,7 @@ export function MonthGrid({
   const days = monthGridDays(anchor, weekStartsOn);
   const byDay = new Map<string, ScheduleRowItem[]>();
   for (const item of items) {
-    byDay.set(item.date, [...(byDay.get(item.date) ?? []), item]);
+    byDay.set(item.operationalDate, [...(byDay.get(item.operationalDate) ?? []), item]);
   }
 
   return (
@@ -46,7 +53,7 @@ export function MonthGrid({
         {days.map((day) => {
           const dayItems = (byDay.get(day) ?? []).sort((a, b) => {
             if (a.allDay !== b.allDay) return a.allDay ? 1 : -1;
-            return (a.startMinute ?? 1e9) - (b.startMinute ?? 1e9);
+            return sortMinute(a) - sortMinute(b);
           });
           const outside = !isSameMonth(day, anchor);
           const done = dayItems.filter((item) => item.status === "done").length;
@@ -60,7 +67,7 @@ export function MonthGrid({
               key={day}
               href={`/planner?date=${day}&view=day`}
               className={cn(
-                "flex min-h-[104px] flex-col gap-1 border-b border-r p-1.5 transition-colors hover:bg-accent/40",
+                "flex min-h-[64px] flex-col gap-1 border-b border-r p-1 transition-colors hover:bg-accent/40 sm:min-h-[104px] sm:p-1.5",
                 outside && "bg-muted/20 opacity-55",
                 isToday(day, todayKey) && "bg-domain-planner/[0.06]",
               )}
@@ -90,7 +97,38 @@ export function MonthGrid({
                 </div>
               </div>
 
-              <div className="space-y-0.5">
+              {/* ~45px cells at 320px can't hold titles: phones show category
+                  dots; titles return from `sm:` up. The cell links to the day
+                  view either way, where everything is readable. */}
+              <div className="flex flex-wrap content-start gap-0.5 sm:hidden">
+                {dayItems.slice(0, 6).map((item) => {
+                  const meta =
+                    CATEGORY_META[item.category as ScheduleCategory] ?? CATEGORY_META.personal;
+                  return (
+                    <span
+                      key={item.id}
+                      className={cn(
+                        "h-1.5 w-1.5 rounded-full",
+                        meta.dot,
+                        item.status === "done" && "opacity-40",
+                      )}
+                      aria-hidden
+                    />
+                  );
+                })}
+                {dayItems.length > 6 && (
+                  <span className="text-[9px] leading-none text-muted-foreground">
+                    +{dayItems.length - 6}
+                  </span>
+                )}
+                {dayItems.length > 0 && (
+                  <span className="sr-only">
+                    {dayItems.length} item{dayItems.length === 1 ? "" : "s"}
+                  </span>
+                )}
+              </div>
+
+              <div className="hidden space-y-0.5 sm:block">
                 {dayItems.slice(0, MAX_VISIBLE).map((item) => {
                   const meta =
                     CATEGORY_META[item.category as ScheduleCategory] ?? CATEGORY_META.personal;

@@ -18,7 +18,7 @@ export function RangePicker({ current }: { current: HealthRange }) {
 
   return (
     <div
-      className="inline-flex items-center gap-0.5 rounded-lg border p-0.5"
+      className="inline-flex flex-wrap items-center gap-0.5 rounded-lg border p-0.5"
       role="group"
       aria-label="Time range"
     >
@@ -28,7 +28,7 @@ export function RangePicker({ current }: { current: HealthRange }) {
           href={`${pathname}?range=${range}`}
           aria-current={range === current ? "true" : undefined}
           className={cn(
-            "rounded-md px-2.5 py-1 text-xs font-medium transition-colors",
+            "inline-flex min-h-9 items-center rounded-md px-2.5 py-1 text-xs font-medium transition-colors",
             range === current
               ? "bg-domain-health/10 text-domain-health"
               : "text-muted-foreground hover:bg-accent hover:text-foreground",

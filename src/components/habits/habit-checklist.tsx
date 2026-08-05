@@ -124,7 +124,7 @@ export function HabitChecklist({
                 aria-pressed={done}
                 aria-label={`${habit.name} — ${done ? "completed" : habit.statusLabel}`}
                 className={cn(
-                  "flex w-full items-center gap-2.5 rounded-lg border px-2.5 py-2 text-left transition-colors",
+                  "flex min-h-11 w-full items-center gap-2.5 rounded-lg border px-2.5 py-2 text-left transition-colors",
                   "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring",
                   done
                     ? "border-emerald-500/30 bg-emerald-500/10"

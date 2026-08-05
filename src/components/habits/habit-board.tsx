@@ -211,7 +211,7 @@ function HabitCard({
           variant="ghost"
           onClick={onEdit}
           aria-label={`Edit ${habit.name}`}
-          className="opacity-0 transition-opacity group-hover:opacity-100"
+          className="hover-reveal"
         >
           <Pencil />
         </Button>
@@ -257,7 +257,7 @@ function HabitCard({
                 aria-label={label}
                 onClick={() => onToggle(habit.id, day.date)}
                 className={cn(
-                  "h-4 w-4 rounded-[3px] transition-transform hover:scale-125",
+                  "h-5 w-5 rounded-[3px] transition-transform hover:scale-125 lg:h-4 lg:w-4",
                   DOT_CLASSES[day.status],
                 )}
               />

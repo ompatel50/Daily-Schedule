@@ -175,6 +175,20 @@ server-side. The audit trail stores bounded, app-authored summaries
 base URLs are validated (http/https only, no credentials, cloud-metadata
 addresses refused) and never appear in error messages or logs.
 
+## What the service worker may cache — and what it never may
+
+The app installs as a PWA, and its service worker (`public/sw.js`) keeps a
+deliberately narrow cache: content-hashed static assets under
+`/_next/static/`, the app icons and the manifest — files that are identical
+for every account and immutable by construction. It never caches HTML,
+never `/api/*`, never a server action response, never anything
+authenticated. The rule exists so that a shared or resold device can never
+serve one account's cached data to another, and so a stale page can never
+show yesterday's schedule as today's. Offline, the shell may load from
+cache; your data always requires a live, authenticated request. Signing out
+also clears the session-scoped UI preferences the browser kept
+(`clearClientUIState`).
+
 ## No analytics, no trackers
 
 There is no third-party analytics, no tracking pixel, no external font or

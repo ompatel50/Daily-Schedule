@@ -132,7 +132,7 @@ export function TemplateBar({ date, templates }: { date: string; templates: Temp
               <Button
                 size="icon-sm"
                 variant="ghost"
-                className="text-muted-foreground opacity-0 transition-opacity group-hover:opacity-100"
+                className="text-muted-foreground hover-reveal"
                 onClick={() => remove(template)}
                 aria-label={`Delete ${template.name}`}
               >

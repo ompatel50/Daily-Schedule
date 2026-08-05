@@ -4,6 +4,7 @@ import { CommandPalette, QuickAddDialog } from "@/components/layout/shell-extras
 import { KeyboardShortcuts } from "@/components/layout/keyboard-shortcuts";
 import { Sidebar } from "@/components/layout/sidebar";
 import { Topbar } from "@/components/layout/topbar";
+import { OfflineIndicator } from "@/components/shared/offline-indicator";
 import { PwaRegister } from "@/components/shared/pwa-register";
 import { ReminderWatcher } from "@/components/shared/reminder-watcher";
 import { UISync } from "@/components/layout/ui-sync";
@@ -25,7 +26,10 @@ export async function AppShell({ children }: { children: ReactNode }) {
       <Sidebar userName={user.name} />
       <div className="flex min-w-0 flex-1 flex-col">
         <Topbar todayKey={todayKey} account={{ name: user.name, email: user.email }} />
-        <main className="flex-1 animate-fade-in px-4 py-6 lg:px-8 lg:py-8">{children}</main>
+        <OfflineIndicator />
+        <main className="px-safe flex-1 animate-fade-in pb-6 lg:pb-8">
+          <div className="px-3 pt-4 sm:px-4 sm:pt-6 lg:px-8 lg:pt-8">{children}</div>
+        </main>
       </div>
 
       <UISync todayKey={todayKey} />

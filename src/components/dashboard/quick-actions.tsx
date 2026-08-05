@@ -1,7 +1,7 @@
 "use client";
 
 import Link from "next/link";
-import { Apple, CheckSquare, Dumbbell, Inbox, NotebookPen, Plus } from "lucide-react";
+import { Apple, Bot, CheckSquare, Dumbbell, Inbox, NotebookPen, Plus } from "lucide-react";
 
 import { SectionCard } from "@/components/shared/section-card";
 import { useUIStore } from "@/store/ui-store";
@@ -33,6 +33,7 @@ export function DashboardQuickActions({ date }: { date: string }) {
       accent: "text-domain-workout",
       href: "/workouts?new=1",
     },
+    { label: "Ask the assistant", hint: "AI", icon: Bot, accent: "text-violet-500", href: "/assistant" },
     {
       label: "Search everything",
       hint: "⌘K",
@@ -55,7 +56,7 @@ export function DashboardQuickActions({ date }: { date: string }) {
           );
 
           const className =
-            "flex items-center gap-2 rounded-lg border bg-card px-3 py-2.5 text-left transition-colors hover:bg-accent/50";
+            "flex min-h-11 items-center gap-2 rounded-lg border bg-card px-3 py-2.5 text-left transition-colors hover:bg-accent/50";
 
           return action.href ? (
             <Link key={action.label} href={action.href} className={className}>

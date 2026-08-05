@@ -25,10 +25,12 @@ import {
  * comes from the append-only audit table plus stamped proposal rows — it is
  * the page's memory, since transcripts are deliberately not persisted.
  */
-export function AssistantActivity(props: {
+export const AssistantActivity = React.memo(function AssistantActivity(props: {
   entries: AssistantAuditView[];
   decidedProposals?: AssistantProposalView[];
 }) {
+  // Memoized: token streaming re-renders the chat many times a second, and
+  // this list's props only actually change when a proposal is decided.
   const decided = (props.decidedProposals ?? []).filter(
     (proposal) => proposal.status !== "proposed",
   );
@@ -109,10 +111,17 @@ export function AssistantActivity(props: {
                   {entry.summary}
                 </p>
               )}
+              {/* Long tool lists fold away instead of truncating: at 320px a
+                  single visible line held about one tool name. */}
               {entry.toolCalls.length > 0 && (
-                <p className="truncate text-xs text-muted-foreground">
-                  Tools: {entry.toolCalls.map((call) => call.tool).join(", ")}
-                </p>
+                <details className="text-xs text-muted-foreground">
+                  <summary className="cursor-pointer select-none py-0.5">
+                    Tools: {entry.toolCalls.length}
+                  </summary>
+                  <p className="break-words">
+                    {entry.toolCalls.map((call) => call.tool).join(", ")}
+                  </p>
+                </details>
               )}
             </div>
           </li>
@@ -120,7 +129,7 @@ export function AssistantActivity(props: {
       </ul>
     </SectionCard>
   );
-}
+});
 
 /**
  * Audit rows carry UTC instants; showing them raw would tell a user in

@@ -56,7 +56,40 @@ export default async function HealthSleepPage({
           description={`${sessions.length} ${sessions.length === 1 ? "night" : "nights"} in this range · the fullest source per night`}
           className="mb-6"
         >
-          <div className="overflow-x-auto">
+          {/* Phones get the same nights as stacked cards; the table needs 560px. */}
+          <div className="space-y-2 md:hidden">
+            {sessions.map((session) => (
+              <div key={`${session.date}-${session.source}`} className="rounded-lg border p-3">
+                <div className="flex items-baseline justify-between gap-2">
+                  <p className="min-w-0 truncate text-sm font-medium">
+                    {formatDay(session.date, "EEE, MMM d")}
+                  </p>
+                  <p className="tabular shrink-0 text-sm font-semibold">
+                    {formatNumber(session.asleepHours, 1)}h asleep
+                  </p>
+                </div>
+                <p className="mt-0.5 text-xs text-muted-foreground">
+                  {session.startAt ? `${clock(session.startAt)}–${clock(session.endAt)} · ` : ""}
+                  {session.inBedHours === null
+                    ? "in bed —"
+                    : `${formatNumber(session.inBedHours, 1)}h in bed`}{" "}
+                  · {session.source}
+                </p>
+                {session.stages.length > 0 && (
+                  <div className="mt-1.5 flex flex-wrap gap-1">
+                    {session.stages.map((entry) => (
+                      <Badge key={entry.stage} variant="muted" className="text-[10px]">
+                        {SLEEP_STAGE_META[entry.stage as SleepStage]?.label ?? entry.stage}{" "}
+                        {formatNumber(entry.hours, 1)}h
+                      </Badge>
+                    ))}
+                  </div>
+                )}
+              </div>
+            ))}
+          </div>
+
+          <div className="hidden overflow-x-auto md:block">
             <table className="w-full min-w-[560px] text-sm">
               <thead>
                 <tr className="border-b text-left text-xs uppercase tracking-wide text-muted-foreground">

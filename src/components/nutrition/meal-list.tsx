@@ -130,18 +130,19 @@ export function MealList({ meals }: { meals: MealView[] }) {
     <div className="space-y-3">
       {meals.map((meal) => (
         <div key={meal.id} className="overflow-hidden rounded-lg border">
-          <div className="flex items-center justify-between gap-2 border-b bg-muted/40 px-3 py-2">
-            <p className="text-sm font-semibold">
+          <div className="flex flex-wrap items-center justify-between gap-x-2 gap-y-1 border-b bg-muted/40 px-3 py-2">
+            <p className="min-w-0 truncate text-sm font-semibold">
               {meal.label || MEAL_TYPE_META[meal.type as MealType]?.label || meal.type}
             </p>
-            <div className="flex items-center gap-1">
-              <span className="tabular text-xs text-muted-foreground">
+            <div className="flex min-w-0 items-center gap-1">
+              <span className="tabular min-w-0 truncate text-xs text-muted-foreground">
                 {formatNumber(meal.totals.calories)} kcal · P {formatNumber(meal.totals.protein)} · C{" "}
                 {formatNumber(meal.totals.carbs)} · F {formatNumber(meal.totals.fat)}
               </span>
               <Button
                 size="icon-sm"
                 variant="ghost"
+                className="touch-target"
                 aria-label="Save as template"
                 onClick={() => setSavingTemplate(meal)}
               >
@@ -155,7 +156,7 @@ export function MealList({ meals }: { meals: MealView[] }) {
               <div key={entry.id} className="group flex items-center gap-2 px-3 py-2">
                 <div className="min-w-0 flex-1">
                   <p className="truncate text-sm">{entry.foodName}</p>
-                  <p className="tabular text-xs text-muted-foreground">
+                  <p className="tabular truncate text-xs text-muted-foreground">
                     {formatNumber(entry.quantity, 2)} {entry.unit} · P{" "}
                     {formatNumber(entry.protein, 1)} · C {formatNumber(entry.carbs, 1)} · F{" "}
                     {formatNumber(entry.fat, 1)}
@@ -167,7 +168,7 @@ export function MealList({ meals }: { meals: MealView[] }) {
                 <Button
                   size="icon-sm"
                   variant="ghost"
-                  className="opacity-0 transition-opacity group-hover:opacity-100"
+                  className="touch-target hover-reveal"
                   onClick={() => setEditing(entry)}
                   aria-label="Edit entry"
                 >
@@ -179,7 +180,7 @@ export function MealList({ meals }: { meals: MealView[] }) {
                     <Button
                       size="icon-sm"
                       variant="ghost"
-                      className="opacity-0 transition-opacity group-hover:opacity-100 data-[state=open]:opacity-100"
+                      className="touch-target hover-reveal"
                       aria-label="Entry actions"
                     >
                       <MoreHorizontal />
