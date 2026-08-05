@@ -7,7 +7,7 @@ import { revalidatePath } from "next/cache";
 import { getCurrentUser, prisma } from "@/lib/db";
 import { FINANCE_CATEGORY_META, type FinanceCategory } from "@/lib/enums";
 import { advanceBillAfterPayment, moneyRound, transferLegs } from "@/lib/logic/finance";
-import { todayIn } from "@/lib/logic/schedule";
+import { scheduleSettingsFor } from "@/server/schedule";
 import {
   billSchema,
   budgetSchema,
@@ -516,5 +516,5 @@ export async function deleteSavingsGoal(id: string): Promise<ActionResult<null>>
 /** The user's today, for default transaction/payment dates in dialogs. */
 export async function getFinanceToday(): Promise<ActionResult<{ today: string }>> {
   const user = await getCurrentUser();
-  return succeed({ today: todayIn(user.timezone) });
+  return succeed({ today: scheduleSettingsFor(user).today });
 }

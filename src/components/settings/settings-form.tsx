@@ -17,7 +17,8 @@ import {
 } from "@/components/ui/select";
 import { SectionCard } from "@/components/shared/section-card";
 import { estimateDailyCalories, lbToKg, suggestMacroGoals } from "@/lib/logic/nutrition";
-import { formatMinute } from "@/lib/date";
+import { formatMinute, minuteToTimeValue, parseTimeToMinute } from "@/lib/date";
+import { formatResetTime, MAX_DAY_RESET_MINUTE } from "@/lib/logic/operational-day";
 import { saveGoal, saveSettings } from "@/server/actions/health";
 import { User } from "lucide-react";
 
@@ -32,6 +33,16 @@ export interface SettingsValues {
   unitSystem: string;
   dayStartHour: number;
   dayEndHour: number;
+  dayResetMinute: number;
+}
+
+/** IANA zone names for the timezone datalist; empty where unsupported. */
+function supportedTimezones(): string[] {
+  try {
+    return Intl.supportedValuesOf("timeZone");
+  } catch {
+    return [];
+  }
 }
 
 export function SettingsForm({
@@ -121,9 +132,15 @@ export function SettingsForm({
             <Label htmlFor="s-tz">Timezone</Label>
             <Input
               id="s-tz"
+              list="s-tz-zones"
               value={form.timezone}
               onChange={(event) => set("timezone", event.target.value)}
             />
+            <datalist id="s-tz-zones">
+              {supportedTimezones().map((zone) => (
+                <option key={zone} value={zone} />
+              ))}
+            </datalist>
           </div>
         </div>
 
@@ -250,6 +267,30 @@ export function SettingsForm({
               </SelectContent>
             </Select>
           </div>
+        </div>
+
+        <div className="flex flex-wrap items-end gap-x-6 gap-y-3 rounded-lg border bg-muted/30 px-3 py-3">
+          <div className="space-y-1.5">
+            <Label htmlFor="s-dayreset">Daily reset time</Label>
+            <Input
+              id="s-dayreset"
+              type="time"
+              min="00:00"
+              max="06:00"
+              className="max-w-36"
+              value={minuteToTimeValue(form.dayResetMinute)}
+              onChange={(event) => {
+                const minute = parseTimeToMinute(event.target.value);
+                if (minute === null) return;
+                set("dayResetMinute", Math.min(Math.max(minute, 0), MAX_DAY_RESET_MINUTE));
+              }}
+            />
+          </div>
+          <p className="min-w-48 max-w-md flex-1 text-xs text-muted-foreground">
+            Items after midnight and before this time are grouped with the previous day. Their
+            actual timestamps do not change. Right now your day resets at{" "}
+            {formatResetTime(form.dayResetMinute)}; the latest allowed reset is 6:00 AM.
+          </p>
         </div>
 
         <div className="flex flex-wrap items-center justify-between gap-3 rounded-lg border bg-muted/30 px-3 py-3">

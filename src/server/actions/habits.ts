@@ -4,7 +4,6 @@ import { revalidatePath } from "next/cache";
 
 import { getCurrentUser, prisma } from "@/lib/db";
 import { type DayKey } from "@/lib/date";
-import { todayIn } from "@/lib/logic/schedule";
 import {
   fail,
   fromZod,
@@ -13,7 +12,7 @@ import {
   succeed,
   type ActionResult,
 } from "@/lib/validation";
-import { deleteSchedule, setScheduleEnabled, writeSchedule } from "@/server/schedule";
+import { deleteSchedule, scheduleSettingsFor, setScheduleEnabled, writeSchedule } from "@/server/schedule";
 import { recomputeDay } from "@/server/summaries";
 
 function revalidateAll() {
@@ -33,7 +32,7 @@ export async function saveHabit(input: unknown): Promise<ActionResult<{ id: stri
   if (!parsed.success) return fromZod(parsed.error);
 
   const user = await getCurrentUser();
-  const todayKey = todayIn(user.timezone);
+  const todayKey = scheduleSettingsFor(user).today;
   const { habit: fields, schedule, apply } = parsed.data;
   const { id, ...rest } = fields;
 
@@ -202,7 +201,7 @@ export async function archiveHabit(id: string, archived = true): Promise<ActionR
   await prisma.habit.update({ where: { id }, data: { archived } });
   await setScheduleEnabled(user.id, "habit", id, !archived);
 
-  await recomputeDay(user.id, todayIn(user.timezone));
+  await recomputeDay(user.id, scheduleSettingsFor(user).today);
   revalidateAll();
   return succeed(null);
 }
@@ -217,7 +216,7 @@ export async function deleteHabit(id: string): Promise<ActionResult<null>> {
   await prisma.habit.delete({ where: { id } });
   await deleteSchedule(user.id, "habit", id);
 
-  await recomputeDay(user.id, todayIn(user.timezone));
+  await recomputeDay(user.id, scheduleSettingsFor(user).today);
   revalidateAll();
   return succeed(null);
 }

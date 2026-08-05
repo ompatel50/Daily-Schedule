@@ -147,6 +147,10 @@ async function pushRemindersForUser(
   if (feed.length === 0) return;
 
   const nowMinute = nowMinuteIn(user.timezone);
+  // The CALENDAR date, deliberately not the operational day: wall-clock
+  // fireAt strings carry the true calendar date of the fire time (a 1:00 AM
+  // reminder on operational Wednesday is dated Thursday), so due-ness is a
+  // straight same-calendar-date comparison. Exact times fire exactly.
   const today = todayIn(user.timezone);
 
   for (const occurrence of feed) {

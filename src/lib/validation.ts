@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { MAX_DAY_RESET_MINUTE } from "@/lib/logic/operational-day";
 import {
   ACCOUNT_TYPES,
   BILL_KINDS,
@@ -427,6 +428,10 @@ export const settingsSchema = z.object({
   unitSystem: z.enum(["imperial", "metric"]),
   dayStartHour: z.number().int().min(0).max(23),
   dayEndHour: z.number().int().min(1).max(24),
+  // Daily reset: minutes after midnight, midnight through 6:00 AM. Bounded so
+  // "yesterday" can never swallow a working morning. Optional so older
+  // clients that do not send it keep saving.
+  dayResetMinute: z.number().int().min(0).max(MAX_DAY_RESET_MINUTE).optional(),
 });
 
 // --- tasks & projects --------------------------------------------------------

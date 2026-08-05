@@ -150,6 +150,7 @@ export async function exportBackup(): Promise<ActionResult<BackupFile>> {
     unitSystem: user.unitSystem,
     dayStartHour: user.dayStartHour,
     dayEndHour: user.dayEndHour,
+    dayResetMinute: user.dayResetMinute,
     scoreWeights: user.scoreWeights,
     scoreOptionalTasks: user.scoreOptionalTasks,
     onboardingState: user.onboardingState,
