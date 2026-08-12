@@ -69,6 +69,16 @@ DST is handled by resolving wall clocks with the existing two-pass
   with what the user sees. Overlap detection, by contrast, always compares
   real timestamps — grouping never bends a conflict
   (see `docs/planner-recurrence.md`).
+* **Cross-midnight blocks** — a timed block whose end clock reads earlier
+  than its start ends on the next calendar day (11:45 PM → 12:15 AM is 30
+  minutes; `src/lib/logic/schedule-span.ts`). Its operational day is keyed on
+  its **start** alone, so an evening block ending after midnight belongs
+  wholly to the evening's day — 11:45 PM → 2:00 AM included. A block that
+  crosses the reset itself (11:45 PM → 5:00 AM) is never truncated: it stays
+  one block, grouped and badged under its start's operational day, rendered
+  through the reset line on that day's timeline; conflict *checks* against
+  the next operational day's items still compare the real span
+  (see `docs/planner-recurrence.md`).
 * **Habits** — logging defaults, due/done/missed status, streaks, weekly
   progress, `get_habit_status`. A habit logged at 1:00 AM lands on the
   previous operational day *unless the user explicitly picked a date*, which
