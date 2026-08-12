@@ -1,9 +1,12 @@
 import { describe, expect, it } from "vitest";
 
 import {
+  CONFLICT_TOLERANCE_MINUTES,
   conflictsByItem,
   findConflicts,
+  isSchedulingConflict,
   nextApplicationOrdinal,
+  overlapMinutes,
   parseSourceKey,
   planMove,
   planTemplateApplication,
@@ -221,6 +224,71 @@ describe("spansOverlap", () => {
   });
 });
 
+describe("overlapMinutes / the 1-minute conflict tolerance", () => {
+  it("measures the exact half-open intersection", () => {
+    expect(overlapMinutes(span("a", 540, 600), span("b", 600, 660))).toBe(0);
+    expect(overlapMinutes(span("a", 540, 600), span("b", 599, 660))).toBe(1);
+    expect(overlapMinutes(span("a", 540, 600), span("b", 598, 660))).toBe(2);
+    expect(overlapMinutes(span("a", 540, 600), span("b", 540, 600))).toBe(60);
+    expect(overlapMinutes(span("a", 540, 720), span("b", 600, 660))).toBe(60);
+  });
+
+  it("does not warn for adjacent blocks — the end minute is excluded", () => {
+    // A ends 10:00, B starts 10:00 → back-to-back, not a double booking.
+    expect(isSchedulingConflict(span("a", 540, 600), span("b", 600, 660))).toBe(false);
+  });
+
+  it("forgives a 1-minute brush but warns from 2 minutes on", () => {
+    // A ends 10:00, B starts 9:59 → an exact overlap exists…
+    expect(spansOverlap(span("a", 540, 600), span("b", 599, 660))).toBe(true);
+    // …but it is under the tolerance, so no warning.
+    expect(isSchedulingConflict(span("a", 540, 600), span("b", 599, 660))).toBe(false);
+    // A ends 10:00, B starts 9:58 → a real double booking.
+    expect(isSchedulingConflict(span("a", 540, 600), span("b", 598, 660))).toBe(true);
+    // A ends 10:00, B starts 9:30 → obviously real.
+    expect(isSchedulingConflict(span("a", 540, 600), span("b", 570, 660))).toBe(true);
+  });
+
+  it("warns for identical, contained and partially overlapping intervals", () => {
+    expect(isSchedulingConflict(span("a", 540, 600), span("b", 540, 600))).toBe(true);
+    expect(isSchedulingConflict(span("a", 540, 720), span("b", 600, 660))).toBe(true);
+    expect(isSchedulingConflict(span("a", 540, 660), span("b", 600, 720))).toBe(true);
+  });
+
+  it("keeps the tolerance centralized in one named constant", () => {
+    expect(CONFLICT_TOLERANCE_MINUTES).toBe(1);
+  });
+
+  it("a documented consequence: an intersection no longer than the tolerance never warns", () => {
+    // A 1-minute block inside a longer one intersects for exactly 1 minute —
+    // under the tolerance, so classified as noise, not a double booking.
+    expect(isSchedulingConflict(span("a", 540, 541), span("b", 500, 600))).toBe(false);
+  });
+
+  it("point items occupy no minutes and never conflict with anything touching them", () => {
+    const point = span("p", 540, 540);
+    expect(isSchedulingConflict(point, span("before", 480, 540))).toBe(false);
+    expect(isSchedulingConflict(point, span("after", 540, 600))).toBe(false);
+    expect(isSchedulingConflict(point, span("around", 500, 600))).toBe(false);
+    expect(spansOverlap(point, span("around", 500, 600))).toBe(false);
+  });
+
+  it("start-only items have no duration to clash with", () => {
+    expect(isSchedulingConflict(span("a", 540, null), span("b", 500, 600))).toBe(false);
+  });
+
+  it("compares real minutes across an operational day's two calendar dates", () => {
+    // Under a 4:00 AM reset one operational day holds its own date's
+    // [4:00, 24:00) plus the next date's [0:00, 4:00). Those minute ranges
+    // are disjoint, so a late-evening block and an after-midnight block can
+    // never falsely conflict — matching their real instants.
+    const evening = span("evening", 23 * 60, 23 * 60 + 59);
+    const afterMidnight = span("night", 30, 90);
+    expect(isSchedulingConflict(evening, afterMidnight)).toBe(false);
+    expect(spansOverlap(evening, afterMidnight)).toBe(false);
+  });
+});
+
 describe("findConflicts / conflictsByItem", () => {
   it("reports each overlapping pair once", () => {
     const items = [span("a", 540, 660), span("b", 600, 720), span("c", 900, 960)];
@@ -262,6 +330,37 @@ describe("findConflicts / conflictsByItem", () => {
     const items = [span("a", 540, 600), span("b", 600, 660), span("c", 660, 720)];
     expect(findConflicts(items)).toEqual([]);
     expect(conflictsByItem(items).size).toBe(0);
+  });
+
+  it("finds nothing in the canonical adjacent morning", () => {
+    // Wake Up → Leg Mobility → Get Ready → Breakfast, each starting the
+    // minute the previous one ends. Zero pairs, zero badges.
+    const items = [
+      { ...span("wake", 8 * 60, 9 * 60), title: "Wake Up" },
+      { ...span("legs", 9 * 60, 10 * 60), title: "Leg Mobility" },
+      { ...span("ready", 10 * 60, 10 * 60 + 45), title: "Get Ready" },
+      { ...span("food", 10 * 60 + 45, 11 * 60 + 30), title: "Breakfast" },
+    ];
+    expect(findConflicts(items)).toHaveLength(0);
+    expect(conflictsByItem(items).size).toBe(0);
+  });
+
+  it("counts every conflicting pair exactly once", () => {
+    // Two independent double bookings plus a triple stack: a+b, c+d, c+e, d+e.
+    const items = [
+      span("a", 540, 600),
+      span("b", 570, 630),
+      span("c", 900, 1020),
+      span("d", 900, 1020),
+      span("e", 930, 960),
+    ];
+    const pairs = findConflicts(items).map((pair) => [pair.a.id, pair.b.id].sort().join("+"));
+    expect(pairs.sort()).toEqual(["a+b", "c+d", "c+e", "d+e"]);
+  });
+
+  it("uses the warning tolerance, so a 1-minute brush is not a pair", () => {
+    const items = [span("a", 540, 600), span("b", 599, 660)];
+    expect(findConflicts(items)).toHaveLength(0);
   });
 
   it("finds nothing in an empty or single-item day", () => {
@@ -370,6 +469,26 @@ describe("planMove", () => {
     });
 
     expect(plan.conflicts).toEqual([]);
+  });
+
+  it("uses the warning tolerance: landing 1 minute into a block is not a conflict", () => {
+    // The moved block runs 09:59–11:59 next to a 09:00–10:00 block — a
+    // 1-minute brush, forgiven by the same rule every warning surface uses.
+    const plan = planMove({
+      item: moving(),
+      date: "2026-07-21",
+      startMinute: 599,
+      targetItems: [{ ...span("early", 540, 600), title: "Early" }],
+    });
+    expect(plan.conflicts).toEqual([]);
+
+    const real = planMove({
+      item: moving(),
+      date: "2026-07-21",
+      startMinute: 598,
+      targetItems: [{ ...span("early", 540, 600), title: "Early" }],
+    });
+    expect(real.conflicts).toEqual(["Early"]);
   });
 
   it("does not flag touching endpoints, zero-length or all-day items on the target day", () => {

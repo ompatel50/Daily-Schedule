@@ -101,9 +101,12 @@ past the cap the assistant is told the list was cut and to ask by name.
 ### Changes it can propose
 
 Create a task, complete a task, create a reminder, add an inbox note,
-**complete an inbox note**, record a transaction, add a planner block,
-**log a habit** (one day, one habit: done, skipped or missed, with an optional
-value), delete a task, delete a reminder.
+**complete an inbox note**, record a transaction, add a planner block
+(optionally recurring, with an explicit pattern, start date and inclusive end
+date — "Schedule Calculus every Monday and Wednesday from August 24 through
+December 11 at 10 AM"), **update a planner block**, **delete a planner
+block**, **log a habit** (one day, one habit: done, skipped or missed, with an
+optional value), delete a task, delete a reminder.
 
 Each proposal is previewed as one plain sentence and executed — only after your
 confirmation — by calling the same server action the app's own buttons call, so
@@ -113,11 +116,25 @@ UI refresh) applies unchanged.
 The proposal schemas are deliberately **narrower** than the app's own forms:
 the assistant may only send the fields the preview sentence describes, and
 anything else is refused outright. A task it creates is always a plain one-off
-task (no repeat, no reminder, no parent, no tags); a planner block is always a
-single day (never a recurring series); a habit log carries no notes, because
-the preview sentence could not quote them. This is what makes "what you confirm
-is what runs" true rather than merely intended — a change the preview cannot
-describe is not a change the assistant can make.
+task (no repeat, no reminder, no parent, no tags); a planner block's
+recurrence exists only as the explicit, fully-described `recurrence` object —
+a raw stored rule in the payload is refused; a habit log carries no notes,
+because the preview sentence could not quote them. This is what makes "what
+you confirm is what runs" true rather than merely intended — a change the
+preview cannot describe is not a change the assistant can make.
+
+**Recurring planner blocks and scope.** Editing or deleting a block that
+belongs to a repeating series requires an explicit scope in the proposal:
+*this occurrence only* or *this and all future occurrences*. A proposal
+without one is refused with an instruction to ask you — the model can never
+guess ("move tomorrow's workout to 10" reads as one occurrence; "move my
+workout to 10 from now on" reads as this-and-future; "change my workout to
+10" is ambiguous and must be clarified). The preview names the scope, the
+occurrence's day, every changed field and — for series-wide changes — the
+resulting pattern, start and end date; an update that does not mention the
+end date inherits the series' existing one. A one-occurrence edit cannot
+carry a recurrence change at all, and the whole-series-including-history
+delete does not exist for the assistant.
 
 ## What it cannot do
 

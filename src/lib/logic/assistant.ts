@@ -49,6 +49,8 @@ export const ASSISTANT_ACTION_KINDS = [
   "create_inbox_item",
   "create_transaction",
   "create_planner_block",
+  "update_planner_block",
+  "delete_planner_block",
   "log_habit",
   "complete_inbox_item",
   "delete_task",
@@ -79,8 +81,13 @@ const ACTION_RISK: Record<AssistantActionKind, AssistantRisk> = {
   create_reminder: "sensitive",
   create_transaction: "sensitive",
   create_planner_block: "sensitive",
+  // Editing a planner block restates itself in a second dialog like other
+  // schedule changes; on a recurring block the scope is named in the preview
+  // and can never be guessed (the proposal is refused without one).
+  update_planner_block: "sensitive",
   delete_task: "destructive",
   delete_reminder: "destructive",
+  delete_planner_block: "destructive",
 };
 
 export function riskOf(kind: AssistantActionKind): AssistantRisk {
@@ -94,6 +101,8 @@ export const ASSISTANT_ACTION_META: Record<AssistantActionKind, { label: string 
   create_inbox_item: { label: "Add inbox note" },
   create_transaction: { label: "Record transaction" },
   create_planner_block: { label: "Add planner block" },
+  update_planner_block: { label: "Update planner block" },
+  delete_planner_block: { label: "Delete planner block" },
   log_habit: { label: "Log habit" },
   complete_inbox_item: { label: "Complete inbox note" },
   delete_task: { label: "Delete task" },

@@ -26,6 +26,7 @@ import {
 } from "./enums";
 import { ASSISTANT_LIMITS, ASSISTANT_MODES } from "./logic/assistant";
 import { FOOD_PROVIDERS } from "./logic/food";
+import { parseRule } from "./logic/recurrence";
 import { GOAL_COMPARISONS, GOAL_SOURCES } from "./logic/goals";
 import { TEMPLATE_APPLY_MODES } from "./logic/planner";
 import { DAYPARTS, OVERRIDE_KINDS, SCHEDULE_MODES } from "./logic/schedule";
@@ -66,7 +67,38 @@ export const scheduleItemSchema = z
       value.endMinute === undefined ||
       value.endMinute >= value.startMinute,
     { message: "End time must be after the start time", path: ["endMinute"] },
-  );
+  )
+  // A submitted repeat must be one the engine actually understands — silently
+  // dropping malformed recurrence would save an item the user believes
+  // repeats. The item's own date is the series' start date; the rule's
+  // inclusive `until` (the optional end date) may not precede it.
+  .superRefine((value, ctx) => {
+    if (value.recurrenceRule === null || value.recurrenceRule === undefined) return;
+    const rule = parseRule(value.recurrenceRule);
+    if (!rule) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ["recurrenceRule"],
+        message: "The repeat settings could not be read",
+      });
+      return;
+    }
+    if (rule.until !== undefined) {
+      if (!/^\d{4}-\d{2}-\d{2}$/.test(rule.until)) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          path: ["recurrenceRule"],
+          message: "The end date is not a valid date",
+        });
+      } else if (rule.until < value.date) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          path: ["recurrenceRule"],
+          message: "The end date cannot be before the start date",
+        });
+      }
+    }
+  });
 
 export type ScheduleItemInput = z.infer<typeof scheduleItemSchema>;
 
@@ -108,6 +140,15 @@ export const templateApplySchema = z.object({
  */
 export const seriesScopeSchema = z.enum(["one", "future", "all"]);
 export type SeriesScope = z.infer<typeof seriesScopeSchema>;
+
+/** The edit dialog's live "would this double-book?" check. Read-only. */
+export const conflictPreviewSchema = z.object({
+  date: dayKey,
+  startMinute: minute.nullable(),
+  endMinute: minute.nullable(),
+  allDay: z.boolean(),
+  excludeId: z.string().optional(),
+});
 
 export const habitSchema = z.object({
   id: z.string().optional(),

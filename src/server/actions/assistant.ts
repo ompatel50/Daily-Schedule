@@ -29,7 +29,12 @@ import { saveInboxItem, setInboxItemStatus } from "@/server/actions/inbox";
 import { logHabit } from "@/server/actions/habits";
 import { deleteReminder, saveReminder } from "@/server/actions/health";
 import { saveTransaction } from "@/server/actions/finance";
-import { createScheduleItem } from "@/server/actions/planner";
+import {
+  createScheduleItem,
+  deleteScheduleItem,
+  updateScheduleItem,
+} from "@/server/actions/planner";
+import type { SeriesScope } from "@/lib/validation";
 
 /**
  * The assistant's server actions: settings, connection test, activity, and —
@@ -288,6 +293,32 @@ async function executeProposalKind(
         const result = await createScheduleItem(payload);
         if (!result.ok) return { ok: false, error: result.error };
         return { ok: true, summary: "Planner block added", recordId: result.data.id };
+      }
+      case "update_planner_block": {
+        // The scope travelled inside the stored payload, so what the user
+        // confirmed — occurrence or series-from-here — is exactly what runs.
+        const { scope, item } = payload as { scope: SeriesScope; item: unknown };
+        const result = await updateScheduleItem(item, scope);
+        if (!result.ok) return { ok: false, error: result.error };
+        return {
+          ok: true,
+          summary:
+            scope === "future" ? "Planner block updated from this occurrence on" : "Planner block updated",
+          recordId: result.data.id,
+        };
+      }
+      case "delete_planner_block": {
+        const { id, scope } = payload as { id: string; scope: SeriesScope };
+        const result = await deleteScheduleItem(id, scope);
+        if (!result.ok) return { ok: false, error: result.error };
+        return {
+          ok: true,
+          summary:
+            result.data.deleted > 1
+              ? `Deleted ${result.data.deleted} planner blocks`
+              : "Planner block deleted",
+          recordId: null,
+        };
       }
       case "log_habit": {
         const result = await logHabit(payload);

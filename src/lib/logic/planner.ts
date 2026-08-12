@@ -165,28 +165,71 @@ export interface ConflictCandidate {
 }
 
 /**
- * Do two items genuinely occupy the same minutes?
+ * Overlap semantics, in two deliberately separate concepts:
  *
- * Deliberately conservative, because a conflict badge that cries wolf gets
- * ignored:
- *  * all-day items span the whole day by definition and never conflict;
- *  * an item without both a start and an end has no duration to clash with;
- *  * a zero-length item (start === end) occupies no minutes;
- *  * touching endpoints (09:00–10:00 and 10:00–11:00) are back-to-back, not
- *    overlapping;
- *  * a skipped item is explicitly not happening.
+ *  1. **Exact interval overlap** (`spansOverlap`) — do two spans share any
+ *     minute at all, under half-open `[start, end)` semantics? This is the
+ *     hard correctness rule: the end minute is excluded, so an item ending at
+ *     9:00 AM and one starting at 9:00 AM are back-to-back, never overlapping.
+ *
+ *  2. **A scheduling conflict** (`isSchedulingConflict`) — the user-facing
+ *     double-booking *warning*. It is the exact rule plus a small tolerance:
+ *     an intersection of `CONFLICT_TOLERANCE_MINUTES` or less is treated as a
+ *     rounding artefact, not a double booking, so a block ending 10:00 next
+ *     to one starting 9:59 stays quiet while 9:58 warns.
+ *
+ * Every warning surface (banner, row badges, pair counts, timeline styling,
+ * move/edit previews, assistant previews) goes through the conflict form.
+ * The tolerance affects classification only — stored times are never touched
+ * and nothing is ever snapped or moved.
  */
-export function spansOverlap(a: ConflictCandidate, b: ConflictCandidate): boolean {
-  if (a.id === b.id) return false;
-  if (a.allDay || b.allDay) return false;
-  if (a.status === "skipped" || b.status === "skipped") return false;
+
+/**
+ * Intersections of at most this many minutes are not worth a double-booking
+ * warning. Classification only; never applied to stored timestamps.
+ */
+export const CONFLICT_TOLERANCE_MINUTES = 1;
+
+/**
+ * How many minutes two spans genuinely share, under `[start, end)` semantics —
+ * 0 when they merely touch, are disjoint, or either has nothing to intersect:
+ *  * all-day items span the whole day by definition and never clash;
+ *  * an item without both a start and an end has no duration;
+ *  * a zero-length point item (start === end) occupies no minutes;
+ *  * a skipped item is explicitly not happening.
+ *
+ * Minutes are compared within one calendar date, which is safe even under the
+ * operational-day grouping: one operational day is the `[reset, 1440)` tail of
+ * its own date plus the `[0, reset)` head of the next, and those two minute
+ * ranges are disjoint — items on different calendar dates of the same
+ * operational day can never intersect numerically, matching their real
+ * instants.
+ */
+export function overlapMinutes(a: ConflictCandidate, b: ConflictCandidate): number {
+  if (a.id === b.id) return 0;
+  if (a.allDay || b.allDay) return 0;
+  if (a.status === "skipped" || b.status === "skipped") return 0;
 
   const { startMinute: aStart, endMinute: aEnd } = a;
   const { startMinute: bStart, endMinute: bEnd } = b;
-  if (aStart === null || aEnd === null || bStart === null || bEnd === null) return false;
-  if (aEnd <= aStart || bEnd <= bStart) return false;
+  if (aStart === null || aEnd === null || bStart === null || bEnd === null) return 0;
+  if (aEnd <= aStart || bEnd <= bStart) return 0;
 
-  return aStart < bEnd && bStart < aEnd;
+  return Math.max(0, Math.min(aEnd, bEnd) - Math.max(aStart, bStart));
+}
+
+/** Exact half-open overlap: the spans share at least one minute. */
+export function spansOverlap(a: ConflictCandidate, b: ConflictCandidate): boolean {
+  return overlapMinutes(a, b) > 0;
+}
+
+/**
+ * The user-facing double-booking test: a real overlap beyond the tolerance.
+ * `spansOverlap` stays the exact rule for anything that needs precise
+ * geometry; warnings all come through here.
+ */
+export function isSchedulingConflict(a: ConflictCandidate, b: ConflictCandidate): boolean {
+  return overlapMinutes(a, b) > CONFLICT_TOLERANCE_MINUTES;
 }
 
 export interface ConflictPair {
@@ -194,7 +237,7 @@ export interface ConflictPair {
   b: ConflictCandidate;
 }
 
-/** Every overlapping pair on a day, each pair reported once. */
+/** Every conflicting pair on a day, each pair reported once. */
 export function findConflicts(items: ConflictCandidate[]): ConflictPair[] {
   const sorted = items
     .slice()
@@ -203,7 +246,7 @@ export function findConflicts(items: ConflictCandidate[]): ConflictPair[] {
   const pairs: ConflictPair[] = [];
   for (let i = 0; i < sorted.length; i += 1) {
     for (let j = i + 1; j < sorted.length; j += 1) {
-      if (spansOverlap(sorted[i], sorted[j])) pairs.push({ a: sorted[i], b: sorted[j] });
+      if (isSchedulingConflict(sorted[i], sorted[j])) pairs.push({ a: sorted[i], b: sorted[j] });
     }
   }
   return pairs;
@@ -274,9 +317,10 @@ export interface MovePlan {
  * re-times the item keeping its duration (clamped to midnight), `undefined`
  * keeps its time-of-day, `null` clears it to all-day.
  *
- * The clash test is `spansOverlap`, so everything that engine excuses —
- * all-day items, missing or zero-length spans, touching endpoints, skipped
- * items, the item itself — cannot flag here either. A move that leaves the
+ * The clash test is `isSchedulingConflict`, so everything that engine
+ * excuses — all-day items, missing or zero-length spans, touching or
+ * tolerance-close endpoints, skipped items, the item itself — cannot flag
+ * here either. A move that leaves the
  * item exactly where it already is reports nothing: the caller is not
  * creating an overlap, so there is nothing to confirm — a pre-existing clash
  * stays the badges' job.
@@ -312,7 +356,7 @@ export function planMove({
 
   const moved: ConflictCandidate = { id: item.id, title: "", status: item.status, ...span };
   const conflicts = targetItems
-    .filter((other) => spansOverlap(moved, other))
+    .filter((other) => isSchedulingConflict(moved, other))
     .sort((a, b) => (a.startMinute ?? 0) - (b.startMinute ?? 0))
     .map((other) => other.title);
 

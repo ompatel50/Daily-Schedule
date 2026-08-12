@@ -924,6 +924,9 @@ export async function seedDemoData(
         priority: seriesParent.priority,
         status: "planned",
         seriesId: seriesParent.id,
+        // The slot this occurrence fills — a 5:00 PM block's slot is its own
+        // calendar date (see src/server/series.ts).
+        originalDate: format(addDays(occurrence, delta), "yyyy-MM-dd"),
       },
     });
   }

@@ -37,6 +37,7 @@ Step-by-step documentation lives in `docs/`, written to be followed exactly:
 | [`docs/troubleshooting.md`](docs/troubleshooting.md) | Symptoms → causes → fixes |
 | [`docs/performance-measurement.md`](docs/performance-measurement.md) | How the performance numbers were measured, and how to repeat them |
 | [`docs/operational-day.md`](docs/operational-day.md) | The daily reset time: how a 4:00 AM day boundary works, what regroups and what never does |
+| [`docs/planner-recurrence.md`](docs/planner-recurrence.md) | Planner overlap semantics (half-open intervals, the 1-minute warning tolerance) and recurring series: ranges, edit/delete scopes, series splitting, regeneration |
 | [`docs/responsive-and-pwa.md`](docs/responsive-and-pwa.md) | The phone experience: navigation drawer, responsive architecture, iPhone home-screen install, offline behaviour |
 
 ## Quick start
@@ -145,13 +146,23 @@ The planner **shapes** the schedule; Today **runs** it and the dashboard
   same routine to the same day twice does **not** silently double it — nothing is written and you
   are asked whether to keep what's there, replace it with a fresh copy, add a second copy
   deliberately, or cancel.
-* **Recurring items** can be edited or deleted at three scopes each: this occurrence, this and all
-  future occurrences, or the entire series. Editing one occurrence detaches it, so a later
-  series-wide edit will not overwrite your change. A series edit carries the details across but
-  never the date.
+* **Recurring items** have an explicit range — a start date (the item's own day) and an optional
+  **inclusive** end date, or no end date for ongoing routines — so a semester class
+  "Mon/Wed/Fri, Aug 24 – Dec 11" ends exactly on Dec 11. Saving or deleting an occurrence asks the
+  scope explicitly (a bottom sheet on phones, a dialog on desktop): **this occurrence only**
+  becomes an override that regeneration can never undo; **this and all future** splits the series —
+  history stays as it was, the selected occurrence starts a new series that inherits the original
+  end date unless you change it, and this is also where the pattern itself can change (weekdays,
+  interval, extend/shorten the end date, bounded ↔ open-ended, or stop repeating). Deleting one
+  occurrence stays deleted — the series remembers the removed day. Non-recurring items never see a
+  scope question. Full semantics: [`docs/planner-recurrence.md`](docs/planner-recurrence.md).
 * **Overlap warnings**: two blocks competing for the same minutes are flagged on the day list.
-  It is a warning, not a block — sometimes double-booking is deliberate. All-day items,
-  back-to-back blocks that merely touch, and skipped items are never flagged.
+  It is a warning, not a block — sometimes double-booking is deliberate. Blocks are half-open
+  intervals `[start, end)`, so back-to-back blocks that merely touch never overlap, and a
+  1-minute tolerance keeps trivial brushes quiet (9:59 next to a 10:00 end does not warn; 9:58
+  does). All-day items, point items with no duration, and skipped items are never flagged, and
+  every surface — banner, badges, counts, timeline, week/month grids, move confirmations, the
+  edit dialog's live preview, assistant previews — uses the same shared rule.
 * **Roll over**: push everything unfinished from a past day to the next day.
 
 ### 2. Nutrition — `/nutrition`
@@ -862,8 +873,11 @@ These were decisions the brief left open. They're all reversible.
 4. **Weights are stored in the unit you read them in**, with the unit recorded per row, so
    converting later is unambiguous. Workout set weights are always kilograms internally.
 5. **Recurrence is deliberately simpler than RFC 5545** — daily/weekly/monthly with an interval,
-   weekday selection, and an optional end. That covers workouts, meals, habits and routines without
-   dragging in an iCalendar implementation.
+   weekday selection, a required start date and an optional inclusive end date. That covers
+   workouts, meals, habits, routines and semester-style schedules without dragging in an
+   iCalendar implementation. Series are materialised with per-occurrence slot identity, so
+   regeneration is idempotent and overrides and deletions survive it — see
+   [`docs/planner-recurrence.md`](docs/planner-recurrence.md).
 7. **Your timezone decides what "today" is**, not the machine's clock. It is detected from the
    browser on first run and changeable in Settings. Calendar days are stored as timezone-free
    `YYYY-MM-DD` keys and converted only at the edges.

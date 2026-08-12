@@ -1,11 +1,21 @@
 import { describe, expect, it } from "vitest";
 
 import {
+  describeRecurrence,
+  describeRulePattern,
+  describeRuleRange,
   describeRule,
   expandRule,
   matchesRule,
+  materializeAnchorFields,
+  missingSeriesSlots,
   parseRule,
+  parseSkipDates,
+  rulesEqual,
   serializeRule,
+  serializeSkipDates,
+  truncateRuleBefore,
+  withSkipDate,
   type RecurrenceRule,
 } from "@/lib/logic/recurrence";
 
@@ -118,5 +128,189 @@ describe("describeRule", () => {
       "Every weekday",
     );
     expect(describeRule({ freq: "weekly", interval: 1, byWeekday: [1, 3] })).toBe("Every Mon, Wed");
+  });
+});
+
+describe("the series' active range", () => {
+  // The semester schedule from the spec: Mon/Wed/Fri, Aug 24 – Dec 11 2026.
+  const semester: RecurrenceRule = {
+    freq: "weekly",
+    interval: 1,
+    byWeekday: [1, 3, 5],
+    until: "2026-12-11",
+  };
+  const anchor = "2026-08-24"; // a Monday
+
+  it("generates nothing before the start date", () => {
+    expect(expandRule(semester, anchor, "2026-08-01", "2026-08-23")).toEqual([]);
+    expect(matchesRule(semester, anchor, "2026-08-21")).toBe(false); // the Friday before
+  });
+
+  it("includes the end date when it matches the pattern — inclusive, exactly", () => {
+    const tail = expandRule(semester, anchor, "2026-12-01", "2026-12-31");
+    // 2026-12-11 is a Friday: the last occurrence lands ON the end date.
+    expect(tail[tail.length - 1]).toBe("2026-12-11");
+    expect(tail).toContain("2026-12-11");
+  });
+
+  it("generates nothing after the end date", () => {
+    expect(expandRule(semester, anchor, "2026-12-12", "2027-02-01")).toEqual([]);
+    expect(matchesRule(semester, anchor, "2026-12-14")).toBe(false); // the Monday after
+  });
+
+  it("only ever generates pattern days in between", () => {
+    const week = expandRule(semester, anchor, "2026-08-24", "2026-08-30");
+    expect(week).toEqual(["2026-08-24", "2026-08-26", "2026-08-28"]); // Mon, Wed, Fri
+  });
+
+  it("an open-ended rule is bounded only by the requested window", () => {
+    const open: RecurrenceRule = { freq: "daily", interval: 1 };
+    expect(expandRule(open, anchor, "2027-06-01", "2027-06-03")).toEqual([
+      "2027-06-01",
+      "2027-06-02",
+      "2027-06-03",
+    ]);
+  });
+});
+
+describe("recurrence summaries", () => {
+  const semester: RecurrenceRule = {
+    freq: "weekly",
+    interval: 1,
+    byWeekday: [1, 3, 5],
+    until: "2026-12-11",
+  };
+
+  it("splits the pattern from the range", () => {
+    expect(describeRulePattern(semester)).toBe("Every Mon, Wed, Fri");
+    expect(describeRuleRange(semester, "2026-08-24")).toBe("Aug 24 – Dec 11");
+  });
+
+  it("composes the one-line summary", () => {
+    expect(describeRecurrence(semester, "2026-08-24")).toBe("Every Mon, Wed, Fri · Aug 24 – Dec 11");
+    expect(describeRecurrence({ freq: "daily", interval: 1 }, "2026-08-24")).toBe(
+      "Every day · Starting Aug 24 · No end date",
+    );
+    expect(describeRecurrence(null, "2026-08-24")).toBe("Does not repeat");
+  });
+});
+
+describe("skip dates — deleted occurrences that stay deleted", () => {
+  it("round-trips a sorted, deduplicated set", () => {
+    const stored = serializeSkipDates(["2026-08-26", "2026-08-24", "2026-08-26"]);
+    expect(parseSkipDates(stored)).toEqual(["2026-08-24", "2026-08-26"]);
+  });
+
+  it("is empty for nothing, junk, or malformed entries", () => {
+    expect(parseSkipDates(null)).toEqual([]);
+    expect(parseSkipDates("not json")).toEqual([]);
+    expect(parseSkipDates('{"a":1}')).toEqual([]);
+    expect(parseSkipDates('["2026-08-24","nope",42]')).toEqual(["2026-08-24"]);
+    expect(serializeSkipDates([])).toBeNull();
+  });
+
+  it("adds idempotently", () => {
+    const once = withSkipDate(null, "2026-08-24");
+    const twice = withSkipDate(once, "2026-08-24");
+    expect(twice).toBe(once);
+    expect(parseSkipDates(twice)).toEqual(["2026-08-24"]);
+  });
+});
+
+describe("series-split helpers", () => {
+  it("pins anchor-derived fields so a rule survives re-anchoring", () => {
+    // A weekly rule with no explicit weekdays means "the anchor's weekday";
+    // 2026-08-24 is a Monday, and that Monday must survive an anchor move.
+    const implicitWeekly: RecurrenceRule = { freq: "weekly", interval: 1, byWeekday: [] };
+    expect(materializeAnchorFields(implicitWeekly, "2026-08-24").byWeekday).toEqual([1]);
+
+    const implicitMonthly: RecurrenceRule = { freq: "monthly", interval: 1 };
+    expect(materializeAnchorFields(implicitMonthly, "2026-08-24").byMonthDay).toBe(24);
+
+    // Explicit fields are never touched.
+    const explicit: RecurrenceRule = { freq: "weekly", interval: 1, byWeekday: [2, 4] };
+    expect(materializeAnchorFields(explicit, "2026-08-24").byWeekday).toEqual([2, 4]);
+  });
+
+  it("truncates the old series to the day before the split", () => {
+    const open: RecurrenceRule = { freq: "daily", interval: 1 };
+    expect(truncateRuleBefore(open, "2026-10-05").until).toBe("2026-10-04");
+
+    // An end date already earlier than the split stays put.
+    const bounded: RecurrenceRule = { freq: "daily", interval: 1, until: "2026-09-01" };
+    expect(truncateRuleBefore(bounded, "2026-10-05").until).toBe("2026-09-01");
+
+    // One later is pulled in.
+    const later: RecurrenceRule = { freq: "daily", interval: 1, until: "2026-12-11" };
+    expect(truncateRuleBefore(later, "2026-10-05").until).toBe("2026-10-04");
+  });
+
+  it("compares rules by meaning, not by field order", () => {
+    const a: RecurrenceRule = { freq: "weekly", interval: 1, byWeekday: [1, 3], until: "2026-12-11" };
+    expect(rulesEqual(a, { ...a, byWeekday: [3, 1] })).toBe(true);
+    expect(rulesEqual(a, { ...a, until: undefined })).toBe(false);
+    expect(rulesEqual(a, { ...a, byWeekday: [1] })).toBe(false);
+    expect(rulesEqual(a, { ...a, freq: "daily" })).toBe(false);
+    expect(rulesEqual(null, null)).toBe(true);
+    expect(rulesEqual(a, null)).toBe(false);
+  });
+});
+
+describe("missingSeriesSlots — regeneration in one pure function", () => {
+  const daily: RecurrenceRule = { freq: "daily", interval: 1 };
+
+  it("fills the window minus existing rows and deleted slots", () => {
+    const slots = missingSeriesSlots({
+      rule: daily,
+      anchor: "2026-08-24",
+      from: "2026-08-25",
+      to: "2026-08-29",
+      existingSlots: ["2026-08-24", "2026-08-26"],
+      skipDates: serializeSkipDates(["2026-08-28"]),
+    });
+    expect(slots).toEqual(["2026-08-25", "2026-08-27", "2026-08-29"]);
+  });
+
+  it("is idempotent: applying its own output leaves nothing to do", () => {
+    const first = missingSeriesSlots({
+      rule: daily,
+      anchor: "2026-08-24",
+      from: "2026-08-25",
+      to: "2026-08-29",
+      existingSlots: ["2026-08-24"],
+    });
+    const second = missingSeriesSlots({
+      rule: daily,
+      anchor: "2026-08-24",
+      from: "2026-08-25",
+      to: "2026-08-29",
+      existingSlots: ["2026-08-24", ...first],
+    });
+    expect(second).toEqual([]);
+  });
+
+  it("a moved occurrence's original slot still counts as occupied", () => {
+    // The row's date changed, but its slot identity (originalDate) did not —
+    // so the vacated day is not refilled.
+    const slots = missingSeriesSlots({
+      rule: daily,
+      anchor: "2026-08-24",
+      from: "2026-08-25",
+      to: "2026-08-26",
+      existingSlots: ["2026-08-24", "2026-08-25", "2026-08-26"],
+    });
+    expect(slots).toEqual([]);
+  });
+
+  it("respects the rule's inclusive end date inside the window", () => {
+    const bounded: RecurrenceRule = { freq: "daily", interval: 1, until: "2026-08-27" };
+    const slots = missingSeriesSlots({
+      rule: bounded,
+      anchor: "2026-08-24",
+      from: "2026-08-25",
+      to: "2026-09-15",
+      existingSlots: ["2026-08-24"],
+    });
+    expect(slots).toEqual(["2026-08-25", "2026-08-26", "2026-08-27"]);
   });
 });

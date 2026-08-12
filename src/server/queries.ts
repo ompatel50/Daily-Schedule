@@ -69,6 +69,11 @@ const SCHEDULE_ITEM_INCLUDE = {
   tags: { include: { tag: true } },
   workout: { select: { id: true, type: true, durationMin: true } },
   habit: { select: { id: true, name: true, color: true } },
+  // An occurrence's own recurrenceRule is null; the SERIES' rule lives on the
+  // parent. The edit dialog pre-fills its recurrence controls from it, which
+  // is what makes a "this and future" edit inherit the pattern and end date
+  // instead of silently un-repeating the series.
+  series: { select: { recurrenceRule: true } },
 } as const;
 
 // `nulls: "first"` pins the SQLite ordering the UI was built on: untimed

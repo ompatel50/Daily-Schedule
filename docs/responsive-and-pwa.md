@@ -31,6 +31,8 @@ by the browser suites (`responsive.spec.ts`, `mobile-drawer.spec.ts`,
 | --- | --- | --- |
 | `Sheet` | ui/sheet.tsx | Slide-over panels: left = nav drawer, bottom = action/filter sheets |
 | Phone-first `DialogContent` | ui/dialog.tsx | Every dialog: `max-h-[calc(100dvh-2rem)]`, viewport-margin width, internal scroll — nothing hides under the iOS keyboard or browser chrome |
+| `SeriesScopeChooser` | planner/series-scope-chooser.tsx | The recurring-item scope question: a bottom sheet on phones (thumb-height options, `pb-safe`, Cancel focused first so deletion has no accidental default), a compact dialog on desktop |
+| `useIsMobile` | lib/use-is-mobile.ts | The one JS breakpoint (`matchMedia`, SSR-safe) for components that must swap DOM structure per form factor — everything else stays pure CSS |
 | `OfflineIndicator` | shared/offline-indicator.tsx | Slim status bar while offline, "back online" toast |
 | `.touch-target` | globals.css | ~44px hit areas on coarse pointers without changing visual size |
 | `.hover-reveal` | globals.css | Hover-revealed row controls stay hover-only on fine pointers, always visible on touch |
