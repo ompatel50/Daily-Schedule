@@ -407,6 +407,8 @@ model ScheduleItem {
 
   // --- recurrence -----------------------------------------------------------
   /// Recurrence rule on the *series parent*. See src/lib/logic/recurrence.ts.
+  /// The parent's own operational day is the series START date; the rule's
+  /// inclusive `until` is the optional END date (absent = open-ended).
   /// e.g. { freq: "weekly", interval: 1, byWeekday: [1,3,5], until: "2026-12-31" }
   recurrenceRule String?
   /// When set, this row is a materialised occurrence of `seriesId`.
@@ -415,6 +417,15 @@ model ScheduleItem {
   occurrences    ScheduleItem[] @relation("Series")
   /// Occurrence was detached from the series and edited independently.
   isException    Boolean        @default(false)
+  /// The operational day this occurrence was generated FOR — its slot in the
+  /// series, stable even after the occurrence is edited or moved, so
+  /// regeneration never fills a slot that is already represented. Null on
+  /// rows written before this column existed (their slot is derived from the
+  /// current date/time instead) and on non-series rows.
+  originalDate   String?
+  /// Series parents only: JSON array of operational day keys the user removed
+  /// with "delete this occurrence". Regeneration never recreates these slots.
+  skipDates      String?
 
   // --- links to other domains ----------------------------------------------
   habitId   String?

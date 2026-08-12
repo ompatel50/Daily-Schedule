@@ -34,6 +34,7 @@ import { DEFAULT_DAY_RESET_MINUTE, groupedWithDayHint } from "@/lib/logic/operat
 import { summarizeConflicts } from "@/lib/logic/planner";
 import { cn } from "@/lib/utils";
 import { confirmMoveToast } from "@/components/planner/move-conflict";
+import { SeriesScopeChooser, deleteScopeChoices } from "@/components/planner/series-scope-chooser";
 import {
   deleteScheduleItem,
   moveScheduleItem,
@@ -61,6 +62,8 @@ export interface ScheduleRowItem {
   status: string;
   recurrenceRule: string | null;
   seriesId: string | null;
+  /** The parent's rule when this row is an occurrence of a series. */
+  seriesRule?: string | null;
   workoutId: string | null;
   tags: Array<{ tag: { id: string; name: string } }>;
 }
@@ -91,6 +94,7 @@ export function ScheduleRow({
 }) {
   const router = useRouter();
   const [pending, startTransition] = React.useTransition();
+  const [deleteChooserOpen, setDeleteChooserOpen] = React.useState(false);
 
   const sortableState = useSortable({ id: item.id, disabled: !sortable });
   const style = sortable
@@ -257,32 +261,40 @@ export function ScheduleRow({
             <Ban /> {skipped ? "Un-skip" : "Skip"}
           </DropdownMenuItem>
           <DropdownMenuSeparator />
-          <DropdownMenuItem
-            destructive
-            onClick={() => act(() => deleteScheduleItem(item.id, "one"), "Item deleted")}
-          >
-            <Trash2 /> Delete
-          </DropdownMenuItem>
-          {recurring && seriesActions && (
-            <>
-              <DropdownMenuItem
-                destructive
-                onClick={() =>
-                  act(() => deleteScheduleItem(item.id, "future"), "This and future deleted")
-                }
-              >
-                <Trash2 /> Delete this and future
-              </DropdownMenuItem>
-              <DropdownMenuItem
-                destructive
-                onClick={() => act(() => deleteScheduleItem(item.id, "all"), "Series deleted")}
-              >
-                <Trash2 /> Delete whole series
-              </DropdownMenuItem>
-            </>
+          {recurring && seriesActions ? (
+            // Deleting one occurrence of a series is a scoped decision — the
+            // chooser asks it explicitly instead of a menu of destructive rows.
+            <DropdownMenuItem destructive onClick={() => setDeleteChooserOpen(true)}>
+              <Trash2 /> Delete…
+            </DropdownMenuItem>
+          ) : (
+            <DropdownMenuItem
+              destructive
+              onClick={() => act(() => deleteScheduleItem(item.id, "one"), "Item deleted")}
+            >
+              <Trash2 /> Delete
+            </DropdownMenuItem>
           )}
         </DropdownMenuContent>
       </DropdownMenu>
+
+      {recurring && seriesActions && (
+        <SeriesScopeChooser
+          open={deleteChooserOpen}
+          onOpenChange={setDeleteChooserOpen}
+          mode="delete"
+          occurrenceLabel={formatDay(item.operationalDate, "EEEE, MMM d")}
+          choices={deleteScopeChoices(formatDay(item.operationalDate, "EEEE, MMM d"))}
+          pending={pending}
+          onChoose={(scope) => {
+            setDeleteChooserOpen(false);
+            act(
+              () => deleteScheduleItem(item.id, scope),
+              scope === "one" ? "Occurrence deleted" : "Deleted",
+            );
+          }}
+        />
+      )}
     </div>
   );
 }

@@ -129,6 +129,7 @@ export function DaySchedule({
       status: item.status,
       recurrenceRule: item.recurrenceRule,
       seriesId: item.seriesId,
+      seriesRule: item.seriesRule,
     });
     setDialogOpen(true);
   }

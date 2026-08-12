@@ -2,6 +2,8 @@
 
 import { revalidatePath } from "next/cache";
 
+import type { Prisma } from "@prisma/client";
+
 import { prisma } from "@/lib/db";
 import { getCurrentUser } from "@/lib/db";
 import { type DayKey, shiftDay } from "@/lib/date";
@@ -11,15 +13,27 @@ import {
   operationalDayWhere,
 } from "@/lib/logic/operational-day";
 import { resetMinuteOf } from "@/lib/logic/schedule";
-import { expandRule, parseRule, serializeRule, type RecurrenceRule } from "@/lib/logic/recurrence";
+import {
+  materializeAnchorFields,
+  parseRule,
+  parseSkipDates,
+  serializeRule,
+  serializeSkipDates,
+  truncateRuleBefore,
+  withSkipDate,
+  type RecurrenceRule,
+} from "@/lib/logic/recurrence";
 import { parseQuickAdd } from "@/lib/logic/quick-add";
 import {
+  isSchedulingConflict,
   planMove,
   planTemplateApplication,
+  type ConflictCandidate,
   type TemplateApplyMode,
   type TemplateRow,
 } from "@/lib/logic/planner";
 import {
+  conflictPreviewSchema,
   fail,
   fromZod,
   quickAddSchema,
@@ -31,7 +45,11 @@ import {
   type SeriesScope,
 } from "@/lib/validation";
 import { scheduleSettingsFor } from "@/server/schedule";
-import { extendSeriesFor, HORIZON_DAYS } from "@/server/series";
+import {
+  extendSeriesFor,
+  materializeSeriesFromAnchor,
+  slotOfOccurrence,
+} from "@/server/series";
 import { recomputeDay } from "@/server/summaries";
 
 function revalidateAll() {
@@ -144,25 +162,11 @@ export async function createScheduleItem(input: unknown): Promise<ActionResult<{
   const touched: DayKey[] = [data.date];
 
   if (rule) {
-    // The rule expands over operational days ("every Monday at 1:00 AM" means
-    // Monday *nights*), and each occurrence converts to its calendar date.
-    const occurrences = expandRule(
-      rule,
-      data.date,
-      shiftDay(data.date, 1),
-      shiftDay(data.date, HORIZON_DAYS),
-    );
-    if (occurrences.length > 0) {
-      await prisma.scheduleItem.createMany({
-        data: occurrences.map((date) => ({
-          ...base,
-          date: calendarDateForOperationalTime(date, base.startMinute, reset),
-          seriesId: parent.id,
-          sortOrder: 0,
-        })),
-      });
-      touched.push(...occurrences);
-    }
+    // The rule expands over OPERATIONAL days ("every Monday at 1:00 AM" means
+    // Monday *nights*), anchored at the day the user was planning; each
+    // occurrence stores on its real calendar date. Shared with the horizon
+    // top-up and series splitting so all three agree on identity and bounds.
+    touched.push(...(await materializeSeriesFromAnchor(prisma, parent, reset)));
   }
 
   await touchDays(user.id, touched);
@@ -188,11 +192,96 @@ export async function quickAddScheduleItem(input: unknown): Promise<ActionResult
   });
 }
 
+/** The transaction-client slice these helpers need. */
+type Tx = Prisma.TransactionClient;
+
+/** Replace an item's tag links with the given set. */
+async function setItemTags(tx: Tx, scheduleItemId: string, tagIds: string[]) {
+  await tx.scheduleItemTag.deleteMany({ where: { scheduleItemId } });
+  if (tagIds.length) {
+    await tx.scheduleItemTag.createMany({
+      data: tagIds.map((tagId) => ({ scheduleItemId, tagId })),
+    });
+  }
+}
+
+type ScheduleItemRow = NonNullable<
+  Awaited<ReturnType<typeof prisma.scheduleItem.findFirst>>
+>;
+
 /**
- * Edit an item. On a recurring item `scope` decides how far the change reaches:
- * this occurrence only, this one and every later one, or the whole series
- * including the past. Editing a single occurrence detaches it, so a later
- * series-wide edit does not silently overwrite the user's change.
+ * Make `next` the parent of `parent`'s series — used when the first
+ * occurrence (the parent row, which doubles as the rule holder) is edited or
+ * deleted on its own. The rule's anchor-derived fields are pinned from the
+ * OLD anchor first, so "every week" anchored on a Monday still means Mondays
+ * after the promotion; a `count` loses the one occurrence being detached.
+ * Returns the promoted row's id.
+ */
+async function promoteNextOccurrence(
+  tx: Tx,
+  parent: ScheduleItemRow,
+  children: ScheduleItemRow[],
+  rule: RecurrenceRule,
+  reset: number,
+): Promise<string> {
+  const anchorSlot = slotOfOccurrence(parent, reset);
+  const bySlot = (a: ScheduleItemRow, b: ScheduleItemRow) =>
+    slotOfOccurrence(a, reset) < slotOfOccurrence(b, reset) ? -1 : 1;
+  // Prefer a non-exception child: the promoted row becomes the template new
+  // occurrences copy, and an exception's fields were deliberately different.
+  const next =
+    children.filter((child) => !child.isException).sort(bySlot)[0] ??
+    children.slice().sort(bySlot)[0];
+
+  const promotedRule: RecurrenceRule = {
+    ...materializeAnchorFields(rule, anchorSlot),
+    count: rule.count ? Math.max(1, rule.count - 1) : undefined,
+  };
+
+  await tx.scheduleItem.update({
+    where: { id: next.id },
+    data: {
+      seriesId: null,
+      isException: false,
+      recurrenceRule: serializeRule(promotedRule),
+      skipDates: parent.skipDates,
+    },
+  });
+  await tx.scheduleItem.updateMany({
+    where: { seriesId: parent.id, id: { not: next.id } },
+    data: { seriesId: next.id },
+  });
+  return next.id;
+}
+
+/**
+ * Edit an item. On a recurring item `scope` decides how far the change
+ * reaches, and the mechanics preserve history by construction:
+ *
+ *  * `one` — the occurrence becomes an exception: its fields detach, its
+ *    series slot stays occupied (so regeneration cannot duplicate it), and
+ *    every other occurrence — past and future — is untouched. Editing the
+ *    FIRST occurrence promotes the next one to series parent first, so the
+ *    series' template is not silently rewritten. Recurrence-rule input is
+ *    ignored on this scope: a one-occurrence edit cannot smuggle in a series
+ *    change.
+ *
+ *  * `future` — a series split. The old series stays authoritative through
+ *    the day before the selected occurrence (its rule gains/keeps an `until`
+ *    there); the selected occurrence becomes the parent of a new series that
+ *    starts on its day, carries the edited fields, and uses the submitted
+ *    rule — which the form pre-fills from the old rule, so the original end
+ *    date is inherited unless the user explicitly changed it. Future
+ *    occurrences that were still plain "planned" rows are re-materialised
+ *    under the new series; completed, skipped and individually-edited ones
+ *    are kept as exceptions rather than destroyed.
+ *
+ *  * `all` — the existing whole-series behaviour: detail fields carry to the
+ *    parent and every non-exception occurrence, dates stay put (only a move
+ *    across the daily-reset boundary shifts stored dates, keeping each
+ *    occurrence on its operational day). Rule changes are not accepted on
+ *    this scope either — reshaping the pattern is exactly what `future` is
+ *    for.
  */
 export async function updateScheduleItem(
   input: unknown,
@@ -226,17 +315,196 @@ export async function updateScheduleItem(
 
   const reset = resetFor(user);
   const storedDate = calendarDateForOperationalTime(data.date, fields.startMinute, reset);
-  // Re-timing across the reset boundary moves every series occurrence's
-  // calendar date by one, so it stays on the operational day it was planned
-  // for: 11:00 PM → 1:00 AM shifts each stored date forward, and back again
-  // the other way.
+  const inputRule = parseRule(data.recurrenceRule ?? null);
+
+  const isSeriesRow = Boolean(existing.seriesId) || Boolean(existing.recurrenceRule);
+  let updated = 1;
+  const touched: DayKey[] = [operationalDayOfRecord(existing, reset), data.date];
+
+  // --- a plain, non-recurring item -------------------------------------------
+  if (!isSeriesRow) {
+    await prisma.$transaction(async (tx) => {
+      const row = await tx.scheduleItem.update({
+        where: { id: existing.id },
+        data: { ...fields, date: storedDate, recurrenceRule: serializeRule(inputRule) },
+      });
+      await setItemTags(tx, existing.id, data.tagIds);
+      if (inputRule) {
+        // The item just became a recurring series anchored on its day.
+        touched.push(...(await materializeSeriesFromAnchor(tx, row, reset)));
+      }
+    });
+    await touchDays(user.id, touched);
+    revalidateAll();
+    return succeed({ id: existing.id, updated });
+  }
+
+  // --- a recurring series row -------------------------------------------------
+  const parent = existing.seriesId
+    ? await prisma.scheduleItem.findFirst({ where: { id: existing.seriesId, userId: user.id } })
+    : existing;
+  const parentRule = parent ? parseRule(parent.recurrenceRule) : null;
+
+  if (!parent || !parentRule) {
+    // A detached or malformed series row: edit it as a plain item, exception
+    // semantics preserved. Never guess a series shape that isn't there.
+    await prisma.$transaction(async (tx) => {
+      await tx.scheduleItem.update({
+        where: { id: existing.id },
+        data: { ...fields, date: storedDate },
+      });
+      await setItemTags(tx, existing.id, data.tagIds);
+    });
+    await touchDays(user.id, touched);
+    revalidateAll();
+    return succeed({ id: existing.id, updated });
+  }
+
+  const anchorSlot = slotOfOccurrence(parent, reset);
+  /** The boundary the user means: the day they see this occurrence under. */
+  const selectedDay = operationalDayOfRecord(existing, reset);
+
+  if (scope === "one") {
+    await prisma.$transaction(async (tx) => {
+      if (existing.seriesId) {
+        // An occurrence: detach the fields, keep the slot occupied.
+        await tx.scheduleItem.update({
+          where: { id: existing.id },
+          data: {
+            ...fields,
+            date: storedDate,
+            isException: true,
+            originalDate: existing.originalDate ?? slotOfOccurrence(existing, reset),
+          },
+        });
+        await setItemTags(tx, existing.id, data.tagIds);
+        return;
+      }
+
+      // The parent row IS the first occurrence. Editing only it must not
+      // rewrite the template future occurrences are generated from — promote
+      // the next occurrence to parent first, then detach this one.
+      const children = await tx.scheduleItem.findMany({ where: { seriesId: existing.id } });
+      if (children.length === 0) {
+        // A series of one: nothing else to protect. Keep its stored rule
+        // (rule edits belong to the "future" scope).
+        await tx.scheduleItem.update({
+          where: { id: existing.id },
+          data: { ...fields, date: storedDate },
+        });
+        await setItemTags(tx, existing.id, data.tagIds);
+        return;
+      }
+
+      const newParentId = await promoteNextOccurrence(tx, existing, children, parentRule, reset);
+      await tx.scheduleItem.update({
+        where: { id: existing.id },
+        data: {
+          ...fields,
+          date: storedDate,
+          recurrenceRule: null,
+          skipDates: null,
+          seriesId: newParentId,
+          isException: true,
+          originalDate: existing.originalDate ?? anchorSlot,
+        },
+      });
+      await setItemTags(tx, existing.id, data.tagIds);
+    });
+    await touchDays(user.id, touched);
+    revalidateAll();
+    return succeed({ id: existing.id, updated });
+  }
+
+  if (scope === "future") {
+    await prisma.$transaction(async (tx) => {
+      const children = await tx.scheduleItem.findMany({ where: { seriesId: parent.id } });
+      const isWholeSeries = existing.id === parent.id;
+
+      // Rows from the selected day on are the new series' territory. Plain
+      // planned copies are disposable (they re-materialise from the new
+      // shape); anything the user touched — completions, skips, exceptions —
+      // is kept as an exception. Rows moved to before the selected day read
+      // as history and stay with the old series.
+      for (const child of children) {
+        if (child.id === existing.id) continue;
+        const childDay = operationalDayOfRecord(child, reset);
+        if (childDay < selectedDay) continue;
+        if (!child.isException && child.status === "planned") {
+          touched.push(childDay);
+          await tx.scheduleItem.delete({ where: { id: child.id } });
+        } else if (!isWholeSeries) {
+          await tx.scheduleItem.update({
+            where: { id: child.id },
+            data: {
+              seriesId: existing.id,
+              isException: true,
+              originalDate: child.originalDate ?? slotOfOccurrence(child, reset),
+            },
+          });
+        } else if (!child.isException) {
+          await tx.scheduleItem.update({
+            where: { id: child.id },
+            data: {
+              isException: true,
+              originalDate: child.originalDate ?? slotOfOccurrence(child, reset),
+            },
+          });
+        }
+      }
+
+      // The new series starts on the edited occurrence's day. The rule is
+      // exactly what was submitted — the form pre-fills it from the old rule,
+      // so an untouched end date is inherited, an explicit change (including
+      // "no end date") is respected, and "does not repeat" ends recurrence
+      // from here on. Anchor-derived fields are pinned against the new
+      // anchor so the rule cannot drift when its anchor moved.
+      const newRule = inputRule ? materializeAnchorFields(inputRule, data.date) : null;
+      const oldSkips = parseSkipDates(parent.skipDates);
+
+      const newParent = await tx.scheduleItem.update({
+        where: { id: existing.id },
+        data: {
+          ...fields,
+          date: storedDate,
+          seriesId: null,
+          isException: false,
+          originalDate: null,
+          recurrenceRule: serializeRule(newRule),
+          skipDates: serializeSkipDates(oldSkips.filter((day) => day > data.date)),
+        },
+      });
+      await setItemTags(tx, existing.id, data.tagIds);
+
+      if (!isWholeSeries) {
+        // The old series stays authoritative through the day before.
+        await tx.scheduleItem.update({
+          where: { id: parent.id },
+          data: {
+            recurrenceRule: serializeRule(truncateRuleBefore(parentRule, selectedDay)),
+            skipDates: serializeSkipDates(oldSkips.filter((day) => day < selectedDay)),
+          },
+        });
+      }
+
+      if (newRule) {
+        touched.push(...(await materializeSeriesFromAnchor(tx, newParent, reset)));
+      }
+    });
+    await touchDays(user.id, touched);
+    revalidateAll();
+    return succeed({ id: existing.id, updated });
+  }
+
+  // --- scope === "all" ---------------------------------------------------------
+  // Re-timing across the reset boundary moves every occurrence's calendar
+  // date by one, so it stays on the operational day it was planned for:
+  // 11:00 PM → 1:00 AM shifts each stored date forward, and back again the
+  // other way.
   const wasBeforeReset =
     !existing.allDay && existing.startMinute !== null && existing.startMinute < reset;
   const nowBeforeReset = fields.startMinute !== null && fields.startMinute < reset;
   const seriesDateShift = wasBeforeReset === nowBeforeReset ? 0 : nowBeforeReset ? 1 : -1;
-
-  let updated = 1;
-  const touched: DayKey[] = [operationalDayOfRecord(existing, reset), data.date];
 
   await prisma.$transaction(async (tx) => {
     await tx.scheduleItem.update({
@@ -244,29 +512,18 @@ export async function updateScheduleItem(
       data: {
         ...fields,
         date: storedDate,
-        // Editing a single occurrence detaches it so a later series edit
-        // doesn't silently overwrite the user's change.
-        isException: existing.seriesId ? scope === "one" : existing.isException,
+        isException: existing.seriesId ? false : existing.isException,
       },
     });
+    await setItemTags(tx, existing.id, data.tagIds);
 
-    await tx.scheduleItemTag.deleteMany({ where: { scheduleItemId: existing.id } });
-    if (data.tagIds.length) {
-      await tx.scheduleItemTag.createMany({
-        data: data.tagIds.map((tagId) => ({ scheduleItemId: existing.id, tagId })),
-      });
-    }
-
-    if (scope === "one") return;
-
-    // Series-wide edits carry the *details* across, never the operational
-    // day — moving every occurrence onto one day would collapse the series.
+    // Detail fields carry across the whole series; dates stay on their own
+    // days. The rule itself is deliberately not editable here.
     const seriesId = existing.seriesId ?? existing.id;
     const where = {
       userId: user.id,
       isException: false,
       id: { not: existing.id },
-      ...(scope === "future" ? { date: { gt: existing.date } } : {}),
       OR: [{ seriesId }, { id: seriesId }],
     };
 
@@ -394,8 +651,11 @@ export async function moveScheduleItem(
       startMinute: plan.startMinute,
       endMinute: plan.endMinute,
       allDay: plan.allDay,
-      // A moved occurrence is no longer in lock-step with its series.
+      // A moved occurrence is no longer in lock-step with its series — but it
+      // still occupies its original slot, so the vacated day is not refilled
+      // by the next regeneration.
       isException: item.seriesId ? true : item.isException,
+      originalDate: item.seriesId ? (item.originalDate ?? slotOfOccurrence(item, reset)) : item.originalDate,
     },
   });
 
@@ -422,7 +682,24 @@ export async function reorderScheduleItems(
   return succeed({ count: orderedIds.length });
 }
 
-/** Delete one occurrence, this one and every later one, or the whole series. */
+/**
+ * Delete one occurrence, this one and every later one, or the whole series.
+ *
+ *  * `one` on an occurrence really deletes the row AND records its slot in
+ *    the parent's `skipDates`, so regeneration can never quietly bring it
+ *    back. `one` on the FIRST occurrence promotes the next occurrence to
+ *    series parent first — deleting the rule holder must not take the whole
+ *    series down with it.
+ *
+ *  * `future` terminates the series at the selected occurrence: the parent's
+ *    rule gains an `until` on the day before (so nothing regenerates), and
+ *    every row from that day on is removed. History before it is untouched.
+ *    Selecting the first occurrence means there is no history to preserve —
+ *    the whole series goes.
+ *
+ *  * `all` deletes the entire series including history — the long-standing
+ *    explicit option, kept for exactly that explicit choice.
+ */
 export async function deleteScheduleItem(
   id: string,
   scope: SeriesScope = "one",
@@ -431,20 +708,99 @@ export async function deleteScheduleItem(
   const item = await prisma.scheduleItem.findFirst({ where: { id, userId: user.id } });
   if (!item) return fail("Item not found");
 
-  const seriesId = item.seriesId ?? item.id;
   const reset = resetFor(user);
+  const isSeriesRow = Boolean(item.seriesId) || Boolean(item.recurrenceRule);
   let deleted = 0;
   const touched: DayKey[] = [operationalDayOfRecord(item, reset)];
 
-  if (scope === "one") {
-    await prisma.scheduleItem.delete({ where: { id } });
-    deleted = 1;
-  } else {
-    const where =
-      scope === "all"
-        ? { userId: user.id, OR: [{ id: seriesId }, { seriesId }] }
-        : { userId: user.id, date: { gte: item.date }, OR: [{ id: seriesId }, { seriesId }] };
+  if (scope === "one" || !isSeriesRow) {
+    if (item.seriesId) {
+      // An occurrence of a series: remember the slot so it stays deleted.
+      const slot = slotOfOccurrence(item, reset);
+      const parent = await prisma.scheduleItem.findFirst({
+        where: { id: item.seriesId, userId: user.id },
+        select: { id: true, skipDates: true },
+      });
+      await prisma.$transaction(async (tx) => {
+        await tx.scheduleItem.delete({ where: { id } });
+        if (parent) {
+          await tx.scheduleItem.update({
+            where: { id: parent.id },
+            data: { skipDates: withSkipDate(parent.skipDates, slot) },
+          });
+        }
+      });
+      deleted = 1;
+    } else if (item.recurrenceRule) {
+      // The series parent. Hand the series to the next occurrence before the
+      // row goes — a cascade here would erase every occurrence.
+      const rule = parseRule(item.recurrenceRule);
+      const children = await prisma.scheduleItem.findMany({
+        where: { seriesId: item.id, userId: user.id },
+      });
+      if (rule && children.length > 0) {
+        await prisma.$transaction(async (tx) => {
+          await promoteNextOccurrence(tx, item, children, rule, reset);
+          await tx.scheduleItem.delete({ where: { id } });
+        });
+      } else {
+        await prisma.scheduleItem.delete({ where: { id } });
+      }
+      deleted = 1;
+    } else {
+      await prisma.scheduleItem.delete({ where: { id } });
+      deleted = 1;
+    }
+  } else if (scope === "future") {
+    const parent = item.seriesId
+      ? await prisma.scheduleItem.findFirst({ where: { id: item.seriesId, userId: user.id } })
+      : item;
+    const parentRule = parent ? parseRule(parent.recurrenceRule) : null;
+    /** The boundary the user means: the day they see this occurrence under. */
+    const selectedDay = operationalDayOfRecord(item, reset);
 
+    if (!parent || item.id === parent.id) {
+      // Deleting from the first occurrence on = the whole series; cascade
+      // removes the occurrences with the parent.
+      const affected = await prisma.scheduleItem.findMany({
+        where: { userId: user.id, OR: [{ id: item.id }, { seriesId: item.id }] },
+        select: { date: true, startMinute: true },
+      });
+      touched.push(...affected.map((row) => operationalDayOfRecord(row, reset)));
+      await prisma.scheduleItem.delete({ where: { id: item.id } });
+      deleted = affected.length;
+    } else {
+      const children = await prisma.scheduleItem.findMany({
+        where: { seriesId: parent.id, userId: user.id },
+      });
+      // Everything the user sees from this day on goes; an occurrence moved
+      // back into the past reads as history and stays.
+      const removing = children.filter(
+        (child) => operationalDayOfRecord(child, reset) >= selectedDay,
+      );
+      touched.push(...removing.map((row) => operationalDayOfRecord(row, reset)));
+      await prisma.$transaction(async (tx) => {
+        if (parentRule) {
+          await tx.scheduleItem.update({
+            where: { id: parent.id },
+            data: {
+              recurrenceRule: serializeRule(truncateRuleBefore(parentRule, selectedDay)),
+              skipDates: serializeSkipDates(
+                parseSkipDates(parent.skipDates).filter((day) => day < selectedDay),
+              ),
+            },
+          });
+        }
+        const result = await tx.scheduleItem.deleteMany({
+          where: { id: { in: removing.map((row) => row.id) }, userId: user.id },
+        });
+        deleted = result.count;
+      });
+    }
+  } else {
+    // scope === "all": the whole series including history, explicitly.
+    const seriesId = item.seriesId ?? item.id;
+    const where = { userId: user.id, OR: [{ id: seriesId }, { seriesId }] };
     const affected = await prisma.scheduleItem.findMany({
       where,
       select: { date: true, startMinute: true },
@@ -479,18 +835,74 @@ export async function rolloverUnfinished(from: DayKey): Promise<ActionResult<{ m
     list.push(item.id);
     byDate.set(item.date, list);
   }
-  await prisma.$transaction(
-    [...byDate.entries()].map(([date, ids]) =>
+  await prisma.$transaction([
+    // Series occurrences keep their original slot on record, so the day they
+    // vacate is not refilled by the next regeneration. Every row selected
+    // here belongs to operational day `from` — that IS the rollover's filter.
+    prisma.scheduleItem.updateMany({
+      where: {
+        id: { in: items.map((item) => item.id) },
+        seriesId: { not: null },
+        originalDate: null,
+      },
+      data: { originalDate: from },
+    }),
+    ...[...byDate.entries()].map(([date, ids]) =>
       prisma.scheduleItem.updateMany({
         where: { id: { in: ids } },
         data: { date: shiftDay(date, 1), isException: true },
       }),
     ),
-  );
+  ]);
 
   await touchDays(user.id, [from, to]);
   revalidateAll();
   return succeed({ moved: items.length });
+}
+
+/**
+ * What would this span land on? The edit dialog calls this as the user types
+ * a time, so a real double booking is visible BEFORE saving — computed with
+ * the same tolerant conflict rule every warning surface uses, so adjacent
+ * blocks stay quiet. Read-only: it never blocks the save, because
+ * double-booking yourself is sometimes deliberate.
+ */
+export async function previewScheduleItemConflicts(input: {
+  date: DayKey;
+  startMinute: number | null;
+  endMinute: number | null;
+  allDay: boolean;
+  /** The item being edited, so it does not conflict with itself. */
+  excludeId?: string;
+}): Promise<ActionResult<{ conflicts: string[] }>> {
+  const parsed = conflictPreviewSchema.safeParse(input);
+  if (!parsed.success) return fromZod(parsed.error);
+
+  const user = await getCurrentUser();
+  const reset = resetFor(user);
+  const data = parsed.data;
+
+  // Everything on the same OPERATIONAL day. Minute ranges of the day's two
+  // calendar dates are disjoint, so comparing raw minutes matches real time.
+  const others = await prisma.scheduleItem.findMany({
+    where: { userId: user.id, ...operationalDayWhere(data.date, reset) },
+    select: { id: true, title: true, startMinute: true, endMinute: true, allDay: true, status: true },
+  });
+
+  const draft: ConflictCandidate = {
+    id: data.excludeId ?? "__draft__",
+    title: "",
+    startMinute: data.allDay ? null : data.startMinute,
+    endMinute: data.allDay ? null : data.endMinute,
+    allDay: data.allDay,
+  };
+
+  const conflicts = others
+    .filter((other) => isSchedulingConflict(draft, other))
+    .sort((a, b) => (a.startMinute ?? 0) - (b.startMinute ?? 0))
+    .map((other) => other.title);
+
+  return succeed({ conflicts });
 }
 
 /**

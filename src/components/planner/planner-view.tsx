@@ -80,6 +80,7 @@ export function PlannerView({
       status: item.status,
       recurrenceRule: item.recurrenceRule,
       seriesId: item.seriesId,
+      seriesRule: item.seriesRule,
     });
     setDialogOpen(true);
   }

@@ -4791,3 +4791,143 @@ Live with it on a phone for a week. The obvious follow-ups if usage asks:
 a bottom-sheet presentation for the biggest form dialogs (the primitive is
 already there), palette recents surfacing habit names once that feels safe,
 and the excused-habit-day assistant write kind Phase B.1 queued first.
+
+---
+
+## Phase D — planner overlap correctness and master recurrence
+
+**Goal:** back-to-back blocks stop counting as overlaps; recurring series get
+explicit ranges, occurrence overrides, deletion tombstones and proper
+this-and-future series splitting; the assistant's planner writes learn the
+same scopes without weakening confirm-before-write.
+
+### Overlap semantics
+
+* The exact rule was already half-open (`spansOverlap`, `[start, end)`) and
+  already shared by every consumer — the audit's real finding. This phase
+  layered the user-facing concept on top: `isSchedulingConflict` =
+  intersection strictly greater than `CONFLICT_TOLERANCE_MINUTES` (1), a
+  single constant in `src/lib/logic/planner.ts`. `findConflicts`,
+  `conflictsByItem` and `planMove` route through it, so the banner, badges,
+  pair counts, timeline styling, week/month grids, move confirmations and
+  assistant previews all agree without any per-surface change. Stored times
+  are never touched; classification only. Point items (start === end) occupy
+  no minutes and never conflict — pinned by tests. Cross-reset comparison is
+  raw-minute-safe because an operational day's two calendar dates occupy
+  disjoint minute ranges; documented and pinned.
+* New: `previewScheduleItemConflicts` server action feeds a live, debounced
+  warning in the edit dialog (informational, never blocking).
+
+### Recurrence architecture (materialised, slot-identified)
+
+* Additive schema: `ScheduleItem.originalDate` (the operational-day *slot* an
+  occurrence was generated for — stable across edits and moves) and
+  `ScheduleItem.skipDates` (parent-held JSON set of user-deleted slots).
+  Migration `20260812065736_schedule_series_slots_and_skips`; backups carry
+  both automatically (whole-row export/restore).
+* `src/server/series.ts` rewritten around slot sets
+  (`missingSeriesSlots`, pure and unit-tested): fill = pattern window −
+  existing slots − skip dates. Fixes four latent bugs: deleted trailing/
+  future occurrences resurrecting (cursor was max-date), "delete this and
+  future" never truncating the rule, generation expanding on the calendar
+  axis while creation expanded on the operational axis (wrong weekdays for
+  before-reset series), and unbounded backlog materialisation for
+  past-anchored series (now `BACKFILL_LIMIT_DAYS` = 366; the routine top-up
+  never backfills at all).
+* Ranges: start date = the parent's day (required by construction);
+  `rule.until` = optional INCLUSIVE end date, now editable in the dialog
+  (Ends: Never / On date, progressive disclosure, field-level validation);
+  open-ended series bounded only by the 120-day horizon.
+
+### Scoped editing and deletion (`src/server/actions/planner.ts`)
+
+* **one** — occurrence → exception with pinned slot; editing/deleting the
+  FIRST occurrence promotes the next occurrence to parent (rule re-anchored
+  with `materializeAnchorFields`, count decremented) so the template is
+  never silently rewritten and a parent delete can no longer cascade the
+  whole series away. Delete-one records the slot in `skipDates`.
+* **future** — a real series split: old rule truncated to the day before
+  (`truncateRuleBefore`; an earlier `until` stays), history untouched,
+  selected occurrence becomes the new parent (stable id) carrying the edited
+  fields and submitted rule; the form pre-fills the stored rule so the end
+  date is INHERITED unless explicitly changed. Plain planned future rows are
+  re-materialised; completed/skipped/edited rows are preserved as exceptions
+  repointed to the new series. Rule changes (pattern, interval, extend/
+  shorten, bounded ↔ open-ended, stop repeating) all travel this scope.
+* **all** — unchanged detail-carry semantics (with the reset-crossing date
+  shift), rule input deliberately ignored.
+* Moves and rollover pin `originalDate` so vacated days stay vacated.
+
+### UX
+
+* `SeriesScopeChooser` (planner/series-scope-chooser.tsx): the scope question
+  asked at save/delete time — bottom sheet on phones (large targets,
+  `pb-safe`, occurrence date named, destructive styling for deletion, Cancel
+  focused first), compact dialog on desktop, Radix a11y underneath. First JS
+  breakpoint in the repo (`useIsMobile`, SSR-safe) since a CSS-only swap
+  can't change overlay structure. Non-recurring items keep one-step
+  edit/delete. A recurrence-rule change narrows the chooser to
+  "this and future" — that's what a rule change means.
+* Dialog: Repeats (Never/Daily/Every weekday/Weekly/Monthly), Starts hint,
+  Ends Never/On-date, compact `describeRecurrence` summary
+  ("Every Mon, Wed, Fri · Aug 24 – Dec 11"), live conflict preview.
+  Row dropdown's three raw destructive entries replaced by one "Delete…"
+  that opens the chooser.
+
+### Assistant
+
+* `get_schedule` now reports `recurring` + a recurrence summary per block.
+* `create_planner_block` accepts an explicit `recurrence` object (pattern /
+  weekdays / interval / inclusive `endDate`); the preview names all of it;
+  raw `recurrenceRule` remains refused.
+* New kinds `update_planner_block` (sensitive) and `delete_planner_block`
+  (destructive): scope REQUIRED on recurring blocks ("one"/"future"), refusal
+  asks the model to clarify with the user, scope-one refuses recurrence
+  changes, absent endDate inherits, previews name scope + occurrence day +
+  changed fields + resulting recurrence, stored payload = the complete write
+  including scope. Whole-history delete deliberately not exposed.
+
+### Verification
+
+* Unit: 1159 passed (41 files; +31 — tolerance table, point items,
+  cross-reset minutes, pair counts, skip-date set semantics, split helpers,
+  `missingSeriesSlots` idempotency, range inclusivity).
+* Integration (real PostgreSQL): 385 passed (22 files; +31 —
+  `recurring-series.test.ts` covers bounded/open-ended generation, override
+  survival, promotion, splits with end-date inheritance, pattern change,
+  extend/shorten/unbound/rebound, tombstoned deletion, future termination,
+  move-vacated slots, before-reset weekday axis, conflict preview,
+  cross-user and stale-id failure; assistant suite covers scope refusal,
+  smuggling refusal, inheritance in stored payloads, per-scope execution and
+  cross-user isolation).
+* Typecheck, lint, `prisma migrate` (fresh deploy in the integration runner)
+  and production build all pass; browser verification against the production
+  build below.
+
+### Browser verification (production build)
+
+`npm run build` → `npm start` → `tests/e2e/planner-recurrence.spec.ts`
+(kept as a permanent spec), all green, console/page errors failing the test
+(the one filtered source is Vercel Analytics' script probe, which 404s by
+design off-platform):
+
+* Adjacent morning (Wake Up →9:00, Leg Mobility 9:00–10:00, Get Ready
+  10:00–10:45, Breakfast 10:45–11:30): no banner, zero pairs, no badges, no
+  timeline conflict styling. Adding a 9:30–10:30 block flips the banner to
+  "2 overlapping pairs" and the right rows name it; deleting it clears
+  everything.
+* Semester series (Mon/Wed/Fri 10:00–10:50, Monday anchor, inclusive Friday
+  end date): occurrences on pattern days only, nothing before the start,
+  the end date itself included, nothing after. Edit-one re-times a single
+  Wednesday and survives a fresh planner open (regeneration); neighbours
+  untouched. Edit this-and-future from the second Monday: history keeps
+  10:00, the future runs 1:00 PM, and the untouched end date is inherited —
+  nothing appears after it. Delete-one stays deleted after reload;
+  delete-this-and-future keeps earlier history; entire-series cleanup works
+  from both halves of the split.
+* Phone viewport (390×844): the scope chooser opens as a bottom sheet with
+  the occurrence date named, ≥44px options, no horizontal overflow; edit-one
+  and both delete scopes verified through the sheet.
+* The full e2e suite (a11y, dialogs, mobile drawer, planner-mobile with its
+  1:00 AM operational-day round trip, PWA, responsive sweeps…) runs against
+  the same build.

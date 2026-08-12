@@ -1,4 +1,4 @@
-import { type DayKey, dayRange, daysBetween, fromDayKey, weekdayOf } from "@/lib/date";
+import { type DayKey, dayRange, daysBetween, formatDay, fromDayKey, isDayKey, shiftDay, weekdayOf } from "@/lib/date";
 
 /**
  * A deliberately small recurrence model — enough for "workout Mon/Wed/Fri",
@@ -6,6 +6,24 @@ import { type DayKey, dayRange, daysBetween, fromDayKey, weekdayOf } from "@/lib
  * without dragging in a full RFC 5545 implementation.
  *
  * Stored as JSON in `ScheduleItem.recurrenceRule`.
+ *
+ * ## The series' active range
+ *
+ * A series always has an explicit range:
+ *  * **Start date** — the anchor: the series parent's own (operational) day.
+ *    Nothing is ever generated before it.
+ *  * **End date** — `rule.until`, optional and INCLUSIVE: when the last day
+ *    matches the pattern, that occurrence exists; nothing exists after it.
+ *    Absent means open-ended ("no end date") — generation stays bounded by
+ *    the materialisation horizon, never by an invented far-future date.
+ *
+ * Days here are OPERATIONAL days (see src/lib/logic/operational-day.ts): a
+ * series repeating "Mondays at 1:00 AM" means Monday *nights*, and each
+ * occurrence's stored calendar date is resolved from its operational day at
+ * write time. Local wall-clock times are what recur — a 10:00 AM class is at
+ * 10:00 AM local across DST transitions, because the rule expands over
+ * calendar day keys and the minutes-from-midnight are stored per day, never
+ * as fixed UTC offsets.
  */
 export type RecurrenceFreq = "daily" | "weekly" | "monthly";
 
@@ -165,6 +183,134 @@ export function describeRule(rule: RecurrenceRule | null, anchor?: DayKey): stri
   if (rule.until) base += ` until ${rule.until}`;
   else if (rule.count) base += ` (${rule.count}x)`;
   return base;
+}
+
+/**
+ * The pattern without its range suffix — "Every Mon, Wed, Fri", never
+ * "… until 2026-12-11". Pairs with `describeRuleRange` for compact displays.
+ */
+export function describeRulePattern(rule: RecurrenceRule | null, anchor?: DayKey): string {
+  if (!rule) return "Does not repeat";
+  return describeRule({ ...rule, until: undefined, count: undefined }, anchor);
+}
+
+/** "Aug 24 – Dec 11" for a bounded series, "Starting Aug 24" for open-ended. */
+export function describeRuleRange(rule: RecurrenceRule, anchor: DayKey): string {
+  if (rule.until) return `${formatDay(anchor, "MMM d")} – ${formatDay(rule.until, "MMM d")}`;
+  return `Starting ${formatDay(anchor, "MMM d")} · No end date`;
+}
+
+/** "Every Mon, Wed, Fri · Aug 24 – Dec 11" — the one-line series summary. */
+export function describeRecurrence(rule: RecurrenceRule | null, anchor: DayKey): string {
+  if (!rule) return "Does not repeat";
+  return `${describeRulePattern(rule, anchor)} · ${describeRuleRange(rule, anchor)}`;
+}
+
+// ---------------------------------------------------------------------------
+// Skipped (deleted) occurrences
+// ---------------------------------------------------------------------------
+
+/**
+ * "Delete this occurrence" is remembered on the series parent as a set of
+ * skipped operational day keys (`ScheduleItem.skipDates`, JSON). The deleted
+ * row is really gone; the skip entry is what stops regeneration from quietly
+ * recreating it. Set semantics: sorted, deduplicated, malformed entries
+ * dropped rather than kept as junk.
+ */
+export function parseSkipDates(raw: string | null | undefined): DayKey[] {
+  if (!raw) return [];
+  try {
+    const parsed: unknown = JSON.parse(raw);
+    if (!Array.isArray(parsed)) return [];
+    return [...new Set(parsed.filter((day): day is DayKey => isDayKey(day)))].sort();
+  } catch {
+    return [];
+  }
+}
+
+export function serializeSkipDates(dates: DayKey[]): string | null {
+  const cleaned = [...new Set(dates.filter((day) => isDayKey(day)))].sort();
+  return cleaned.length ? JSON.stringify(cleaned) : null;
+}
+
+/** The stored value after adding one skipped day — idempotent. */
+export function withSkipDate(raw: string | null | undefined, day: DayKey): string | null {
+  return serializeSkipDates([...parseSkipDates(raw), day]);
+}
+
+// ---------------------------------------------------------------------------
+// Series editing — the pure halves of splitting and re-anchoring
+// ---------------------------------------------------------------------------
+
+/**
+ * Pin the fields a rule silently derives from its anchor, so the rule keeps
+ * meaning the same thing when its anchor moves (a series split re-anchors the
+ * rule at the split day; a first-occurrence delete promotes a later row).
+ * A weekly rule with no explicit weekdays means "the anchor's weekday"; a
+ * monthly rule with no explicit day means "the anchor's day of month".
+ */
+export function materializeAnchorFields(rule: RecurrenceRule, anchor: DayKey): RecurrenceRule {
+  const next = { ...rule };
+  if (rule.freq === "weekly" && (!rule.byWeekday || rule.byWeekday.length === 0)) {
+    next.byWeekday = [weekdayOf(anchor)];
+  }
+  if (rule.freq === "monthly" && rule.byMonthDay === undefined) {
+    next.byMonthDay = fromDayKey(anchor).getDate();
+  }
+  return next;
+}
+
+/**
+ * The old series' rule after a split at `splitDay`: it remains authoritative
+ * through the day before. An `until` already earlier than that stays; `count`
+ * is left alone — the new `until` bounds the series first either way.
+ */
+export function truncateRuleBefore(rule: RecurrenceRule, splitDay: DayKey): RecurrenceRule {
+  const lastDay = shiftDay(splitDay, -1);
+  const until = rule.until && daysBetween(rule.until, lastDay) > 0 ? rule.until : lastDay;
+  return { ...rule, until };
+}
+
+/**
+ * The occurrence slots a series is missing inside `[from, to]`: every day the
+ * rule generates there, minus slots already represented by a row (materialised,
+ * edited or moved — identity comes from `originalDate`), minus slots the user
+ * deleted. This is the whole idempotency argument of regeneration in one pure,
+ * testable function: re-running it after it has been applied returns nothing.
+ */
+export function missingSeriesSlots(options: {
+  rule: RecurrenceRule;
+  /** The series' start (the parent's operational day). */
+  anchor: DayKey;
+  from: DayKey;
+  to: DayKey;
+  /** Slots already occupied by an existing row of the series. */
+  existingSlots: Iterable<DayKey>;
+  /** The parent's stored skip list (see `parseSkipDates`). */
+  skipDates?: string | null;
+}): DayKey[] {
+  const existing = new Set(options.existingSlots);
+  const skips = new Set(parseSkipDates(options.skipDates));
+  return expandRule(options.rule, options.anchor, options.from, options.to).filter(
+    (slot) => !existing.has(slot) && !skips.has(slot),
+  );
+}
+
+/**
+ * Whether two rules describe the same pattern and range. Used to decide if an
+ * edit actually changes the recurrence (which forces series-level scope).
+ */
+export function rulesEqual(a: RecurrenceRule | null, b: RecurrenceRule | null): boolean {
+  if (a === null || b === null) return a === b;
+  const days = (rule: RecurrenceRule) => [...(rule.byWeekday ?? [])].sort().join(",");
+  return (
+    a.freq === b.freq &&
+    Math.max(1, a.interval) === Math.max(1, b.interval) &&
+    days(a) === days(b) &&
+    (a.byMonthDay ?? null) === (b.byMonthDay ?? null) &&
+    (a.until ?? null) === (b.until ?? null) &&
+    (a.count ?? null) === (b.count ?? null)
+  );
 }
 
 // NOTE: habit recurrence used to live here as `isHabitDue`. It has moved to

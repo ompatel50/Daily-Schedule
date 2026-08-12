@@ -31,6 +31,7 @@ import { getInboxPage } from "@/server/inbox";
 import { getWeeklyReview } from "@/server/insights";
 import { getDayOverview, getScheduleItems, searchEverything } from "@/server/queries";
 import { getReminderFeed, listReminders } from "@/server/reminders";
+import { describeRecurrence, parseRule } from "@/lib/logic/recurrence";
 import { resetMinuteOf, type ScheduleSettings } from "@/lib/logic/schedule";
 import { operationalDayOfRecord } from "@/lib/logic/operational-day";
 import { getTaskBoard } from "@/server/tasks";
@@ -574,7 +575,7 @@ const listDocumentsTool: AssistantTool = {
 const scheduleTool: AssistantTool = {
   name: "get_schedule",
   description:
-    "Planner/calendar blocks in a date range of operational days (up to 31, defaults to the next 7 starting today). Times are minutes from midnight. `day` is the day a block belongs to under the user's daily reset; `date` is its real calendar date — they differ only for after-midnight blocks, which group with the previous day.",
+    "Planner/calendar blocks in a date range of operational days (up to 31, defaults to the next 7 starting today). Times are minutes from midnight. `day` is the day a block belongs to under the user's daily reset; `date` is its real calendar date — they differ only for after-midnight blocks, which group with the previous day. `recurring: true` marks a block that belongs to a repeating series — editing or deleting it via propose_action then requires an explicit scope; `recurrence` summarizes the series' pattern, start and end.",
   parameters: {
     type: "object",
     properties: {
@@ -595,6 +596,40 @@ const scheduleTool: AssistantTool = {
       const day = operationalDayOfRecord(item, reset);
       return day >= from && day <= to;
     });
+
+    // Recurrence context: parents describe their own rule; occurrences borrow
+    // the parent's (fetched when it falls outside the range), so the model
+    // knows a block repeats BEFORE proposing an edit that needs a scope.
+    const seriesIds = [
+      ...new Set(inRange.map((item) => item.seriesId).filter((id): id is string => Boolean(id))),
+    ];
+    const presentIds = new Set(items.map((item) => item.id));
+    const missingParents = seriesIds.filter((id) => !presentIds.has(id));
+    const fetchedParents = missingParents.length
+      ? await prisma.scheduleItem.findMany({
+          where: { id: { in: missingParents }, userId: ctx.user.id },
+          select: { id: true, recurrenceRule: true, date: true, startMinute: true },
+        })
+      : [];
+    const parentById = new Map<
+      string,
+      { recurrenceRule: string | null; date: string; startMinute: number | null }
+    >([
+      ...items.map((item) => [item.id, item] as const),
+      ...fetchedParents.map((item) => [item.id, item] as const),
+    ]);
+    const summarize = (item: (typeof inRange)[number]): string | null => {
+      const source = item.recurrenceRule
+        ? item
+        : item.seriesId
+          ? (parentById.get(item.seriesId) ?? null)
+          : null;
+      if (!source) return item.seriesId ? "part of a repeating series" : null;
+      const rule = parseRule(source.recurrenceRule);
+      if (!rule) return item.seriesId ? "part of a repeating series" : null;
+      return describeRecurrence(rule, operationalDayOfRecord(source, reset));
+    };
+
     return toolOk({
       from,
       to,
@@ -609,6 +644,8 @@ const scheduleTool: AssistantTool = {
         endMinute: item.endMinute,
         category: item.category,
         priority: item.priority,
+        recurring: Boolean(item.seriesId) || Boolean(item.recurrenceRule),
+        recurrence: summarize(item),
       })),
     });
   },
@@ -694,7 +731,7 @@ const backupStatusTool: AssistantTool = {
 const proposeActionTool: AssistantTool = {
   name: "propose_action",
   description:
-    "Propose ONE change for the user to review — never performed directly. Send ONLY the fields listed for the kind; anything else is refused. create_task {title, notes?, dueDate?, priority?} (always a plain one-off task); complete_task {id}; create_reminder {title, message?, remindAt: 'YYYY-MM-DDTHH:mm' in the user's own clock, repeat?}; create_inbox_item {title, notes?}; complete_inbox_item {id}; create_transaction {accountId, date, amount (signed: negative = money out), payee, category?, notes?}; create_planner_block {title, date, startMinute?, endMinute?, category?} (a single day, never recurring); log_habit {habitId, date? (defaults to today), status? ('done' | 'skipped' | 'missed', defaults to done), value?} (one day of one habit); delete_task {id}; delete_reminder {id}. Use real ids from other tools — get_habit_status for habit ids, list_inbox for inbox ids. The user sees a preview and decides.",
+    "Propose ONE change for the user to review — never performed directly. Send ONLY the fields listed for the kind; anything else is refused. create_task {title, notes?, dueDate?, priority?} (always a plain one-off task); complete_task {id}; create_reminder {title, message?, remindAt: 'YYYY-MM-DDTHH:mm' in the user's own clock, repeat?}; create_inbox_item {title, notes?}; complete_inbox_item {id}; create_transaction {accountId, date, amount (signed: negative = money out), payee, category?, notes?}; create_planner_block {title, date, startMinute?, endMinute?, category?, recurrence?: {repeat: 'daily'|'weekdays'|'weekly'|'monthly', weekdays? (0=Sun…6=Sat, weekly only), interval?, endDate? ('YYYY-MM-DD' inclusive; null or absent = no end date)}} — date is the series' start date; update_planner_block {id, scope?, title?, date?, startMinute?, endMinute?, category?, priority?, notes?, recurrence?} (a new start keeps the block's duration; recurrence changes need scope 'future'; recurrence: null stops the repeat from that occurrence on; inside recurrence an ABSENT endDate keeps the series' existing end date, endDate: null removes it); delete_planner_block {id, scope?}; log_habit {habitId, date? (defaults to today), status? ('done' | 'skipped' | 'missed', defaults to done), value?} (one day of one habit); delete_task {id}; delete_reminder {id}. RECURRING PLANNER BLOCKS: when get_schedule shows recurring: true, update_planner_block and delete_planner_block REQUIRE scope: 'one' (this occurrence only) or 'future' (this and all future occurrences). NEVER guess the scope — if the user's wording doesn't make it clear ('tomorrow's workout' = one; 'from now on' = future), ask them first. Use real ids from other tools — get_schedule for planner ids, get_habit_status for habit ids, list_inbox for inbox ids. The user sees a preview and decides.",
   parameters: {
     type: "object",
     properties: {

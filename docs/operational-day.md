@@ -61,6 +61,14 @@ DST is handled by resolving wall clocks with the existing two-pass
   treat the incoming date as the operational day and store the true calendar
   date (`calendarDateForOperationalTime`); after-midnight rows render with
   "Grouped with Wednesday because your day resets at 4:00 AM."
+* **Recurring series** — rules expand over operational days and every
+  occurrence stores its real calendar date: "every Monday at 1:00 AM" means
+  Monday *nights*, stored as 1:00 AM on Tuesday dates and grouped under
+  operational Mondays. Occurrence slots (`ScheduleItem.originalDate`) are
+  operational days too, so regeneration, overrides and deletions all agree
+  with what the user sees. Overlap detection, by contrast, always compares
+  real timestamps — grouping never bends a conflict
+  (see `docs/planner-recurrence.md`).
 * **Habits** — logging defaults, due/done/missed status, streaks, weekly
   progress, `get_habit_status`. A habit logged at 1:00 AM lands on the
   previous operational day *unless the user explicitly picked a date*, which

@@ -127,17 +127,28 @@ describe("the propose_action contract", () => {
   it("advertises only the fields the previews can describe", () => {
     // The description IS the model's contract; if it ever advertises a field
     // the preview sentence does not mention, the "what you confirm is what
-    // runs" promise breaks. Recurrence is the specific trap: a planner block
-    // that repeats writes ~120 rows from one confirmed sentence.
+    // runs" promise breaks. Recurrence goes through the explicit `recurrence`
+    // object — whose pattern, start and end the preview spells out — never
+    // through a raw stored rule.
     expect(tool.description).toContain("Send ONLY the fields listed");
-    expect(tool.description).toContain("never recurring");
     expect(tool.description).not.toMatch(/recurrenceRule|repeatEvery|parentId|tagIds/);
-    // A planner block is a plain block: no recurrence, no tags, and no habit
-    // link — `habitId` belongs to log_habit and nowhere else.
-    expect(clauseFor("create_planner_block")).not.toMatch(/habitId|recurrence|tag/i);
+    // Planner blocks carry recurrence only as the described object: no tags,
+    // and no habit link — `habitId` belongs to log_habit and nowhere else.
+    expect(clauseFor("create_planner_block")).not.toMatch(/habitId|tag/i);
     expect(clauseFor("create_task")).not.toMatch(/repeat|reminder|parent|tag|project/i);
     // Notes stay out of a habit log: the preview sentence cannot quote them.
     expect(clauseFor("log_habit")).not.toMatch(/notes/i);
+  });
+
+  it("makes the recurring scope explicit and never guessable", () => {
+    // A recurring block's edit/delete must carry scope "one" or "future";
+    // the description forbids guessing and tells the model to ask.
+    expect(tool.description).toContain("REQUIRE scope");
+    expect(tool.description).toContain("NEVER guess the scope");
+    expect(clauseFor("update_planner_block")).toMatch(/scope/);
+    expect(clauseFor("delete_planner_block")).toMatch(/scope/);
+    // The whole-history scope stays out of the assistant entirely.
+    expect(tool.description).not.toMatch(/'all'|"all"/);
   });
 
   it("offers exactly the kinds the safety model classifies", () => {

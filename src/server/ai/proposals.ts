@@ -2,7 +2,7 @@ import "server-only";
 
 import { z } from "zod";
 
-import { formatMinute } from "@/lib/date";
+import { formatMinute, type DayKey } from "@/lib/date";
 import {
   FINANCE_CATEGORIES,
   HABIT_STATUSES,
@@ -10,7 +10,15 @@ import {
   SCHEDULE_CATEGORIES,
   isBookkeepingCategory,
 } from "@/lib/enums";
-import { wallClockToInstant } from "@/lib/logic/schedule";
+import { operationalDayOfRecord, operationalDayWhere } from "@/lib/logic/operational-day";
+import { isSchedulingConflict, type ConflictCandidate } from "@/lib/logic/planner";
+import {
+  describeRecurrence,
+  parseRule,
+  serializeRule,
+  type RecurrenceRule,
+} from "@/lib/logic/recurrence";
+import { resetMinuteOf, wallClockToInstant } from "@/lib/logic/schedule";
 import { scheduleSettingsFor } from "@/server/schedule";
 import { prisma } from "@/lib/prisma";
 import {
@@ -122,6 +130,51 @@ const createTransactionSchema = z
     path: ["category"],
   });
 
+/**
+ * Recurrence the assistant may propose, spelled out field by field so the
+ * preview sentence can describe every part of it. `endDate` is the series'
+ * INCLUSIVE end; explicit `null` means "no end date". On updates, an absent
+ * `endDate` inherits the series' existing end date — absent and null are
+ * deliberately different.
+ */
+const plannerRecurrenceSchema = z
+  .object({
+    repeat: z.enum(["daily", "weekdays", "weekly", "monthly"]),
+    weekdays: z.array(z.number().int().min(0).max(6)).max(7).optional(),
+    interval: z.number().int().min(1).max(30).optional(),
+    endDate: z
+      .string()
+      .regex(/^\d{4}-\d{2}-\d{2}$/, "Expected a YYYY-MM-DD date")
+      .nullable()
+      .optional(),
+  })
+  .strict();
+
+type PlannerRecurrenceInput = z.infer<typeof plannerRecurrenceSchema>;
+
+/** The stored rule a proposed recurrence resolves to. */
+function ruleFromRecurrenceInput(
+  input: PlannerRecurrenceInput,
+  inheritedUntil?: string,
+): RecurrenceRule {
+  return {
+    freq: input.repeat === "weekdays" ? "weekly" : input.repeat,
+    interval: input.repeat === "weekdays" ? 1 : Math.max(1, input.interval ?? 1),
+    byWeekday:
+      input.repeat === "weekly"
+        ? (input.weekdays ?? [])
+        : input.repeat === "weekdays"
+          ? [1, 2, 3, 4, 5]
+          : [],
+    until:
+      input.endDate === undefined
+        ? inheritedUntil
+        : input.endDate === null
+          ? undefined
+          : input.endDate,
+  };
+}
+
 const createPlannerBlockSchema = z
   .object({
     title: z.string().trim().min(1).max(200),
@@ -129,6 +182,7 @@ const createPlannerBlockSchema = z
     startMinute: z.number().int().min(0).max(1439).nullable().optional(),
     endMinute: z.number().int().min(0).max(1439).nullable().optional(),
     category: z.enum(SCHEDULE_CATEGORIES).default("personal"),
+    recurrence: plannerRecurrenceSchema.optional(),
   })
   .strict()
   .refine(
@@ -139,7 +193,79 @@ const createPlannerBlockSchema = z
       value.endMinute === undefined ||
       value.endMinute >= value.startMinute,
     { message: "End time must be after the start time", path: ["endMinute"] },
+  )
+  .refine(
+    (value) =>
+      !value.recurrence ||
+      value.recurrence.endDate === null ||
+      value.recurrence.endDate === undefined ||
+      value.recurrence.endDate >= value.date,
+    { message: "The end date cannot be before the start date", path: ["recurrence"] },
   );
+
+/**
+ * Editing or deleting an existing planner block. On a recurring block the
+ * scope is REQUIRED and explicit — "this occurrence" or "this and future" —
+ * the assistant can never guess it, and a one-occurrence edit cannot carry a
+ * recurrence change (that is a series reshape, which is what "future" means).
+ */
+const updatePlannerBlockSchema = z
+  .object({
+    id: z.string().min(1),
+    scope: z.enum(["one", "future"]).optional(),
+    title: z.string().trim().min(1).max(200).optional(),
+    date: z
+      .string()
+      .regex(/^\d{4}-\d{2}-\d{2}$/, "Expected a YYYY-MM-DD date")
+      .optional(),
+    startMinute: z.number().int().min(0).max(1439).nullable().optional(),
+    endMinute: z.number().int().min(0).max(1439).nullable().optional(),
+    category: z.enum(SCHEDULE_CATEGORIES).optional(),
+    priority: z.enum(PRIORITIES).optional(),
+    notes: z.string().max(5000).nullable().optional(),
+    /** `null` = stop repeating from this point; absent = keep the pattern. */
+    recurrence: plannerRecurrenceSchema.nullable().optional(),
+  })
+  .strict();
+
+const deletePlannerBlockSchema = z
+  .object({
+    id: z.string().min(1),
+    scope: z.enum(["one", "future"]).optional(),
+  })
+  .strict();
+
+/**
+ * The titles a proposed span would double-book, using the same tolerant rule
+ * as every planner warning — adjacent blocks stay quiet. Bounded to the one
+ * operational day being proposed; a changed recurring series is *not*
+ * scanned into the future, the preview says so instead.
+ */
+async function conflictTitlesFor(
+  userId: string,
+  resetMinute: number,
+  day: DayKey,
+  startMinute: number | null,
+  endMinute: number | null,
+  excludeId?: string,
+): Promise<string[]> {
+  if (startMinute === null || endMinute === null) return [];
+  const others = await prisma.scheduleItem.findMany({
+    where: { userId, ...operationalDayWhere(day, resetMinute) },
+    select: { id: true, title: true, startMinute: true, endMinute: true, allDay: true, status: true },
+  });
+  const draft: ConflictCandidate = {
+    id: excludeId ?? "__draft__",
+    title: "",
+    startMinute,
+    endMinute,
+    allDay: false,
+  };
+  return others
+    .filter((other) => isSchedulingConflict(draft, other))
+    .sort((a, b) => (a.startMinute ?? 0) - (b.startMinute ?? 0))
+    .map((other) => other.title);
+}
 
 /**
  * Logging one habit day. `notes` is deliberately absent: free text the model
@@ -167,6 +293,24 @@ const logHabitSchema = z
   .strict();
 
 const byIdSchema = z.object({ id: z.string().min(1) }).strict();
+
+/**
+ * The stored shapes of the scoped planner writes, re-validated at execution.
+ * The scope is part of the stored payload — it cannot drift from what the
+ * preview described. The assistant never gets the whole-series-with-history
+ * scope; that stays a deliberate in-app action.
+ */
+const storedUpdatePlannerBlockSchema = z.object({
+  scope: z.enum(["one", "future"]),
+  item: scheduleItemSchema,
+});
+
+const storedDeletePlannerBlockSchema = z
+  .object({
+    id: z.string().min(1),
+    scope: z.enum(["one", "future"]),
+  })
+  .strict();
 
 type PreviewOutcome =
   | { ok: true; proposal: ProposalPreview }
@@ -355,12 +499,24 @@ async function prepareProposal(
               : ""
           }`
         : " (all day)";
+      // Recurrence only ever comes through the explicit `recurrence` object
+      // above, and the sentence below spells out its pattern, start and end —
+      // a raw recurrenceRule in the payload is still refused by `.strict()`,
+      // so a "single block" can never quietly become a 120-row series.
+      const rule = data.recurrence ? ruleFromRecurrenceInput(data.recurrence) : null;
+      const conflicts = timed
+        ? await conflictTitlesFor(
+            user.id,
+            resetMinuteOf(scheduleSettingsFor(user)),
+            data.date,
+            data.startMinute as number,
+            (data.endMinute ?? null) as number | null,
+          )
+        : [];
       return {
         ok: true,
-        // Every field the action will see is set here, explicitly. A planner
-        // block the assistant proposes is always a single occurrence: no
-        // recurrence rule, no tags, no habit link — none of which the preview
-        // could honestly describe.
+        // Every field the action will see is set here, explicitly — no tags,
+        // no habit link, and exactly the recurrence the sentence describes.
         payload: {
           title: data.title,
           date: data.date,
@@ -370,10 +526,198 @@ async function prepareProposal(
           category: data.category,
           priority: "medium",
           status: "planned",
-          recurrenceRule: null,
+          recurrenceRule: serializeRule(rule),
           tagIds: [],
         },
-        summary: `Add “${data.title}” to the planner on ${data.date}${time}`,
+        summary: `Add “${data.title}” to the planner on ${data.date}${time}${
+          rule ? ` — repeats ${describeRecurrence(rule, data.date)}` : ""
+        }${conflicts.length ? ` — overlaps ${conflicts.join(", ")}` : ""}`,
+      };
+    }
+    case "update_planner_block": {
+      const parsed = updatePlannerBlockSchema.safeParse(payload);
+      if (!parsed.success) return invalid(parsed.error);
+      const data = parsed.data;
+      const item = await prisma.scheduleItem.findFirst({
+        where: { id: data.id, userId: user.id },
+        include: { tags: true },
+      });
+      if (!item) return { ok: false, error: "Planner block not found." };
+
+      const recurring = Boolean(item.seriesId) || Boolean(item.recurrenceRule);
+      // The scope question is the user's, never the model's: a recurring
+      // block without an explicit scope is refused, not guessed.
+      if (recurring && !data.scope) {
+        return {
+          ok: false,
+          error:
+            'This block repeats. Ask the user whether the change applies to this occurrence only or to this and all future occurrences, then send scope: "one" or scope: "future".',
+        };
+      }
+      const scope: "one" | "future" = recurring ? (data.scope as "one" | "future") : "one";
+      if (recurring && scope === "one" && data.recurrence !== undefined) {
+        return {
+          ok: false,
+          error:
+            'A single occurrence cannot change how the series repeats. Propose scope: "future" for recurrence changes.',
+        };
+      }
+
+      const settings = scheduleSettingsFor(user);
+      const reset = resetMinuteOf(settings);
+      const currentDay = operationalDayOfRecord(item, reset);
+      const targetDay = (data.date as DayKey | undefined) ?? currentDay;
+
+      // Resolve the span: a new start keeps the block's duration unless a new
+      // end is given; an explicit null start makes it all-day.
+      let allDay = item.allDay;
+      let startMinute = item.startMinute;
+      let endMinute = item.endMinute;
+      if (data.startMinute !== undefined) {
+        if (data.startMinute === null) {
+          allDay = true;
+          startMinute = null;
+          endMinute = null;
+        } else {
+          allDay = false;
+          startMinute = data.startMinute;
+          endMinute =
+            data.endMinute !== undefined
+              ? data.endMinute
+              : item.startMinute !== null && item.endMinute !== null
+                ? Math.min(1439, data.startMinute + (item.endMinute - item.startMinute))
+                : null;
+        }
+      } else if (data.endMinute !== undefined) {
+        endMinute = data.endMinute;
+        if (endMinute !== null) allDay = false;
+      }
+      if (startMinute !== null && endMinute !== null && endMinute < startMinute) {
+        return { ok: false, error: "The end time must be after the start time." };
+      }
+
+      // The recurrence the write will carry. Inheritance is explicit: an
+      // absent `recurrence` keeps the stored rule (end date included); an
+      // absent `endDate` inside a given recurrence inherits the old end date;
+      // `endDate: null` removes it; `recurrence: null` stops the repeat here.
+      const parent = item.seriesId
+        ? await prisma.scheduleItem.findFirst({
+            where: { id: item.seriesId, userId: user.id },
+            select: { recurrenceRule: true },
+          })
+        : item;
+      const parentRule = parent ? parseRule(parent.recurrenceRule) : null;
+      let nextRule: RecurrenceRule | null;
+      if (scope !== "future") {
+        nextRule = parseRule(item.recurrenceRule);
+      } else if (data.recurrence === null) {
+        nextRule = null;
+      } else if (data.recurrence === undefined) {
+        nextRule = parentRule;
+      } else {
+        nextRule = ruleFromRecurrenceInput(data.recurrence, parentRule?.until);
+      }
+      if (scope === "future" && nextRule?.until && nextRule.until < targetDay) {
+        return {
+          ok: false,
+          error: `The series ends ${nextRule.until}, before ${targetDay}. Change the end date too, or pick an earlier day.`,
+        };
+      }
+
+      const changes: string[] = [];
+      if (data.title && data.title !== item.title) changes.push(`title → “${data.title}”`);
+      if (targetDay !== currentDay) changes.push(`date → ${targetDay}`);
+      if (allDay !== item.allDay || startMinute !== item.startMinute || endMinute !== item.endMinute) {
+        changes.push(
+          allDay || startMinute === null
+            ? "time → all day"
+            : `time → ${formatMinute(startMinute)}${endMinute !== null ? `–${formatMinute(endMinute)}` : ""}`,
+        );
+      }
+      if (data.category && data.category !== item.category) changes.push(`category → ${data.category}`);
+      if (data.priority && data.priority !== item.priority) changes.push(`priority → ${data.priority}`);
+      if (data.notes !== undefined && data.notes !== item.notes) changes.push("notes updated");
+      if (scope === "future") {
+        changes.push(
+          nextRule
+            ? `repeats ${describeRecurrence(nextRule, targetDay)}`
+            : "stops repeating from this point",
+        );
+      }
+      if (changes.length === 0) {
+        return { ok: false, error: "Nothing would change — include at least one field to update." };
+      }
+
+      const conflicts =
+        !allDay && startMinute !== null
+          ? await conflictTitlesFor(user.id, reset, targetDay, startMinute, endMinute, item.id)
+          : [];
+
+      const scopeText = recurring
+        ? scope === "one"
+          ? " — this occurrence only"
+          : " — this and all future occurrences"
+        : "";
+      const conflictText = conflicts.length
+        ? ` — overlaps ${conflicts.join(", ")}${
+            scope === "future" ? " (later occurrences are not checked ahead of time)" : ""
+          }`
+        : scope === "future"
+          ? " (later occurrences are not checked ahead of time)"
+          : "";
+
+      return {
+        ok: true,
+        // The stored payload is the COMPLETE write, scope included — what the
+        // preview names is exactly what executes, nothing rides along.
+        payload: {
+          scope,
+          item: {
+            id: item.id,
+            title: data.title ?? item.title,
+            notes: data.notes === undefined ? item.notes : data.notes,
+            date: targetDay,
+            startMinute,
+            endMinute,
+            allDay,
+            category: data.category ?? item.category,
+            priority: data.priority ?? item.priority,
+            status: item.status,
+            recurrenceRule: serializeRule(nextRule),
+            tagIds: item.tags.map((row) => row.tagId),
+          },
+        },
+        summary: `Update “${item.title}” on ${currentDay}${scopeText}: ${changes.join(", ")}${conflictText}`,
+      };
+    }
+    case "delete_planner_block": {
+      const parsed = deletePlannerBlockSchema.safeParse(payload);
+      if (!parsed.success) return invalid(parsed.error);
+      const item = await prisma.scheduleItem.findFirst({
+        where: { id: parsed.data.id, userId: user.id },
+      });
+      if (!item) return { ok: false, error: "Planner block not found." };
+
+      const recurring = Boolean(item.seriesId) || Boolean(item.recurrenceRule);
+      if (recurring && !parsed.data.scope) {
+        return {
+          ok: false,
+          error:
+            'This block repeats. Ask the user whether to delete this occurrence only or this and all future occurrences, then send scope: "one" or scope: "future".',
+        };
+      }
+      const scope: "one" | "future" = recurring ? (parsed.data.scope as "one" | "future") : "one";
+      const day = operationalDayOfRecord(item, resetMinuteOf(scheduleSettingsFor(user)));
+      const scopeText = recurring
+        ? scope === "one"
+          ? " — this occurrence only; the series continues"
+          : " and every later occurrence — earlier ones are kept"
+        : "";
+
+      return {
+        ok: true,
+        payload: { id: item.id, scope },
+        summary: `Delete “${item.title}” on ${day}${scopeText} — permanent`,
       };
     }
     case "log_habit": {
@@ -537,10 +881,14 @@ export function reparsePayload(
             ? financeTransactionSchema
             : kind === "create_planner_block"
               ? scheduleItemSchema
-              : kind === "log_habit"
-                ? habitLogSchema
-                : // complete_task, complete_inbox_item, delete_task, delete_reminder
-                  byIdSchema;
+              : kind === "update_planner_block"
+                ? storedUpdatePlannerBlockSchema
+                : kind === "delete_planner_block"
+                  ? storedDeletePlannerBlockSchema
+                  : kind === "log_habit"
+                    ? habitLogSchema
+                    : // complete_task, complete_inbox_item, delete_task, delete_reminder
+                      byIdSchema;
   const checked = schema.safeParse(parsed);
   if (!checked.success) return { ok: false, error: "The stored proposal is no longer valid." };
   return { ok: true, payload: checked.data };

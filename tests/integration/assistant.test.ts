@@ -26,6 +26,9 @@ import {
 } from "@/server/actions/assistant";
 import { saveTask } from "@/server/actions/tasks";
 import { saveHabit } from "@/server/actions/habits";
+import { createScheduleItem } from "@/server/actions/planner";
+import { shiftDay } from "@/lib/date";
+import { todayIn } from "@/lib/logic/schedule";
 
 import type { User } from "./helpers";
 import type { ScheduleSettings } from "@/lib/logic/schedule";
@@ -1051,5 +1054,230 @@ describe("the chat endpoint's guards", () => {
     });
     expect(audit.status).toBe("error");
     expect(audit.summary).not.toContain("127.0.0.1");
+  });
+});
+
+// ---------------------------------------------------------------------------
+
+describe("recurring planner blocks — scope safety", () => {
+  const day = (offset: number) => shiftDay(todayIn("America/New_York"), offset);
+
+  const plainBlock = (overrides: Record<string, unknown> = {}) => ({
+    title: "Workout",
+    notes: null,
+    date: day(3),
+    startMinute: 9 * 60,
+    endMinute: 10 * 60,
+    allDay: false,
+    category: "fitness",
+    priority: "medium",
+    status: "planned",
+    tagIds: [],
+    ...overrides,
+  });
+
+  /** A daily series for alice; returns the parent id and one occurrence id. */
+  async function aliceSeries(until?: string) {
+    const created = await createScheduleItem(
+      plainBlock({
+        recurrenceRule: JSON.stringify({ freq: "daily", interval: 1, until }),
+      }),
+    );
+    expect(created.ok).toBe(true);
+    if (!created.ok) throw new Error("series create failed");
+    const occurrence = await prisma.scheduleItem.findFirstOrThrow({
+      where: { seriesId: created.data.id },
+      orderBy: { date: "asc" },
+    });
+    return { parentId: created.data.id, occurrenceId: occurrence.id };
+  }
+
+  it("create_planner_block previews the full recurrence — pattern, start and end", async () => {
+    const until = day(30);
+    const preview = await buildProposalPreview(alice as never, "create_planner_block", {
+      title: "Calculus",
+      date: day(3),
+      startMinute: 10 * 60,
+      endMinute: 10 * 60 + 50,
+      recurrence: { repeat: "weekly", weekdays: [1, 3], endDate: until },
+    });
+    expect(preview.ok).toBe(true);
+    if (!preview.ok) return;
+
+    // The sentence names the pattern and the bounded range…
+    expect(preview.proposal.summary).toContain("Mon, Wed");
+    expect(preview.proposal.summary).toMatch(/repeats/i);
+    // …and the stored payload carries exactly that rule, nothing more.
+    const rule = JSON.parse(String(preview.proposal.payload.recurrenceRule));
+    expect(rule).toMatchObject({ freq: "weekly", byWeekday: [1, 3], until });
+  });
+
+  it("update on a recurring block REQUIRES a scope — no scope, no proposal", async () => {
+    const { occurrenceId } = await aliceSeries();
+    const preview = await buildProposalPreview(alice as never, "update_planner_block", {
+      id: occurrenceId,
+      startMinute: 10 * 60,
+    });
+    expect(preview.ok).toBe(false);
+    if (!preview.ok) expect(preview.error).toMatch(/scope/i);
+  });
+
+  it("a one-occurrence update cannot smuggle a recurrence change", async () => {
+    const { occurrenceId } = await aliceSeries();
+    const smuggled = await buildProposalPreview(alice as never, "update_planner_block", {
+      id: occurrenceId,
+      scope: "one",
+      recurrence: { repeat: "weekly", weekdays: [2] },
+    });
+    expect(smuggled.ok).toBe(false);
+    if (!smuggled.ok) expect(smuggled.error).toMatch(/future/i);
+
+    // A raw stored-rule field is refused outright by the strict schema.
+    const raw = await buildProposalPreview(alice as never, "update_planner_block", {
+      id: occurrenceId,
+      scope: "one",
+      recurrenceRule: JSON.stringify({ freq: "daily", interval: 1 }),
+    });
+    expect(raw.ok).toBe(false);
+  });
+
+  it("scope one: the preview names the occurrence and executes exactly that", async () => {
+    await setMode(alice, "confirm");
+    const { parentId, occurrenceId } = await aliceSeries();
+
+    const preview = await buildProposalPreview(alice as never, "update_planner_block", {
+      id: occurrenceId,
+      scope: "one",
+      startMinute: 10 * 60,
+      endMinute: 11 * 60,
+    });
+    expect(preview.ok).toBe(true);
+    if (!preview.ok) return;
+    expect(preview.proposal.summary).toContain("this occurrence only");
+    expect(preview.proposal.summary).toContain("10:00 AM");
+
+    const confirmed = await confirmAssistantProposal(preview.proposal.id);
+    expect(confirmed.ok).toBe(true);
+
+    // Exactly one occurrence moved; the parent and the rest kept 9:00.
+    const edited = await prisma.scheduleItem.findUniqueOrThrow({ where: { id: occurrenceId } });
+    expect(edited.startMinute).toBe(10 * 60);
+    expect(edited.isException).toBe(true);
+    const parent = await prisma.scheduleItem.findUniqueOrThrow({ where: { id: parentId } });
+    expect(parent.startMinute).toBe(9 * 60);
+    const others = await prisma.scheduleItem.count({
+      where: { seriesId: parentId, startMinute: 9 * 60 },
+    });
+    expect(others).toBeGreaterThan(0);
+  });
+
+  it("scope future: the preview states the scope and the INHERITED end date", async () => {
+    const until = day(40);
+    const { occurrenceId } = await aliceSeries(until);
+
+    // Only the time changes — the recurrence is not mentioned at all.
+    const preview = await buildProposalPreview(alice as never, "update_planner_block", {
+      id: occurrenceId,
+      scope: "future",
+      startMinute: 11 * 60,
+    });
+    expect(preview.ok).toBe(true);
+    if (!preview.ok) return;
+
+    expect(preview.proposal.summary).toContain("this and all future occurrences");
+    // The stored write keeps the series bounded through the ORIGINAL end date.
+    const item = preview.proposal.payload.item as { recurrenceRule: string };
+    expect(JSON.parse(item.recurrenceRule)).toMatchObject({ until });
+    // A new start keeps the block's duration.
+    expect(preview.proposal.payload.item).toMatchObject({
+      startMinute: 11 * 60,
+      endMinute: 12 * 60,
+    });
+  });
+
+  it("delete on a recurring block requires a scope, and each scope says what it removes", async () => {
+    const { occurrenceId } = await aliceSeries();
+
+    const unscoped = await buildProposalPreview(alice as never, "delete_planner_block", {
+      id: occurrenceId,
+    });
+    expect(unscoped.ok).toBe(false);
+    if (!unscoped.ok) expect(unscoped.error).toMatch(/scope/i);
+
+    const one = await buildProposalPreview(alice as never, "delete_planner_block", {
+      id: occurrenceId,
+      scope: "one",
+    });
+    expect(one.ok).toBe(true);
+    if (one.ok) expect(one.proposal.summary).toContain("this occurrence only");
+
+    const future = await buildProposalPreview(alice as never, "delete_planner_block", {
+      id: occurrenceId,
+      scope: "future",
+    });
+    expect(future.ok).toBe(true);
+    if (future.ok) expect(future.proposal.summary).toContain("every later occurrence");
+  });
+
+  it("delete scope future executes as a series termination, history kept", async () => {
+    await setMode(alice, "confirm");
+    const { parentId } = await aliceSeries();
+    const rows = await prisma.scheduleItem.findMany({
+      where: { seriesId: parentId },
+      orderBy: { date: "asc" },
+    });
+    const cut = rows[2];
+
+    const preview = await buildProposalPreview(alice as never, "delete_planner_block", {
+      id: cut.id,
+      scope: "future",
+    });
+    expect(preview.ok).toBe(true);
+    if (!preview.ok) return;
+    const confirmed = await confirmAssistantProposal(preview.proposal.id);
+    expect(confirmed.ok).toBe(true);
+
+    // Parent + the occurrences before the cut remain; the tail is gone.
+    const remaining = await prisma.scheduleItem.findMany({
+      where: { OR: [{ id: parentId }, { seriesId: parentId }] },
+    });
+    expect(remaining).toHaveLength(3);
+  });
+
+  it("a plain block needs no scope — edit and delete stay one step", async () => {
+    const created = await createScheduleItem(plainBlock({ title: "One-off" }));
+    expect(created.ok).toBe(true);
+    if (!created.ok) return;
+
+    const update = await buildProposalPreview(alice as never, "update_planner_block", {
+      id: created.data.id,
+      startMinute: 14 * 60,
+    });
+    expect(update.ok).toBe(true);
+    if (update.ok) expect(update.proposal.summary).not.toMatch(/occurrence/i);
+
+    const del = await buildProposalPreview(alice as never, "delete_planner_block", {
+      id: created.data.id,
+    });
+    expect(del.ok).toBe(true);
+  });
+
+  it("cannot reach another user's planner blocks", async () => {
+    const { occurrenceId } = await aliceSeries();
+
+    actAs(bob);
+    const asBob = await buildProposalPreview(bob as never, "update_planner_block", {
+      id: occurrenceId,
+      scope: "one",
+      startMinute: 8 * 60,
+    });
+    expect(asBob.ok).toBe(false);
+    if (!asBob.ok) expect(asBob.error).toMatch(/not found/i);
+
+    const delAsBob = await buildProposalPreview(bob as never, "delete_planner_block", {
+      id: occurrenceId,
+      scope: "one",
+    });
+    expect(delAsBob.ok).toBe(false);
   });
 });
