@@ -18,6 +18,7 @@ import { toast } from "sonner";
 import { CATEGORY_META, type ScheduleCategory } from "@/lib/enums";
 import { formatDay, formatTimeRange, isToday, weekDays } from "@/lib/date";
 import { conflictsByItem, findConflicts, summarizeConflicts } from "@/lib/logic/planner";
+import { comparePlannerSpans } from "@/lib/logic/schedule-span";
 import { cn } from "@/lib/utils";
 import { moveScheduleItem } from "@/server/actions/planner";
 import { useUIStore } from "@/store/ui-store";
@@ -36,14 +37,11 @@ interface DayConflicts {
  * plans change, which is the whole point of the planner.
  */
 
-/**
- * In-cell ordering on the operational day's extended axis: an after-midnight
- * item (grouped under the previous day) sorts after the evening's blocks.
- */
-function sortMinute(item: ScheduleRowItem): number {
-  if (item.startMinute === null) return 1e9;
-  return item.operationalDate === item.date ? item.startMinute : item.startMinute + 1440;
-}
+// In-cell ordering is the shared planner comparator: calendar date then
+// minutes IS the operational day's extended axis (an after-midnight item is
+// stored on the next calendar date, so it sorts after the evening's blocks),
+// same-start ties break by resolved end. All-day rows stay last — the cell
+// reads top-down through the timed day.
 
 export function WeekGrid({
   anchor,
@@ -76,10 +74,7 @@ export function WeekGrid({
       map.get(day)?.push(item);
     }
     for (const list of map.values()) {
-      list.sort((a, b) => {
-        if (a.allDay !== b.allDay) return a.allDay ? 1 : -1;
-        return sortMinute(a) - sortMinute(b);
-      });
+      list.sort((a, b) => comparePlannerSpans(a, b, "last"));
     }
     return map;
   }, [items, days, pendingMove]);

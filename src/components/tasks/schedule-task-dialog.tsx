@@ -71,7 +71,9 @@ export function ScheduleTaskDialog({
         taskId: task.id,
         date,
         startMinute,
-        endMinute: startMinute !== null ? Math.min(startMinute + 60, 1439) : null,
+        // A full hour even late at night: an end past midnight wraps, and
+        // end-before-start stores "ends next day" (schedule-span.ts).
+        endMinute: startMinute !== null ? (startMinute + 60) % 1440 : null,
       });
 
       if (result.ok) {

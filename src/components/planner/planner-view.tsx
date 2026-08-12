@@ -156,6 +156,7 @@ export function PlannerView({
         onOpenChange={setDialogOpen}
         item={editing}
         defaultDate={date}
+        dayResetMinute={dayResetMinute}
       />
     </div>
   );

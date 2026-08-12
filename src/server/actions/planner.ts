@@ -32,6 +32,7 @@ import {
   type TemplateApplyMode,
   type TemplateRow,
 } from "@/lib/logic/planner";
+import { comparePlannerSpans } from "@/lib/logic/schedule-span";
 import {
   conflictPreviewSchema,
   fail,
@@ -633,9 +634,24 @@ export async function moveScheduleItem(
   const nextStart = startMinute === undefined ? item.startMinute : startMinute;
   const storedDate = calendarDateForOperationalTime(date, nextStart, reset);
 
+  // One calendar date each side too: a cross-midnight block on the previous
+  // date reaches into this one, and the moved span's own wrapped end can reach
+  // the next. `overlapMinutes` compares real dated positions, so the wider net
+  // only ever adds true clashes.
   const targetItems = await prisma.scheduleItem.findMany({
-    where: { userId: user.id, date: storedDate },
-    select: { id: true, title: true, startMinute: true, endMinute: true, allDay: true, status: true },
+    where: {
+      userId: user.id,
+      date: { in: [shiftDay(storedDate, -1), storedDate, shiftDay(storedDate, 1)] },
+    },
+    select: {
+      id: true,
+      title: true,
+      date: true,
+      startMinute: true,
+      endMinute: true,
+      allDay: true,
+      status: true,
+    },
   });
 
   const plan = planMove({ item, date: storedDate, startMinute, targetItems });
@@ -882,16 +898,36 @@ export async function previewScheduleItemConflicts(input: {
   const reset = resetFor(user);
   const data = parsed.data;
 
-  // Everything on the same OPERATIONAL day. Minute ranges of the day's two
-  // calendar dates are disjoint, so comparing raw minutes matches real time.
+  // The draft's real calendar date, plus every span that could reach it: the
+  // operational day's two dates and one date each side, so a cross-midnight
+  // block from the previous evening (or one spanning the daily reset) is
+  // checked at its real position. `overlapMinutes` compares dated spans, so
+  // the wider net only ever adds true clashes.
+  const draftDate = calendarDateForOperationalTime(
+    data.date,
+    data.allDay ? null : data.startMinute,
+    reset,
+  );
   const others = await prisma.scheduleItem.findMany({
-    where: { userId: user.id, ...operationalDayWhere(data.date, reset) },
-    select: { id: true, title: true, startMinute: true, endMinute: true, allDay: true, status: true },
+    where: {
+      userId: user.id,
+      date: { in: [shiftDay(draftDate, -1), draftDate, shiftDay(draftDate, 1)] },
+    },
+    select: {
+      id: true,
+      title: true,
+      date: true,
+      startMinute: true,
+      endMinute: true,
+      allDay: true,
+      status: true,
+    },
   });
 
   const draft: ConflictCandidate = {
     id: data.excludeId ?? "__draft__",
     title: "",
+    date: draftDate,
     startMinute: data.allDay ? null : data.startMinute,
     endMinute: data.allDay ? null : data.endMinute,
     allDay: data.allDay,
@@ -899,7 +935,7 @@ export async function previewScheduleItemConflicts(input: {
 
   const conflicts = others
     .filter((other) => isSchedulingConflict(draft, other))
-    .sort((a, b) => (a.startMinute ?? 0) - (b.startMinute ?? 0))
+    .sort((a, b) => comparePlannerSpans(a, b))
     .map((other) => other.title);
 
   return succeed({ conflicts });

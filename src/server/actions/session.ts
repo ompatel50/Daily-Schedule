@@ -60,9 +60,11 @@ async function syncPlannerItem(userId: string, workoutId: string): Promise<void>
   if (!workout) return;
 
   const startMinute = workout.time ? parseTimeToMinute(workout.time) : null;
+  // A late session keeps its real length: an end past midnight wraps, and
+  // end-before-start stores "ends next day" (schedule-span.ts).
   const endMinute =
     startMinute !== null && workout.durationMin > 0
-      ? Math.min(1439, startMinute + workout.durationMin)
+      ? (startMinute + workout.durationMin) % 1440
       : null;
 
   // An in-progress session is still "planned" on the schedule: it is work

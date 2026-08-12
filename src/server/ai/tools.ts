@@ -12,6 +12,7 @@ import {
   type AssistantMode,
 } from "@/lib/logic/assistant";
 import { buildSearchHits } from "@/lib/logic/search";
+import { crossesMidnight } from "@/lib/logic/schedule-span";
 import { BACKUP_VERSION } from "@/lib/backup-format";
 import { prisma } from "@/lib/prisma";
 import type { CurrentUser } from "@/server/auth/current-user";
@@ -139,7 +140,7 @@ const searchTool: AssistantTool = {
 const dayOverviewTool: AssistantTool = {
   name: "get_day_overview",
   description:
-    "The full picture of one day: planner items with status, habits due and done, day score, nutrition totals, workouts and journal. Defaults to today.",
+    "The full picture of one day: planner items with status, habits due and done, day score, nutrition totals, workouts and journal. Defaults to today. A planner item with endsNextDay: true runs past midnight — its endMinute is a clock time on the FOLLOWING calendar day.",
   parameters: {
     type: "object",
     properties: {
@@ -158,6 +159,7 @@ const dayOverviewTool: AssistantTool = {
         allDay: item.allDay,
         startMinute: item.startMinute,
         endMinute: item.endMinute,
+        ...(crossesMidnight(item.startMinute, item.endMinute) ? { endsNextDay: true } : {}),
         category: item.category,
         priority: item.priority,
       })),
@@ -575,7 +577,7 @@ const listDocumentsTool: AssistantTool = {
 const scheduleTool: AssistantTool = {
   name: "get_schedule",
   description:
-    "Planner/calendar blocks in a date range of operational days (up to 31, defaults to the next 7 starting today). Times are minutes from midnight. `day` is the day a block belongs to under the user's daily reset; `date` is its real calendar date — they differ only for after-midnight blocks, which group with the previous day. `recurring: true` marks a block that belongs to a repeating series — editing or deleting it via propose_action then requires an explicit scope; `recurrence` summarizes the series' pattern, start and end.",
+    "Planner/calendar blocks in a date range of operational days (up to 31, defaults to the next 7 starting today). Times are minutes from midnight. `day` is the day a block belongs to under the user's daily reset; `date` is its real calendar date — they differ only for after-midnight blocks, which group with the previous day. `endsNextDay: true` marks a cross-midnight block: its endMinute is a clock time on the calendar day AFTER `date` (an endMinute lower than startMinute always means that). `recurring: true` marks a block that belongs to a repeating series — editing or deleting it via propose_action then requires an explicit scope; `recurrence` summarizes the series' pattern, start and end.",
   parameters: {
     type: "object",
     properties: {
@@ -642,6 +644,7 @@ const scheduleTool: AssistantTool = {
         allDay: item.allDay,
         startMinute: item.startMinute,
         endMinute: item.endMinute,
+        ...(crossesMidnight(item.startMinute, item.endMinute) ? { endsNextDay: true } : {}),
         category: item.category,
         priority: item.priority,
         recurring: Boolean(item.seriesId) || Boolean(item.recurrenceRule),
@@ -731,7 +734,7 @@ const backupStatusTool: AssistantTool = {
 const proposeActionTool: AssistantTool = {
   name: "propose_action",
   description:
-    "Propose ONE change for the user to review — never performed directly. Send ONLY the fields listed for the kind; anything else is refused. create_task {title, notes?, dueDate?, priority?} (always a plain one-off task); complete_task {id}; create_reminder {title, message?, remindAt: 'YYYY-MM-DDTHH:mm' in the user's own clock, repeat?}; create_inbox_item {title, notes?}; complete_inbox_item {id}; create_transaction {accountId, date, amount (signed: negative = money out), payee, category?, notes?}; create_planner_block {title, date, startMinute?, endMinute?, category?, recurrence?: {repeat: 'daily'|'weekdays'|'weekly'|'monthly', weekdays? (0=Sun…6=Sat, weekly only), interval?, endDate? ('YYYY-MM-DD' inclusive; null or absent = no end date)}} — date is the series' start date; update_planner_block {id, scope?, title?, date?, startMinute?, endMinute?, category?, priority?, notes?, recurrence?} (a new start keeps the block's duration; recurrence changes need scope 'future'; recurrence: null stops the repeat from that occurrence on; inside recurrence an ABSENT endDate keeps the series' existing end date, endDate: null removes it); delete_planner_block {id, scope?}; log_habit {habitId, date? (defaults to today), status? ('done' | 'skipped' | 'missed', defaults to done), value?} (one day of one habit); delete_task {id}; delete_reminder {id}. RECURRING PLANNER BLOCKS: when get_schedule shows recurring: true, update_planner_block and delete_planner_block REQUIRE scope: 'one' (this occurrence only) or 'future' (this and all future occurrences). NEVER guess the scope — if the user's wording doesn't make it clear ('tomorrow's workout' = one; 'from now on' = future), ask them first. Use real ids from other tools — get_schedule for planner ids, get_habit_status for habit ids, list_inbox for inbox ids. The user sees a preview and decides.",
+    "Propose ONE change for the user to review — never performed directly. Send ONLY the fields listed for the kind; anything else is refused. create_task {title, notes?, dueDate?, priority?} (always a plain one-off task); complete_task {id}; create_reminder {title, message?, remindAt: 'YYYY-MM-DDTHH:mm' in the user's own clock, repeat?}; create_inbox_item {title, notes?}; complete_inbox_item {id}; create_transaction {accountId, date, amount (signed: negative = money out), payee, category?, notes?}; create_planner_block {title, date, startMinute?, endMinute?, category?, recurrence?: {repeat: 'daily'|'weekdays'|'weekly'|'monthly', weekdays? (0=Sun…6=Sat, weekly only), interval?, endDate? ('YYYY-MM-DD' inclusive; null or absent = no end date)}} — date is the series' start date; an endMinute LOWER than startMinute is a cross-midnight block ending on the next calendar day ('11:45 PM to 12:15 AM' = startMinute 1425, endMinute 15, 30 minutes — valid, never an error, and for a recurring block each occurrence starts on its own date and ends the following day); update_planner_block {id, scope?, title?, date?, startMinute?, endMinute?, category?, priority?, notes?, recurrence?} (a new start keeps the block's duration; recurrence changes need scope 'future'; recurrence: null stops the repeat from that occurrence on; inside recurrence an ABSENT endDate keeps the series' existing end date, endDate: null removes it); delete_planner_block {id, scope?}; log_habit {habitId, date? (defaults to today), status? ('done' | 'skipped' | 'missed', defaults to done), value?} (one day of one habit); delete_task {id}; delete_reminder {id}. RECURRING PLANNER BLOCKS: when get_schedule shows recurring: true, update_planner_block and delete_planner_block REQUIRE scope: 'one' (this occurrence only) or 'future' (this and all future occurrences). NEVER guess the scope — if the user's wording doesn't make it clear ('tomorrow's workout' = one; 'from now on' = future), ask them first. Use real ids from other tools — get_schedule for planner ids, get_habit_status for habit ids, list_inbox for inbox ids. The user sees a preview and decides.",
   parameters: {
     type: "object",
     properties: {

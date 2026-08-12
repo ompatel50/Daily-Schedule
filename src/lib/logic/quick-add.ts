@@ -160,7 +160,9 @@ export function parseQuickAdd(input: string, baseDate: DayKey = today()): Parsed
     }
     if (start !== null) {
       startMinute = start;
-      endMinute = end !== null && end >= start ? end : null;
+      // An end earlier than the start is a cross-midnight range —
+      // "11:45pm-12:15am" ends on the next calendar day (schedule-span.ts).
+      endMinute = end;
       strip(rangeMatch[0]);
     }
   } else {
@@ -225,7 +227,10 @@ function formatPreviewTime(start: number | null, end: number | null): string {
     const h12 = h % 12 === 0 ? 12 : h % 12;
     return `${h12}${min ? `:${String(min).padStart(2, "0")}` : ""}${suffix}`;
   };
-  return end === null ? fmt(start) : `${fmt(start)}–${fmt(end)}`;
+  // An end before the start crosses midnight; say so in the preview.
+  return end === null
+    ? fmt(start)
+    : `${fmt(start)}–${fmt(end)}${end < start ? " (next day)" : ""}`;
 }
 
 export { parseTimeToMinute };
