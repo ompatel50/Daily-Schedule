@@ -177,6 +177,9 @@ describe("time formatting", () => {
     expect(formatTimeRange(null, null, true)).toBe("All day");
     expect(formatTimeRange(540, null, false)).toBe("9:00 AM");
     expect(formatTimeRange(540, 660, false)).toBe("9:00 AM – 11:00 AM");
+    // A wrapped (cross-midnight) end reads naturally; the row adds the
+    // explicit "ends <date>" marker next to it.
+    expect(formatTimeRange(1425, 15, false)).toBe("11:45 PM – 12:15 AM");
   });
 });
 

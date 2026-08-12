@@ -53,14 +53,78 @@ Rules the predicate applies before comparing minutes:
 
 ### Overlaps and the operational day
 
-Conflict detection always compares **real timestamps**. The configurable
-daily reset (default 4:00 AM — see `docs/operational-day.md`) only groups
-items for display: one operational day holds its own date's `[reset, 24:00)`
-plus the next date's `[00:00, reset)`. Those two minute ranges are disjoint,
-so comparing raw minutes inside one operational day's list is exactly
-equivalent to comparing real instants — a 11:00 PM block and a 1:00 AM block
-grouped under the same evening can never falsely conflict, and no math ever
-subtracts the reset from a timestamp.
+Conflict detection always compares **real positions in time**. Every
+`ConflictCandidate` carries its start's calendar date; `overlapMinutes`
+resolves each span on its own date's wall-clock axis (a wrapped cross-midnight
+end extends past 1440 — see *Cross-midnight blocks* below) and aligns the two
+axes by their calendar-day distance. One rule covers everything: same-date
+blocks compare exactly as before, an 11:45 PM → 12:15 AM block meets the next
+date's 12:10 AM block where they really collide, a 12:15 AM follower is
+back-to-back with it, and a block that spans the daily reset itself is
+compared truthfully against the next operational day's items. The configurable
+daily reset (default 4:00 AM — see `docs/operational-day.md`) still only
+groups items for display; no math ever subtracts the reset from a timestamp.
+
+Server-side conflict checks (the edit dialog's live preview, move/push
+confirmations, assistant previews) gather candidates from one calendar date on
+either side of the span's own date, so cross-midnight and reset-spanning
+neighbours are always considered. One documented asymmetry remains in the
+per-day badge lists: a block that crosses the reset boundary shows its
+conflict badges on the day it *belongs to* (its start's operational day) —
+the following day's list does not re-surface the previous day's spillover.
+
+## Cross-midnight blocks
+
+A timed block whose **end clock reads earlier than its start** runs past
+midnight: 11:45 PM → 12:15 AM on Aug 17 is one continuous 30-minute block
+ending Aug 18 at 12:15 AM. That is the stored form — `endMinute <
+startMinute` on the same row, the start's real calendar `date`, no second
+row, no shifted timestamp, no schema change. `src/lib/logic/schedule-span.ts`
+is the single authority for the resolution (`crossesMidnight`,
+`resolvedEndMinute`, `spanDurationMinutes`, `endDateOf`).
+
+Consequences, all pinned by tests:
+
+- an end **equal** to the start stays a zero-duration point item — never a
+  24-hour block;
+- the operational day of a block is keyed on its **start** alone, so a
+  cross-midnight block groups (and its series slot counts) exactly like any
+  other block on its start date;
+- recurrence expands over **start dates only**: a Mon/Tue/Thu 11:45 PM →
+  12:15 AM series has occurrences starting on those days, each ending the
+  following calendar morning, and every scope (occurrence edit, series split,
+  scoped deletion, skip dates) works unchanged;
+- moves and rollover carry the wrapped end along; re-timing keeps the real
+  duration and wraps or unwraps as needed (a 90-minute block moved to
+  11:00 PM ends 12:30 AM next day — never clamped to 11:59 PM);
+- the UI names the resolution before saving ("Ends next day — Tue, Aug 18 ·
+  30m" in the dialog), rows append "ends Aug 18" after the time range, the
+  timeline draws the block through the 12:00 AM line, and assistant previews
+  say "11:45 PM–12:15 AM (ends next day, 30m)".
+
+Durations are wall-clock durations: recurring local schedules keep their
+local wall-clock times across DST, and a cross-midnight block is 30 minutes
+on either side of a transition (the rare block that *contains* one is
+measured in wall minutes, the convention every minute in this app uses).
+
+## The chronological order
+
+Every surface that lists planner items in time order sorts with **one
+comparator** — `comparePlannerSpans` in `src/lib/logic/schedule-span.ts` —
+applied in the server read models (`getScheduleItems`/`getDaySchedule`, which
+the day list, Today, dashboard and both assistant schedule tools inherit) and
+in the client re-sorts (timeline, week and month cells, conflict orderings).
+The Prisma `orderBy` remains only a coarse pre-sort, because SQL cannot rank
+a wrapped end.
+
+Keys, in order: **start date** (date-then-minute IS the operational extended
+axis, since an operational day's after-midnight tail is stored on the next
+calendar date), untimed/all-day placement (top of the day list, bottom of
+week/month cells), **start minute**, **resolved end** — so same-start items
+read point first, then shortest ("Wake Up 9:00" before "Mobility 9:00–9:30"
+before "Cardio 9:00–10:00"), with a cross-midnight end sorting after every
+same-day end — then `sortOrder` (the manual drag order) and finally `id`, so
+the order never depends on database return order.
 
 ## Recurring series
 

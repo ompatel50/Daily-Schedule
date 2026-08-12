@@ -37,7 +37,7 @@ Step-by-step documentation lives in `docs/`, written to be followed exactly:
 | [`docs/troubleshooting.md`](docs/troubleshooting.md) | Symptoms → causes → fixes |
 | [`docs/performance-measurement.md`](docs/performance-measurement.md) | How the performance numbers were measured, and how to repeat them |
 | [`docs/operational-day.md`](docs/operational-day.md) | The daily reset time: how a 4:00 AM day boundary works, what regroups and what never does |
-| [`docs/planner-recurrence.md`](docs/planner-recurrence.md) | Planner overlap semantics (half-open intervals, the 1-minute warning tolerance) and recurring series: ranges, edit/delete scopes, series splitting, regeneration |
+| [`docs/planner-recurrence.md`](docs/planner-recurrence.md) | Planner overlap semantics (half-open intervals, the 1-minute warning tolerance), cross-midnight blocks, the one chronological order, and recurring series: ranges, edit/delete scopes, series splitting, regeneration |
 | [`docs/responsive-and-pwa.md`](docs/responsive-and-pwa.md) | The phone experience: navigation drawer, responsive architecture, iPhone home-screen install, offline behaviour |
 
 ## Quick start
@@ -163,6 +163,16 @@ The planner **shapes** the schedule; Today **runs** it and the dashboard
   does). All-day items, point items with no duration, and skipped items are never flagged, and
   every surface — banner, badges, counts, timeline, week/month grids, move confirmations, the
   edit dialog's live preview, assistant previews — uses the same shared rule.
+* **Cross-midnight blocks**: an end time earlier than the start means the block runs past
+  midnight — 11:45 PM → 12:15 AM is a 30-minute block ending the next calendar day, announced in
+  the form before saving ("Ends next day — Tue, Aug 18 · 30m") and marked on the row. It stays
+  one block, groups under the evening it starts on, counts conflicts at its real position (a
+  12:15 AM follower is adjacent, not a clash), and repeats by its start date when recurring.
+* **Deterministic chronological order**: every view sorts by start, then end — so same-start
+  items read point first, then shortest ("Wake Up 9:00" before "Mobility 9:00–9:30" before
+  "Cardio 9:00–10:00") — with the manual drag order and the row id as the final tie-breaks. The
+  day list, timeline, week/month grids, Today and the assistant all share one comparator and can
+  never disagree.
 * **Roll over**: push everything unfinished from a past day to the next day.
 
 ### 2. Nutrition — `/nutrition`

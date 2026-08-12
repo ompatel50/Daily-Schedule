@@ -5,6 +5,7 @@ import Link from "next/link";
 import { CATEGORY_META, type ScheduleCategory } from "@/lib/enums";
 import { formatDay, isSameMonth, isToday, monthGridDays, weekdayLabelsFor } from "@/lib/date";
 import { findConflicts } from "@/lib/logic/planner";
+import { comparePlannerSpans } from "@/lib/logic/schedule-span";
 import { cn } from "@/lib/utils";
 import type { ScheduleRowItem } from "@/components/planner/schedule-row";
 
@@ -12,11 +13,9 @@ const MAX_VISIBLE = 3;
 
 /** Month overview. Clicking a day deep-links to that day's planner view. */
 
-/** After-midnight items sort at the end of the day they group under. */
-function sortMinute(item: ScheduleRowItem): number {
-  if (item.startMinute === null) return 1e9;
-  return item.operationalDate === item.date ? item.startMinute : item.startMinute + 1440;
-}
+// Cell ordering is the shared planner comparator (all-day rows last):
+// calendar-date-then-minute is the operational extended axis, so
+// after-midnight items sort at the end of the day they group under.
 
 export function MonthGrid({
   anchor,
@@ -51,10 +50,9 @@ export function MonthGrid({
 
       <div className="grid grid-cols-7">
         {days.map((day) => {
-          const dayItems = (byDay.get(day) ?? []).sort((a, b) => {
-            if (a.allDay !== b.allDay) return a.allDay ? 1 : -1;
-            return sortMinute(a) - sortMinute(b);
-          });
+          const dayItems = (byDay.get(day) ?? []).sort((a, b) =>
+            comparePlannerSpans(a, b, "last"),
+          );
           const outside = !isSameMonth(day, anchor);
           const done = dayItems.filter((item) => item.status === "done").length;
           // Same `findConflicts` as the day list. Cells are too small for

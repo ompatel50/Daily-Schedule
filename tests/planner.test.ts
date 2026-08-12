@@ -289,6 +289,65 @@ describe("overlapMinutes / the 1-minute conflict tolerance", () => {
   });
 });
 
+describe("cross-midnight spans in the conflict engine", () => {
+  // 11:45 PM → 12:15 AM on Aug 17: a wrapped end (15 < 1425) means the block
+  // really ends Aug 18 at 12:15 AM. Dated candidates are compared at their
+  // real positions — one shared rule, no separate cross-midnight algorithm.
+  const wrapped = span("wrapped", 1425, 15, { date: "2026-08-17" });
+
+  it("a wrapped span is 30 real minutes, not zero and not negative", () => {
+    // Same start, contained comparison: a same-date block 11:45 PM → 12:30 AM
+    // (also wrapped) shares the first 30 minutes.
+    const longer = span("longer", 1425, 30, { date: "2026-08-17" });
+    expect(overlapMinutes(wrapped, longer)).toBe(30);
+  });
+
+  it("meets the next date's early blocks at its real position", () => {
+    // 12:10 AM → 1:00 AM on Aug 18 overlaps the wrapped block's last 5 minutes.
+    const nextMorning = span("morning", 10, 60, { date: "2026-08-18" });
+    expect(overlapMinutes(wrapped, nextMorning)).toBe(5);
+    expect(overlapMinutes(nextMorning, wrapped)).toBe(5);
+    expect(isSchedulingConflict(wrapped, nextMorning)).toBe(true);
+  });
+
+  it("a block starting exactly where the wrapped one ends is adjacent, never a conflict", () => {
+    // 12:15 AM → 1:00 AM on Aug 18: back-to-back with 11:45 PM → 12:15 AM.
+    const adjacent = span("adjacent", 15, 60, { date: "2026-08-18" });
+    expect(spansOverlap(wrapped, adjacent)).toBe(false);
+    expect(isSchedulingConflict(wrapped, adjacent)).toBe(false);
+  });
+
+  it("keeps the 1-minute tolerance across midnight", () => {
+    // B starts 12:14 AM against an end of 12:15 AM → 1 shared minute → quiet.
+    const brushes = span("brushes", 14, 60, { date: "2026-08-18" });
+    expect(spansOverlap(wrapped, brushes)).toBe(true);
+    expect(isSchedulingConflict(wrapped, brushes)).toBe(false);
+    // B starts 12:13 AM → 2 shared minutes → a real double booking.
+    const collides = span("collides", 13, 60, { date: "2026-08-18" });
+    expect(isSchedulingConflict(wrapped, collides)).toBe(true);
+  });
+
+  it("does not let a wrapped span reach same-clock blocks two days away", () => {
+    const farMorning = span("far", 10, 60, { date: "2026-08-19" });
+    expect(overlapMinutes(wrapped, farMorning)).toBe(0);
+  });
+
+  it("a block spanning the daily reset meets the next operational day's items", () => {
+    // 11:45 PM Aug 17 → 5:00 AM Aug 18 crosses the 4:00 AM reset; a 4:30 AM
+    // block on Aug 18 (the NEXT operational day) really is double-booked.
+    const acrossReset = span("across", 1425, 300, { date: "2026-08-17" });
+    const nextOpDay = span("next", 270, 330, { date: "2026-08-18" });
+    expect(overlapMinutes(acrossReset, nextOpDay)).toBe(30);
+    expect(isSchedulingConflict(acrossReset, nextOpDay)).toBe(true);
+  });
+
+  it("dateless candidates keep the long-standing same-date semantics", () => {
+    // Without dates a wrapped end still resolves — 11:45 PM → 12:15 AM against
+    // the same date's 11:50 PM → 11:55 PM overlaps for those 5 minutes.
+    expect(overlapMinutes(span("a", 1425, 15), span("b", 1430, 1435))).toBe(5);
+  });
+});
+
 describe("findConflicts / conflictsByItem", () => {
   it("reports each overlapping pair once", () => {
     const items = [span("a", 540, 660), span("b", 600, 720), span("c", 900, 960)];
@@ -409,13 +468,23 @@ describe("planMove", () => {
     expect(plan.allDay).toBe(false);
   });
 
-  it("keeps the duration when re-timing, clamped to midnight", () => {
+  it("keeps the duration when re-timing, across midnight when it no longer fits", () => {
     const retimed = planMove({ item: moving(), date: "2026-07-20", startMinute: 900, targetItems: [] });
     expect(retimed.startMinute).toBe(900);
     expect(retimed.endMinute).toBe(1020);
 
+    // 11:00 PM + the item's 2 hours = 1:00 AM next day, stored as a wrapped
+    // end (end < start means "ends next day") — never clamped to 11:59 PM.
     const late = planMove({ item: moving(), date: "2026-07-20", startMinute: 1380, targetItems: [] });
-    expect(late.endMinute).toBe(1439);
+    expect(late.endMinute).toBe(60);
+  });
+
+  it("keeps a wrapped item's duration when re-timing it back into the day", () => {
+    // 11:45 PM → 12:15 AM (30 minutes) re-timed to 9:00 AM is 9:00 → 9:30.
+    const item = moving({ startMinute: 1425, endMinute: 15 });
+    const plan = planMove({ item, date: "2026-07-20", startMinute: 540, targetItems: [] });
+    expect(plan.startMinute).toBe(540);
+    expect(plan.endMinute).toBe(570);
   });
 
   it("clears the time on an explicit null start, which cannot conflict", () => {

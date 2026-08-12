@@ -2,7 +2,7 @@ import "server-only";
 
 import { z } from "zod";
 
-import { formatMinute, type DayKey } from "@/lib/date";
+import { formatDuration, formatMinute, shiftDay, type DayKey } from "@/lib/date";
 import {
   FINANCE_CATEGORIES,
   HABIT_STATUSES,
@@ -10,8 +10,16 @@ import {
   SCHEDULE_CATEGORIES,
   isBookkeepingCategory,
 } from "@/lib/enums";
-import { operationalDayOfRecord, operationalDayWhere } from "@/lib/logic/operational-day";
+import {
+  calendarDateForOperationalTime,
+  operationalDayOfRecord,
+} from "@/lib/logic/operational-day";
 import { isSchedulingConflict, type ConflictCandidate } from "@/lib/logic/planner";
+import {
+  comparePlannerSpans,
+  crossesMidnight,
+  spanDurationMinutes,
+} from "@/lib/logic/schedule-span";
 import {
   describeRecurrence,
   parseRule,
@@ -175,6 +183,20 @@ function ruleFromRecurrenceInput(
   };
 }
 
+/**
+ * "11:45 PM–12:15 AM (ends next day, 30m)" — the preview's time phrase. A
+ * wrapped end (end clock earlier than start) is a cross-midnight block; the
+ * sentence must say so, because the preview is the user's whole basis for
+ * confirming the write.
+ */
+function describeSpanTime(startMinute: number, endMinute: number | null): string {
+  if (endMinute === null || endMinute === startMinute) return formatMinute(startMinute);
+  const range = `${formatMinute(startMinute)}–${formatMinute(endMinute)}`;
+  if (!crossesMidnight(startMinute, endMinute)) return range;
+  const duration = spanDurationMinutes(startMinute, endMinute) as number;
+  return `${range} (ends next day, ${formatDuration(duration)})`;
+}
+
 const createPlannerBlockSchema = z
   .object({
     title: z.string().trim().min(1).max(200),
@@ -185,15 +207,9 @@ const createPlannerBlockSchema = z
     recurrence: plannerRecurrenceSchema.optional(),
   })
   .strict()
-  .refine(
-    (value) =>
-      value.startMinute === null ||
-      value.startMinute === undefined ||
-      value.endMinute === null ||
-      value.endMinute === undefined ||
-      value.endMinute >= value.startMinute,
-    { message: "End time must be after the start time", path: ["endMinute"] },
-  )
+  // No "end after start" rule: an end clock earlier than the start is a valid
+  // cross-midnight block ending on the next calendar day (11:45 PM → 12:15 AM
+  // is 30 minutes) — the preview sentence spells the next-day ending out.
   .refine(
     (value) =>
       !value.recurrence ||
@@ -250,20 +266,36 @@ async function conflictTitlesFor(
   excludeId?: string,
 ): Promise<string[]> {
   if (startMinute === null || endMinute === null) return [];
+  // The draft's real calendar date, and every span that could reach it — one
+  // date each side covers cross-midnight and reset-spanning neighbours; the
+  // dated overlap rule keeps only true clashes.
+  const draftDate = calendarDateForOperationalTime(day, startMinute, resetMinute);
   const others = await prisma.scheduleItem.findMany({
-    where: { userId, ...operationalDayWhere(day, resetMinute) },
-    select: { id: true, title: true, startMinute: true, endMinute: true, allDay: true, status: true },
+    where: {
+      userId,
+      date: { in: [shiftDay(draftDate, -1), draftDate, shiftDay(draftDate, 1)] },
+    },
+    select: {
+      id: true,
+      title: true,
+      date: true,
+      startMinute: true,
+      endMinute: true,
+      allDay: true,
+      status: true,
+    },
   });
   const draft: ConflictCandidate = {
     id: excludeId ?? "__draft__",
     title: "",
+    date: draftDate,
     startMinute,
     endMinute,
     allDay: false,
   };
   return others
     .filter((other) => isSchedulingConflict(draft, other))
-    .sort((a, b) => (a.startMinute ?? 0) - (b.startMinute ?? 0))
+    .sort((a, b) => comparePlannerSpans(a, b))
     .map((other) => other.title);
 }
 
@@ -493,11 +525,7 @@ async function prepareProposal(
       const data = parsed.data;
       const timed = data.startMinute !== null && data.startMinute !== undefined;
       const time = timed
-        ? ` at ${formatMinute(data.startMinute as number)}${
-            data.endMinute !== null && data.endMinute !== undefined
-              ? `–${formatMinute(data.endMinute)}`
-              : ""
-          }`
+        ? ` at ${describeSpanTime(data.startMinute as number, data.endMinute ?? null)}`
         : " (all day)";
       // Recurrence only ever comes through the explicit `recurrence` object
       // above, and the sentence below spells out its pattern, start and end —
@@ -581,20 +609,22 @@ async function prepareProposal(
         } else {
           allDay = false;
           startMinute = data.startMinute;
+          // A kept duration survives midnight: the end wraps (mod 1440), and
+          // end-before-start is the stored form of "ends next day".
+          const keptDuration = spanDurationMinutes(item.startMinute, item.endMinute);
           endMinute =
             data.endMinute !== undefined
               ? data.endMinute
-              : item.startMinute !== null && item.endMinute !== null
-                ? Math.min(1439, data.startMinute + (item.endMinute - item.startMinute))
+              : keptDuration !== null
+                ? (data.startMinute + keptDuration) % 1440
                 : null;
         }
       } else if (data.endMinute !== undefined) {
         endMinute = data.endMinute;
         if (endMinute !== null) allDay = false;
       }
-      if (startMinute !== null && endMinute !== null && endMinute < startMinute) {
-        return { ok: false, error: "The end time must be after the start time." };
-      }
+      // An end clock earlier than the start is a valid cross-midnight block —
+      // the changes line below spells out the next-day ending.
 
       // The recurrence the write will carry. Inheritance is explicit: an
       // absent `recurrence` keeps the stored rule (end date included); an
@@ -631,7 +661,7 @@ async function prepareProposal(
         changes.push(
           allDay || startMinute === null
             ? "time → all day"
-            : `time → ${formatMinute(startMinute)}${endMinute !== null ? `–${formatMinute(endMinute)}` : ""}`,
+            : `time → ${describeSpanTime(startMinute, endMinute)}`,
         );
       }
       if (data.category && data.category !== item.category) changes.push(`category → ${data.category}`);

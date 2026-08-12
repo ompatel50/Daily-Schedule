@@ -4931,3 +4931,125 @@ design off-platform):
 * The full e2e suite (a11y, dialogs, mobile drawer, planner-mobile with its
   1:00 AM operational-day round trip, PWA, responsive sweeps…) runs against
   the same build.
+
+## Phase D.1 — same-start ordering and cross-midnight blocks
+
+The two follow-up planner issues, fixed in the domain layer on top of the
+Phase D architecture: deterministic chronological ordering when items share a
+start time, and timed blocks that cross calendar midnight.
+
+### One span authority: `src/lib/logic/schedule-span.ts`
+
+Both fixes are the same subject — where a block really sits in time — so
+they share one new module. Cross-midnight resolution: an end clock earlier
+than the start means the block ends on the NEXT calendar day (11:45 PM →
+12:15 AM on Aug 17 = 30 minutes, ending Aug 18; `crossesMidnight`,
+`resolvedEndMinute`, `spanDurationMinutes`, `endDateOf`). The stored form is
+the wrapped pair on one row — the start's real calendar `date`, minutes
+0–1439 on both ends, no schema change, no migration, no second row, no bent
+timestamp. An end EQUAL to the start stays the zero-duration point item it
+always was, never a silent 24-hour block. The three copies of the "End time
+must be after the start time" refine (domain schema, task scheduling,
+assistant proposal) are gone, as are every silent midnight clamp
+(`planMove`, workout/session sync, task-dialog default hour) and quick-add's
+dropped end — all wrap now.
+
+The same module owns `comparePlannerSpans`, the planner's ONE chronological
+comparator: start **calendar date** (date-then-minute IS the operational
+extended axis, since the after-midnight tail is stored on the next date — no
+reset arithmetic in the comparator at all), untimed placement (day list top,
+week/month cell bottom), start minute, **resolved end** — same-start items
+read point first, then shortest: Wake Up 9:00, Mobility 9:00–9:30, Cardio
+9:00–10:00, Work 9:00–12:00 — then `sortOrder` (the manual drag order) and
+`id` (cuid, creation-ordered) so nothing ever depends on database return
+order. Applied authoritatively in `getScheduleItems`/`getDaySchedule` (the
+Prisma `orderBy` stays as a coarse pre-sort — SQL cannot rank a wrapped
+end), and the duplicated client comparators (week grid, month grid,
+timeline, both conflict-title sorts) were deleted in its favour.
+`ScheduleRowItem` now carries `sortOrder` so client re-sorts break ties
+identically to the server.
+
+### Overlaps stay one rule
+
+`ConflictCandidate` gained the span's calendar date; `overlapMinutes`
+resolves wrapped ends onto the extended axis and aligns two dated spans by
+their calendar-day distance. Everything downstream (`spansOverlap`,
+`isSchedulingConflict` with its 1-minute tolerance, every warning surface)
+inherited cross-midnight correctness from that one change: 11:45 PM →
+12:15 AM against the next date's 12:15 AM block is adjacent, 12:14 AM
+brushes one tolerated minute, 12:13 AM warns, and a block spanning the 4 AM
+reset itself is compared truthfully against the next operational day.
+Server-side conflict checks (edit-dialog live preview, move confirmations,
+assistant previews) now gather candidates one calendar date each side.
+Documented asymmetry: per-day badge lists show a reset-crossing block's
+badges on its own operational day only.
+
+### What composed unchanged
+
+Operational-day grouping, series slots, `seriesDateShift`, rollover and
+skip-dates all key on the START, so cross-midnight blocks group under the
+evening they start on (11:45 PM → 2:00 AM belongs wholly to Aug 17's
+operational day) and recur by start date — a Mon/Tue/Thu/Fri/Sat 11:45 PM →
+12:15 AM series generates occurrences on those days, each ending the
+following morning, with every Phase D scope (occurrence override, series
+split inheriting the end date, scoped deletion) passing integration tests
+untouched. A this-and-future edit to 11:30 PM → 12:30 AM leaves history at
+30 minutes and makes the future one-hour blocks.
+
+### Surfaces
+
+The dialog announces the resolution before saving ("Ends next day — Tue,
+Aug 18 · 30m", one compact muted line inside the time box, reset-aware via
+`calendarDateForOperationalTime`); rows append "ends Aug 18" beside the
+range; the timeline draws wrapped blocks through the 12:00 AM line (and
+reset-crossing ones through the reset); quick-add's preview says
+"11:45pm–12:15am (next day)". The assistant accepts cross-midnight times in
+create/update proposals, keeps duration across midnight when re-timing,
+previews "11:45 PM–12:15 AM (ends next day, 30m)", and `get_schedule` /
+`get_day_overview` mark wrapped blocks `endsNextDay: true` with the
+semantics documented in the tool contract. The proposal/confirmation safety
+model is untouched.
+
+### Verification
+
+* Typecheck, lint, unit **1,159 → 1,188** (new `tests/schedule-span.test.ts`
+  comparator + resolution + DST-instant suites; planner conflict-engine
+  cross-midnight cases; quick-add and time-range pins), integration
+  **386 → 400** (new `tests/integration/cross-midnight.test.ts`: storage
+  round trip, operational grouping, adjacency + tolerance through the live
+  preview, move/rollover, recurring generation, series split, skip-dates,
+  assistant proposal staging + execution + `endsNextDay`, cross-user
+  isolation), migration diff (no schema change), production build: all
+  green.
+* Browser verification against the production build
+  (`tests/e2e/planner-ordering-midnight.spec.ts`, kept as a permanent spec;
+  console/page errors fail the test): the reported repro — Cardio
+  9:00–10:00 created first, Wake Up 9:00 point second — renders Wake Up
+  first, and with Mobility 9:00–9:30 added the order is Wake Up, Mobility,
+  Cardio in the day list AND the timeline (visual geometry asserted);
+  11:45 PM → 12:15 AM saves without the old refusal, shows the next-day
+  hint before saving and the row marker after, appears only under its start
+  day, tolerates a 12:15 AM follower with zero warnings, and a bounded
+  nightly series repeats the wrapped span on each start date; the phone
+  viewport (390×844) repeats ordering + hint with no horizontal overflow.
+  Full suite: **121 passed, 0 failed** in CI mode (the seeded
+  health-labels spec is skipped exactly as CI skips it).
+
+### Intentional limitations
+
+* The longest timed block is 23 h 59 m (equal clocks stay a point item); a
+  longer block is an all-day item.
+* Wall-clock durations: a block *containing* a DST transition measures in
+  wall minutes, the convention every minute in this app already uses;
+  11:45 PM → 12:15 AM is 30 minutes on either side of a transition either
+  way.
+* Per-day conflict badges show a reset-crossing block's clashes on its own
+  operational day; the next day's list does not re-surface the previous
+  evening's spillover (the server-side previews and confirmations do check
+  it).
+
+### Exact next step
+
+Live with the night-owl flow for a week. If the row marker ("ends Aug 18")
+earns its keep at week/month density too, extend it there; otherwise leave
+those cells lean.

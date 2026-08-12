@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import { parseQuickAdd } from "@/lib/logic/quick-add";
+import { describeQuickAdd, parseQuickAdd } from "@/lib/logic/quick-add";
 
 // A fixed Monday, so weekday maths is deterministic.
 const MONDAY = "2026-03-02";
@@ -31,6 +31,15 @@ describe("parseQuickAdd", () => {
     const result = parseQuickAdd("Standup 09:30", MONDAY);
     expect(result.startMinute).toBe(9 * 60 + 30);
     expect(result.endMinute).toBeNull();
+  });
+
+  it("keeps a cross-midnight range: the wrapped end means 'next day'", () => {
+    const result = parseQuickAdd("Mobility 11:45pm-12:15am", MONDAY);
+    expect(result.startMinute).toBe(23 * 60 + 45);
+    expect(result.endMinute).toBe(15);
+    expect(result.allDay).toBe(false);
+    // The typed preview says so before anything is saved.
+    expect(describeQuickAdd(result)).toContain("11:45pm–12:15am (next day)");
   });
 
   it("parses a single 'at' time", () => {

@@ -8,6 +8,7 @@ import { CATEGORY_META, type ScheduleCategory } from "@/lib/enums";
 import { formatMinute, formatTimeRange, isToday, nowMinute } from "@/lib/date";
 import { DEFAULT_DAY_RESET_MINUTE, operationalSortMinute } from "@/lib/logic/operational-day";
 import { conflictsByItem, summarizeConflicts } from "@/lib/logic/planner";
+import { comparePlannerSpans, resolvedEndMinute } from "@/lib/logic/schedule-span";
 import { cn } from "@/lib/utils";
 import type { ScheduleRowItem } from "@/components/planner/schedule-row";
 
@@ -59,18 +60,21 @@ export function Timeline({
       items
         .filter((item) => !item.allDay && item.startMinute !== null)
         .map((item) => {
-          // A block's minutes all live on one calendar date, so the whole
-          // span shifts onto the extended axis together.
+          // A block's START fixes its calendar date, so the whole span shifts
+          // onto the extended axis together; a wrapped (cross-midnight) end
+          // resolves past 1440 first, so 11:45 PM → 12:15 AM renders through
+          // the 12:00 AM line instead of collapsing.
           const shift =
             dayResetMinute > 0 && (item.startMinute as number) < dayResetMinute ? 1440 : 0;
           const start = (item.startMinute as number) + shift;
-          const end = Math.max(
-            (item.endMinute ?? (item.startMinute as number) + 30) + shift,
-            start + 20,
-          );
+          const rawEnd =
+            item.endMinute !== null
+              ? resolvedEndMinute(item.startMinute as number, item.endMinute)
+              : (item.startMinute as number) + 30;
+          const end = Math.max(rawEnd + shift, start + 20);
           return { ...item, start, end };
         })
-        .sort((a, b) => a.start - b.start),
+        .sort((a, b) => comparePlannerSpans(a, b)),
     [items, dayResetMinute],
   );
 

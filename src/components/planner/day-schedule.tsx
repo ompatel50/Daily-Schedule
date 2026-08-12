@@ -263,6 +263,7 @@ export function DaySchedule({
         item={editing}
         defaultDate={date}
         seriesActions={can.seriesActions}
+        dayResetMinute={dayResetMinute}
       />
     </div>
   );

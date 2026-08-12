@@ -32,6 +32,7 @@ import { CATEGORY_META, PRIORITY_META, type Priority, type ScheduleCategory } fr
 import { formatDay, formatTimeRange, shiftDay } from "@/lib/date";
 import { DEFAULT_DAY_RESET_MINUTE, groupedWithDayHint } from "@/lib/logic/operational-day";
 import { summarizeConflicts } from "@/lib/logic/planner";
+import { crossesMidnight } from "@/lib/logic/schedule-span";
 import { cn } from "@/lib/utils";
 import { confirmMoveToast } from "@/components/planner/move-conflict";
 import { SeriesScopeChooser, deleteScopeChoices } from "@/components/planner/series-scope-chooser";
@@ -57,6 +58,8 @@ export interface ScheduleRowItem {
   startMinute: number | null;
   endMinute: number | null;
   allDay: boolean;
+  /** Manual drag order — the comparator's stable tiebreak on exact time ties. */
+  sortOrder: number;
   category: string;
   priority: string;
   status: string;
@@ -201,6 +204,11 @@ export function ScheduleRow({
           <span className="inline-flex items-center gap-1">
             <Clock className="h-3 w-3" />
             {formatTimeRange(item.startMinute, item.endMinute, item.allDay)}
+            {crossesMidnight(item.startMinute, item.endMinute) && !item.allDay && (
+              <span className="text-[10px] font-medium text-muted-foreground/80">
+                ends {formatDay(shiftDay(item.date, 1), "MMM d")}
+              </span>
+            )}
           </span>
           <Badge variant="outline" className={cn("px-1.5 py-0 text-[10px]", meta.chip)}>
             {meta.label}

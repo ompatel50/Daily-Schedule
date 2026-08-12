@@ -35,7 +35,18 @@ import {
   type Priority,
   type ScheduleCategory,
 } from "@/lib/enums";
-import { WEEKDAY_LABELS, formatDay, minuteToTimeValue, parseTimeToMinute } from "@/lib/date";
+import {
+  WEEKDAY_LABELS,
+  formatDay,
+  formatDuration,
+  minuteToTimeValue,
+  parseTimeToMinute,
+  shiftDay,
+} from "@/lib/date";
+import {
+  DEFAULT_DAY_RESET_MINUTE,
+  calendarDateForOperationalTime,
+} from "@/lib/logic/operational-day";
 import {
   describeRecurrence,
   parseRule,
@@ -43,6 +54,7 @@ import {
   serializeRule,
   type RecurrenceRule,
 } from "@/lib/logic/recurrence";
+import { crossesMidnight, spanDurationMinutes } from "@/lib/logic/schedule-span";
 import type { SeriesScope } from "@/lib/validation";
 import {
   createScheduleItem,
@@ -98,6 +110,7 @@ export function ScheduleItemDialog({
   item,
   defaultDate,
   seriesActions = true,
+  dayResetMinute = DEFAULT_DAY_RESET_MINUTE,
 }: {
   open: boolean;
   onOpenChange: (open: boolean) => void;
@@ -109,6 +122,8 @@ export function ScheduleItemDialog({
    * job and the dialog says so rather than silently narrowing the scope.
    */
   seriesActions?: boolean;
+  /** The user's daily reset, to name the real calendar date a wrapped end lands on. */
+  dayResetMinute?: number;
 }) {
   const router = useRouter();
   const isEdit = Boolean(item?.id);
@@ -180,6 +195,24 @@ export function ScheduleItemDialog({
       : ends === "on" && endDate && endDate < date
         ? "The end date cannot be before the start date."
         : null;
+
+  // An end clock earlier than the start crosses midnight: the block ends on
+  // the NEXT calendar day. Resolved live so the meaning is visible BEFORE
+  // saving — "11:45 PM → 12:15 AM · 30m · ends Tue, Aug 18".
+  const nextDayEnd = React.useMemo(() => {
+    if (allDay) return null;
+    const startMinute = parseTimeToMinute(start);
+    const endMinute = parseTimeToMinute(end);
+    if (startMinute === null || endMinute === null) return null;
+    if (!crossesMidnight(startMinute, endMinute)) return null;
+    // The form's `date` is the operational day; the span starts on its real
+    // calendar date and ends one day after that.
+    const startDate = calendarDateForOperationalTime(date, startMinute, dayResetMinute);
+    return {
+      endDay: shiftDay(startDate, 1),
+      duration: spanDurationMinutes(startMinute, endMinute) as number,
+    };
+  }, [allDay, start, end, date, dayResetMinute]);
 
   // On the parent (or a plain item) the rule is editable; recurrence changes
   // reach from the edited occurrence forward, so they force that scope.
@@ -379,6 +412,12 @@ export function ScheduleItemDialog({
                   />
                 </div>
               </div>
+            )}
+            {nextDayEnd && (
+              <p className="text-xs text-muted-foreground">
+                Ends next day — {formatDay(nextDayEnd.endDay)} ·{" "}
+                {formatDuration(nextDayEnd.duration)}
+              </p>
             )}
             {conflicts.length > 0 && (
               <p className="flex items-start gap-1.5 text-xs text-amber-800 dark:text-amber-400">

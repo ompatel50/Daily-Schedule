@@ -24,6 +24,7 @@ export function toScheduleRowItem(
     startMinute: item.startMinute,
     endMinute: item.endMinute,
     allDay: item.allDay,
+    sortOrder: item.sortOrder,
     category: item.category,
     priority: item.priority,
     status: item.status,

@@ -12,6 +12,13 @@
  * than growing a second copy with its own edge cases.
  */
 
+import { daysBetween } from "@/lib/date";
+import {
+  comparePlannerSpans,
+  resolvedEndMinute,
+  spanDurationMinutes,
+} from "./schedule-span";
+
 // ---------------------------------------------------------------------------
 // Routine application
 // ---------------------------------------------------------------------------
@@ -162,6 +169,14 @@ export interface ConflictCandidate {
   endMinute: number | null;
   allDay: boolean;
   status?: string;
+  /**
+   * Calendar date (`YYYY-MM-DD`) of the span's start. When both candidates
+   * carry one, overlap is computed across real dates: a cross-midnight block
+   * meets the next date's early blocks at its real position, and a block that
+   * spans the daily reset meets the following operational day's items. Absent
+   * on both sides (legacy callers), the spans are assumed to share one date.
+   */
+  date?: string;
 }
 
 /**
@@ -198,12 +213,14 @@ export const CONFLICT_TOLERANCE_MINUTES = 1;
  *  * a zero-length point item (start === end) occupies no minutes;
  *  * a skipped item is explicitly not happening.
  *
- * Minutes are compared within one calendar date, which is safe even under the
- * operational-day grouping: one operational day is the `[reset, 1440)` tail of
- * its own date plus the `[0, reset)` head of the next, and those two minute
- * ranges are disjoint — items on different calendar dates of the same
- * operational day can never intersect numerically, matching their real
- * instants.
+ * Spans are compared at their REAL positions. Each candidate resolves to a
+ * half-open interval on its start date's wall-clock axis — a wrapped end
+ * (`endMinute < startMinute`, a cross-midnight block) extends past 1440 via
+ * `resolvedEndMinute` — and when both candidates carry a `date`, the two
+ * axes are aligned by their calendar-day distance. That one rule covers every
+ * boundary case with no special-casing: 11:45 PM → 12:15 AM against the next
+ * date's 12:15 AM → 1:00 AM is exactly adjacent, and a block spanning the
+ * daily reset meets the next operational day's items where it really does.
  */
 export function overlapMinutes(a: ConflictCandidate, b: ConflictCandidate): number {
   if (a.id === b.id) return 0;
@@ -213,9 +230,16 @@ export function overlapMinutes(a: ConflictCandidate, b: ConflictCandidate): numb
   const { startMinute: aStart, endMinute: aEnd } = a;
   const { startMinute: bStart, endMinute: bEnd } = b;
   if (aStart === null || aEnd === null || bStart === null || bEnd === null) return 0;
-  if (aEnd <= aStart || bEnd <= bStart) return 0;
 
-  return Math.max(0, Math.min(aEnd, bEnd) - Math.max(aStart, bStart));
+  const aRealEnd = resolvedEndMinute(aStart, aEnd);
+  const bRealEnd = resolvedEndMinute(bStart, bEnd);
+  // Zero-length point items occupy no minutes.
+  if (aRealEnd <= aStart || bRealEnd <= bStart) return 0;
+
+  // Align b's axis onto a's: one calendar day apart = 1440 wall minutes.
+  const offset = a.date && b.date && a.date !== b.date ? daysBetween(a.date, b.date) * 1440 : 0;
+
+  return Math.max(0, Math.min(aRealEnd, bRealEnd + offset) - Math.max(aStart, bStart + offset));
 }
 
 /** Exact half-open overlap: the spans share at least one minute. */
@@ -237,11 +261,10 @@ export interface ConflictPair {
   b: ConflictCandidate;
 }
 
-/** Every conflicting pair on a day, each pair reported once. */
+/** Every conflicting pair on a day, each pair reported once — `a` is always
+ * the chronologically earlier of the pair. */
 export function findConflicts(items: ConflictCandidate[]): ConflictPair[] {
-  const sorted = items
-    .slice()
-    .sort((left, right) => (left.startMinute ?? 0) - (right.startMinute ?? 0));
+  const sorted = items.slice().sort((left, right) => comparePlannerSpans(left, right));
 
   const pairs: ConflictPair[] = [];
   for (let i = 0; i < sorted.length; i += 1) {
@@ -314,8 +337,10 @@ export interface MovePlan {
  * written.
  *
  * The span mirrors `moveScheduleItem`'s write: an explicit `startMinute`
- * re-times the item keeping its duration (clamped to midnight), `undefined`
- * keeps its time-of-day, `null` clears it to all-day.
+ * re-times the item keeping its duration — across midnight when it no longer
+ * fits the day (a 90-minute block moved to 11:00 PM ends 12:30 AM next day,
+ * stored as a wrapped end) — `undefined` keeps its time-of-day, `null` clears
+ * it to all-day.
  *
  * The clash test is `isSchedulingConflict`, so everything that engine
  * excuses — all-day items, missing or zero-length spans, touching or
@@ -337,12 +362,13 @@ export function planMove({
   /** Everything already on the target day; may include `item` itself. */
   targetItems: ConflictCandidate[];
 }): MovePlan {
-  const duration =
-    item.startMinute !== null && item.endMinute !== null ? item.endMinute - item.startMinute : null;
+  const duration = spanDurationMinutes(item.startMinute, item.endMinute);
 
   const nextStart = startMinute === undefined ? item.startMinute : startMinute;
+  // The duration survives the move; an end past midnight wraps (mod 1440) —
+  // end-before-start is the stored form of "ends next day".
   const nextEnd =
-    nextStart !== null && duration !== null ? Math.min(1439, nextStart + duration) : item.endMinute;
+    nextStart !== null && duration !== null ? (nextStart + duration) % 1440 : item.endMinute;
 
   const span = {
     startMinute: nextStart,
@@ -354,10 +380,10 @@ export function planMove({
     date === item.date && span.startMinute === item.startMinute && span.endMinute === item.endMinute;
   if (unchanged) return { ...span, conflicts: [] };
 
-  const moved: ConflictCandidate = { id: item.id, title: "", status: item.status, ...span };
+  const moved: ConflictCandidate = { id: item.id, title: "", status: item.status, date, ...span };
   const conflicts = targetItems
     .filter((other) => isSchedulingConflict(moved, other))
-    .sort((a, b) => (a.startMinute ?? 0) - (b.startMinute ?? 0))
+    .sort((a, b) => comparePlannerSpans(a, b))
     .map((other) => other.title);
 
   return { ...span, conflicts };

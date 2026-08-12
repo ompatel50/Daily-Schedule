@@ -20,6 +20,7 @@ import { describeGoalTarget } from "@/lib/logic/goals";
 import { aggregateDay, aggregateDayAll, toDisplay, type HealthRowLike } from "@/lib/logic/health";
 import { emptySearchRows, type SearchRows } from "@/lib/logic/search";
 import { operationalDayWhere } from "@/lib/logic/operational-day";
+import { comparePlannerSpans } from "@/lib/logic/schedule-span";
 import {
   describeSchedule,
   resetMinuteOf,
@@ -76,24 +77,30 @@ const SCHEDULE_ITEM_INCLUDE = {
   series: { select: { recurrenceRule: true } },
 } as const;
 
-// `nulls: "first"` pins the SQLite ordering the UI was built on: untimed
-// items sort ahead of timed ones. Postgres would otherwise put them last.
-// Date-ascending also gives operational order for free: an operational day's
-// after-midnight tail lives on the next calendar date, so it sorts last.
+// A coarse database-side pre-sort only — the authoritative chronological
+// order is `comparePlannerSpans` (src/lib/logic/schedule-span.ts), applied
+// in-memory below, because SQL cannot rank a wrapped cross-midnight end
+// (endMinute < startMinute means "ends next day", which must sort AFTER a
+// same-start same-day end). `nulls: "first"` pins the SQLite ordering the UI
+// was built on: untimed items sort ahead of timed ones. Date-ascending gives
+// operational order for free: an operational day's after-midnight tail lives
+// on the next calendar date, so it sorts last.
 const SCHEDULE_ITEM_ORDER = [
   { date: "asc" },
   { allDay: "desc" },
   { startMinute: { sort: "asc", nulls: "first" } },
   { sortOrder: "asc" },
+  { id: "asc" },
 ] as const;
 
 export async function getScheduleItems(from: DayKey, to: DayKey) {
   const user = await getCurrentUser();
-  return prisma.scheduleItem.findMany({
+  const items = await prisma.scheduleItem.findMany({
     where: { userId: user.id, date: { gte: from, lte: to } },
     include: SCHEDULE_ITEM_INCLUDE,
     orderBy: [...SCHEDULE_ITEM_ORDER],
   });
+  return items.sort((a, b) => comparePlannerSpans(a, b));
 }
 
 export type ScheduleItemWithRelations = Awaited<ReturnType<typeof getScheduleItems>>[number];
@@ -106,11 +113,12 @@ export type ScheduleItemWithRelations = Awaited<ReturnType<typeof getScheduleIte
 export async function getDaySchedule(date: DayKey) {
   const user = await getCurrentUser();
   const reset = resetMinuteOf(scheduleSettingsFor(user));
-  return prisma.scheduleItem.findMany({
+  const items = await prisma.scheduleItem.findMany({
     where: { userId: user.id, ...operationalDayWhere(date, reset) },
     include: SCHEDULE_ITEM_INCLUDE,
     orderBy: [...SCHEDULE_ITEM_ORDER],
   });
+  return items.sort((a, b) => comparePlannerSpans(a, b));
 }
 
 export async function getScheduleTemplates() {

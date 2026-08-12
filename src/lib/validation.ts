@@ -58,16 +58,10 @@ export const scheduleItemSchema = z
     tagIds: z.array(z.string()).default([]),
     habitId: z.string().nullable().optional(),
   })
-  .refine(
-    (value) =>
-      value.allDay ||
-      value.startMinute === null ||
-      value.startMinute === undefined ||
-      value.endMinute === null ||
-      value.endMinute === undefined ||
-      value.endMinute >= value.startMinute,
-    { message: "End time must be after the start time", path: ["endMinute"] },
-  )
+  // There is deliberately NO "end must be after start" rule: an end clock
+  // earlier than the start is a valid cross-midnight block (11:45 PM →
+  // 12:15 AM ends on the next calendar day), and an end equal to the start is
+  // a zero-duration point item. See src/lib/logic/schedule-span.ts.
   // A submitted repeat must be one the engine actually understands — silently
   // dropping malformed recurrence would save an item the user believes
   // repeats. The item's own date is the series' start date; the rule's
@@ -721,22 +715,15 @@ export type ConvertInboxItemInput = z.infer<typeof convertInboxItemSchema>;
  * Putting a task on the planner: an ordinary planner block on a chosen day,
  * linked back to the task. All-day unless a start time is given.
  */
-export const scheduleTaskSchema = z
-  .object({
-    taskId: z.string().min(1),
-    date: dayKey,
-    startMinute: optionalMinute,
-    endMinute: optionalMinute,
-  })
-  .refine(
-    (value) =>
-      value.startMinute === null ||
-      value.startMinute === undefined ||
-      value.endMinute === null ||
-      value.endMinute === undefined ||
-      value.endMinute >= value.startMinute,
-    { message: "End time must be after the start time", path: ["endMinute"] },
-  );
+export const scheduleTaskSchema = z.object({
+  taskId: z.string().min(1),
+  date: dayKey,
+  startMinute: optionalMinute,
+  // An end earlier than the start is a cross-midnight block ending on the
+  // next calendar day — valid, same as the planner dialog. See
+  // src/lib/logic/schedule-span.ts.
+  endMinute: optionalMinute,
+});
 
 export type ScheduleTaskInput = z.infer<typeof scheduleTaskSchema>;
 
