@@ -1021,6 +1021,12 @@ model HealthUploadSession {
   userId String
   user   User   @relation(fields: [userId], references: [id], onDelete: Cascade)
 
+  /// What the staged bytes are: "health" (an Apple Health archive) or
+  /// "backup" (a personal-os backup JSON). One transport, two consumers —
+  /// each finalize endpoint asserts the kind it expects, so a backup can
+  /// never be fed to the health parser or vice versa.
+  kind String @default("health")
+
   /// receiving → parsing → (deleted). A failed parse deletes the parts and
   /// keeps the row only long enough to answer the request that failed.
   status String @default("receiving")
