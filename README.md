@@ -527,11 +527,20 @@ Manual-first money tracking: no bank sync, no third-party integration, nothing l
   importer detects common columns (date, amount **or** debit/credit **or** amount + type,
   description, category, notes, currency), shows the mapping, auto-detects — and lets you flip —
   the day/month order of slash dates, validates every row with per-line messages, and refuses
-  rows whose currency doesn't match the target account. Every row gets a deterministic import
-  identity, so re-importing the same file (or an overlapping export window) skips duplicates
-  instead of creating them, while two genuinely identical purchases in one file both import. The
-  commit is one transaction — a failure writes nothing — and an audit batch records file name and
-  created/skipped/rejected counts. A template lives at `/finance-import-template.csv`.
+  rows whose currency doesn't match the target account. When the file's amounts carry explicit
+  signs, the signs are the directions and the type column only cross-checks (a contradiction is
+  flagged in the preview, never rewritten — so a credit-card export's "Payment" rows stay money
+  *in*); only unsigned magnitudes take their direction from the type column, which understands
+  the common card-issuer vocabulary (sale/fee/charge out, return/reversal in) and still rejects
+  unknown values by name. A category cell that says `transfer` or `adjustment` imports as that
+  bookkeeping category — surfaced clearly in the preview, since such rows change balances but
+  never income or spending — and any category value the app doesn't recognise is offered a
+  one-click mapping in the preview, persisted per user so every later import applies it
+  automatically. Every row gets a deterministic import identity, so re-importing the same file
+  (or an overlapping export window) skips duplicates instead of creating them, while two
+  genuinely identical purchases in one file both import. The commit is one transaction — a
+  failure writes nothing — and an audit batch records file name and created/skipped/rejected
+  counts. A template lives at `/finance-import-template.csv`.
 * **Undo an import**: every import run is listed under **CSV imports** on the finance page with
   an **Undo** button. Undo previews first — how many rows it will remove, how many it will keep
   and why — and then removes *only* the rows that batch created and still owns, in one

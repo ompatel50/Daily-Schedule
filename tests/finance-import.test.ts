@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 
+import { summarizeTransactions } from "@/lib/logic/finance";
 import {
   buildImportKey,
   classifyImportUndoRow,
@@ -8,10 +9,12 @@ import {
   FINANCE_IMPORT_MAX_ROWS,
   importedRowIsUnchanged,
   mapCsvCategory,
+  moneyHasExplicitSign,
   parseCsvDate,
   parseFinanceCsv,
   parseMoneyValue,
   planImportUndo,
+  resolveCsvCategory,
   type ImportUndoCandidate,
 } from "@/lib/logic/finance-import";
 
@@ -108,9 +111,71 @@ describe("category mapping", () => {
     expect(mapCsvCategory("")).toBe("other");
   });
 
-  it("never maps into bookkeeping categories — imports record real movement", () => {
-    expect(mapCsvCategory("adjustment")).toBe("other");
-    expect(mapCsvCategory("transfer")).toBe("other");
+  it("maps explicit bookkeeping values — a file that says transfer means it", () => {
+    // The old behaviour sent these to "other", where a positive card payment
+    // counted as income. An explicit key or label is the file saying so.
+    expect(mapCsvCategory("transfer")).toBe("transfer");
+    expect(mapCsvCategory("Transfer")).toBe("transfer");
+    expect(mapCsvCategory("adjustment")).toBe("adjustment");
+    expect(mapCsvCategory("Balance adjustment")).toBe("adjustment");
+  });
+
+  it("applies persisted user rules after built-ins, case-insensitively", () => {
+    const rules = { "food & drink": "dining", payment: "transfer" } as const;
+    expect(mapCsvCategory("Food & Drink", rules)).toBe("dining");
+    expect(mapCsvCategory("PAYMENT", rules)).toBe("transfer");
+    expect(mapCsvCategory("unmapped thing", rules)).toBe("other");
+  });
+
+  it("a built-in match beats a rule, and an invalid rule target is ignored", () => {
+    // A rule can only exist for values the built-ins missed, but a database
+    // is forever — neither a stale rule shadowing a real category nor a
+    // corrupted target may decide anything.
+    expect(mapCsvCategory("groceries", { groceries: "dining" } as never)).toBe("groceries");
+    expect(mapCsvCategory("weird", { weird: "not-a-category" } as never)).toBe("other");
+  });
+
+  it("resolveCsvCategory reports what fell through and what a rule decided", () => {
+    expect(resolveCsvCategory("Food & Drink")).toEqual({
+      category: "other",
+      unmatched: "Food & Drink",
+      viaRule: false,
+    });
+    expect(resolveCsvCategory("Food & Drink", { "food & drink": "dining" })).toEqual({
+      category: "dining",
+      unmatched: null,
+      viaRule: true,
+    });
+    expect(resolveCsvCategory("Dining")).toEqual({
+      category: "dining",
+      unmatched: null,
+      viaRule: false,
+    });
+    expect(resolveCsvCategory("")).toEqual({ category: "other", unmatched: null, viaRule: false });
+    // A rule to "other" is "stop offering to map this" — applied, not unmatched.
+    expect(resolveCsvCategory("Misc", { misc: "other" })).toEqual({
+      category: "other",
+      unmatched: null,
+      viaRule: true,
+    });
+  });
+});
+
+describe("explicit sign detection", () => {
+  it("sees minus, plus, parentheses and unicode minus through symbols", () => {
+    expect(moneyHasExplicitSign("-42.50")).toBe(true);
+    expect(moneyHasExplicitSign("+7")).toBe(true);
+    expect(moneyHasExplicitSign("(45.00)")).toBe(true);
+    expect(moneyHasExplicitSign("−12.00")).toBe(true);
+    expect(moneyHasExplicitSign("$-1,234.56")).toBe(true);
+    expect(moneyHasExplicitSign("USD -99.10")).toBe(true);
+  });
+
+  it("bare magnitudes carry no sign", () => {
+    expect(moneyHasExplicitSign("42.50")).toBe(false);
+    expect(moneyHasExplicitSign("$1,234.56")).toBe(false);
+    expect(moneyHasExplicitSign("")).toBe(false);
+    expect(moneyHasExplicitSign("abc")).toBe(false);
   });
 });
 
@@ -161,7 +226,7 @@ describe("parseFinanceCsv", () => {
     expect(result.invalid[0].message).toContain("must be positive");
   });
 
-  it("applies a type column's direction to the amount", () => {
+  it("applies a type column's direction to unsigned magnitudes", () => {
     const result = parseFinanceCsv(
       csv([
         "date,amount,type",
@@ -171,9 +236,119 @@ describe("parseFinanceCsv", () => {
       ]),
       OPTS,
     );
+    expect(result.amountsSigned).toBe(false);
     expect(result.rows.map((row) => row.amount)).toEqual([-42.5, 100]);
     expect(result.invalid).toHaveLength(1);
     expect(result.invalid[0].message).toContain("debit/credit marker");
+  });
+
+  describe("signed amounts vs the type column", () => {
+    it("trusts the sign — a typed payment stays money in on a credit card", () => {
+      // The defining case: a card export types its payments "Payment" while
+      // the signed amount says +300 (money in). Forcing the type's bank-file
+      // direction turned every card payment into invented spending — and its
+      // mirror image inflated income.
+      const result = parseFinanceCsv(
+        csv([
+          "date,amount,type,description",
+          "2026-07-01,-42.50,Sale,AMAZON MKTPL",
+          "2026-07-03,300.00,Payment,Payment Thank You - Web",
+        ]),
+        OPTS,
+      );
+      expect(result.amountsSigned).toBe(true);
+      expect(result.rows.map((row) => row.amount)).toEqual([-42.5, 300]);
+      expect(result.rows.every((row) => row.signConflict === undefined)).toBe(true);
+      expect(result.invalid).toEqual([]);
+    });
+
+    it("flags a genuine contradiction instead of rewriting or rejecting", () => {
+      const result = parseFinanceCsv(
+        csv([
+          "date,amount,type",
+          "2026-07-01,-42.50,Sale", // consistent
+          "2026-07-02,10.00,Sale", // a Sale that claims money in — flagged
+          "2026-07-03,-20.00,Refund", // a Refund that claims money out — flagged
+        ]),
+        OPTS,
+      );
+      expect(result.rows.map((row) => row.amount)).toEqual([-42.5, 10, -20]);
+      expect(result.rows.map((row) => row.signConflict)).toEqual([undefined, "Sale", "Refund"]);
+      expect(result.invalid).toEqual([]);
+    });
+
+    it("never flags account-relative types — payment and adjustment go either way", () => {
+      const result = parseFinanceCsv(
+        csv([
+          "date,amount,type",
+          "2026-07-01,300.00,Payment", // money IN to a card — correct
+          "2026-07-02,-300.00,Payment", // money OUT of a bank — also correct
+          "2026-07-03,5.00,Adjustment",
+          "2026-07-04,-5.00,Adjustment",
+        ]),
+        OPTS,
+      );
+      expect(result.rows).toHaveLength(4);
+      expect(result.rows.every((row) => row.signConflict === undefined)).toBe(true);
+    });
+
+    it("accepts unknown type values when the sign already fixes the direction", () => {
+      const result = parseFinanceCsv(
+        csv(["date,amount,type", "2026-07-01,-42.50,Whatever", "2026-07-02,10.00,ACH_HOLD"]),
+        OPTS,
+      );
+      expect(result.rows.map((row) => row.amount)).toEqual([-42.5, 10]);
+      expect(result.invalid).toEqual([]);
+    });
+  });
+
+  describe("card-issuer type values on unsigned magnitudes", () => {
+    it("sale, fee and charge are money out; return and reversal money in", () => {
+      const result = parseFinanceCsv(
+        csv([
+          "date,amount,type",
+          "2026-07-01,42.50,Sale",
+          "2026-07-02,95.00,Fee",
+          "2026-07-03,12.00,Charge",
+          "2026-07-04,15.00,Return",
+          "2026-07-05,20.00,Reversal",
+        ]),
+        OPTS,
+      );
+      expect(result.amountsSigned).toBe(false);
+      expect(result.rows.map((row) => row.amount)).toEqual([-42.5, -95, -12, 15, 20]);
+      expect(result.invalid).toEqual([]);
+    });
+
+    it("payment on unsigned magnitudes keeps the bank-file convention: money out", () => {
+      const result = parseFinanceCsv(
+        csv(["date,amount,type", "2026-07-01,120.00,Payment"]),
+        OPTS,
+      );
+      expect(result.rows.map((row) => row.amount)).toEqual([-120]);
+    });
+
+    it("rejects an unsigned adjustment — its direction is unknowable", () => {
+      const result = parseFinanceCsv(
+        csv(["date,amount,type", "2026-07-01,5.00,Adjustment"]),
+        OPTS,
+      );
+      expect(result.rows).toHaveLength(0);
+      expect(result.invalid[0].message).toContain("signed amount");
+    });
+
+    it("still rejects genuinely unknown values, naming the accepted ones", () => {
+      const result = parseFinanceCsv(
+        csv(["date,amount,type", "2026-07-01,5.00,Mystery"]),
+        OPTS,
+      );
+      expect(result.rows).toHaveLength(0);
+      expect(result.invalid[0].message).toContain('type "Mystery"');
+      expect(result.invalid[0].message).toContain("sale");
+      expect(result.invalid[0].message).toContain("reversal");
+      expect(result.invalid[0].message).toContain("money out");
+      expect(result.invalid[0].message).toContain("money in");
+    });
   });
 
   it("rejects invalid rows individually with line numbers, keeping the rest", () => {
@@ -273,6 +448,142 @@ describe("parseFinanceCsv", () => {
       const one = parseFinanceCsv(content, OPTS);
       const two = parseFinanceCsv(content, { ...OPTS, accountId: "acc2" });
       expect(one.rows[0].importKey).not.toBe(two.rows[0].importKey);
+    });
+  });
+
+  describe("a Chase-shaped card export", () => {
+    // The real column set and Type vocabulary of a Chase credit-card CSV:
+    // signed amounts, Sale/Payment/Fee/Adjustment/Return types, and both a
+    // Transaction Date and a Post Date.
+    const CHASE = csv([
+      "Transaction Date,Post Date,Description,Category,Type,Amount,Memo",
+      "07/01/2026,07/02/2026,AMAZON MKTPL*XY123,Shopping,Sale,-42.50,",
+      "07/03/2026,07/03/2026,Payment Thank You-Mobile,,Payment,300.00,",
+      "07/05/2026,07/06/2026,ANNUAL MEMBERSHIP FEE,Fees,Fee,-95.00,",
+      "07/07/2026,07/08/2026,STATEMENT CREDIT,,Adjustment,5.00,",
+      "07/09/2026,07/10/2026,AMAZON MKTPL REFUND,Shopping,Return,15.00,card credit",
+    ]);
+
+    it("imports every row with its sign intact — nothing rejected, nothing flipped", () => {
+      const result = parseFinanceCsv(CHASE, OPTS);
+      expect(result.errors).toEqual([]);
+      expect(result.invalid).toEqual([]);
+      expect(result.amountsSigned).toBe(true);
+      expect(result.rows.map((row) => row.amount)).toEqual([-42.5, 300, -95, 5, 15]);
+      expect(result.rows.every((row) => row.signConflict === undefined)).toBe(true);
+      // The payment arrives as money IN — the inversion this fixture guards.
+      expect(result.rows[1].amount).toBeGreaterThan(0);
+    });
+
+    it("maps the Chase columns: Transaction Date wins, Post Date is reported", () => {
+      const result = parseFinanceCsv(CHASE, OPTS);
+      expect(result.mapping.columns.date).toBe(0);
+      expect(result.mapping.unmapped).toEqual(["Post Date"]);
+      expect(result.mapping.columns.payee).toBe(2);
+      expect(result.mapping.columns.category).toBe(3);
+      expect(result.mapping.columns.type).toBe(4);
+      expect(result.mapping.columns.amount).toBe(5);
+      expect(result.mapping.columns.notes).toBe(6);
+      expect(result.rows[0].date).toBe("2026-07-01");
+      expect(result.rows[4].notes).toBe("card credit");
+    });
+
+    it("a file that is only a Post Date still has a date column", () => {
+      const result = parseFinanceCsv(
+        csv(["Post Date,Amount", "2026-07-01,-1.00"]),
+        OPTS,
+      );
+      expect(result.errors).toEqual([]);
+      expect(result.rows[0].date).toBe("2026-07-01");
+    });
+  });
+
+  describe("the credit-card payment round trip", () => {
+    // A statement with one purchase and the payment that settled it — the
+    // Category cell says "Payment", as several issuers write it.
+    const STATEMENT = csv([
+      "Transaction Date,Post Date,Description,Category,Type,Amount,Memo",
+      "07/01/2026,07/02/2026,GROCERY STORE,Groceries,Sale,-120.00,",
+      "07/03/2026,07/03/2026,Payment Thank You-Mobile,Payment,Payment,300.00,",
+    ]);
+
+    it("without a mapping, the payment's category is offered for mapping", () => {
+      const result = parseFinanceCsv(STATEMENT, OPTS);
+      expect(result.rows[1]).toMatchObject({ amount: 300, category: "other" });
+      expect(result.unmappedCategories).toEqual([{ value: "Payment", count: 1 }]);
+      expect(result.appliedRules).toEqual([]);
+    });
+
+    it("with the mapping, it lands money-in, category transfer, out of income", () => {
+      const result = parseFinanceCsv(STATEMENT, {
+        ...OPTS,
+        categoryRules: { payment: "transfer" },
+      });
+      expect(result.invalid).toEqual([]);
+      expect(result.unmappedCategories).toEqual([]);
+      expect(result.appliedRules).toEqual([{ value: "Payment", category: "transfer", count: 1 }]);
+
+      const payment = result.rows[1];
+      expect(payment.amount).toBe(300); // money in — the sign was trusted
+      expect(payment.category).toBe("transfer"); // bookkeeping, by the rule
+      expect(payment.categoryViaRule).toBe(true);
+
+      // And the summary maths agree: the payment moves balances, not income.
+      const summary = summarizeTransactions(
+        result.rows.map((row) => ({ amount: row.amount, category: row.category })),
+      );
+      expect(summary.income).toBe(0);
+      expect(summary.spending).toBe(120);
+      expect(summary.count).toBe(1);
+    });
+  });
+
+  describe("unmapped category collection", () => {
+    it("collects distinct values with counts; first-seen casing displays", () => {
+      const result = parseFinanceCsv(
+        csv([
+          "date,amount,category",
+          "2026-07-01,-1,Food & Drink",
+          "2026-07-02,-2,FOOD & DRINK",
+          "2026-07-03,-3,Bills & Utilities",
+          "2026-07-04,-4,groceries", // built-in — not unmapped
+          "2026-07-05,-5,", // empty — not a value to map
+        ]),
+        OPTS,
+      );
+      expect(result.unmappedCategories).toEqual([
+        { value: "Food & Drink", count: 2 },
+        { value: "Bills & Utilities", count: 1 },
+      ]);
+      expect(result.rows.map((row) => row.category)).toEqual([
+        "other",
+        "other",
+        "other",
+        "groceries",
+        "other",
+      ]);
+    });
+
+    it("a rule to other applies silently instead of re-offering the value", () => {
+      const result = parseFinanceCsv(
+        csv(["date,amount,category", "2026-07-01,-1,Misc"]),
+        { ...OPTS, categoryRules: { misc: "other" } },
+      );
+      expect(result.unmappedCategories).toEqual([]);
+      expect(result.appliedRules).toEqual([{ value: "Misc", category: "other", count: 1 }]);
+    });
+
+    it("explicit bookkeeping categories from the file survive the parse", () => {
+      const result = parseFinanceCsv(
+        csv([
+          "date,amount,category,description",
+          "2026-07-01,300.00,Transfer,Card payment",
+          "2026-07-02,-12.34,Balance adjustment,Correction",
+        ]),
+        OPTS,
+      );
+      expect(result.rows.map((row) => row.category)).toEqual(["transfer", "adjustment"]);
+      expect(result.unmappedCategories).toEqual([]);
     });
   });
 

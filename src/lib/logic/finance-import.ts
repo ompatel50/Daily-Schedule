@@ -2,7 +2,6 @@ import { isDayKey, type DayKey } from "@/lib/date";
 import {
   FINANCE_CATEGORIES,
   FINANCE_CATEGORY_META,
-  isBookkeepingCategory,
   type FinanceCategory,
 } from "@/lib/enums";
 import { moneyRound } from "@/lib/logic/finance";
@@ -29,12 +28,27 @@ import { parseCsvRows } from "@/lib/logic/health-import/csv";
  *                          `(45.00)` and `−45.00` all parse. *Alternatively the
  *                          file may carry `debit` / `credit` columns (positive
  *                          magnitudes, one per row), or `amount` plus a `type`
- *                          column (`debit|credit|…`) that fixes the direction.
+ *                          column (`debit|credit|sale|payment|…`). When any
+ *                          amount in the file carries an explicit sign the
+ *                          signs ARE the directions, and the type column is
+ *                          only a cross-check: a contradiction is flagged in
+ *                          the preview, never rewritten. (A credit-card export
+ *                          types its payments "Payment" while the signed
+ *                          amount says money in — the sign is right, and the
+ *                          old behaviour of letting the type force it negative
+ *                          inverted every card payment.) Only when every
+ *                          amount is an unsigned magnitude does the type
+ *                          column decide the direction.
  *   description optional   payee / merchant free text (`payee`, `merchant`…)
  *   category    optional   matched case-insensitively against the app's
- *                          category keys and labels; anything else lands in
- *                          `other`. Bookkeeping categories are refused —
- *                          imports record real money movement.
+ *                          category keys and labels, then against the user's
+ *                          own persisted mappings; anything else lands in
+ *                          `other` and the preview offers to map it. A file
+ *                          that explicitly says `transfer` or `adjustment` —
+ *                          or a persisted mapping that targets them — imports
+ *                          as that bookkeeping category, surfaced clearly in
+ *                          the preview: such rows change the account balance
+ *                          but stay out of income and spending.
  *   notes       optional   free text
  *   currency    optional   ISO code; a row whose currency differs from the
  *                          target account's is rejected, not converted.
@@ -82,6 +96,7 @@ const COLUMN_ALIASES: Record<string, FinanceCsvField> = {
   // date
   date: "date",
   "transaction date": "date",
+  "post date": "date",
   "posted date": "date",
   "posting date": "date",
   "date posted": "date",
@@ -131,9 +146,48 @@ const COLUMN_ALIASES: Record<string, FinanceCsvField> = {
   "account number": "account",
 };
 
-/** `type` column values that mean money out / money in. Anything else rejects. */
-const DEBIT_TYPES = new Set(["debit", "dr", "d", "expense", "withdrawal", "out", "payment", "purchase"]);
-const CREDIT_TYPES = new Set(["credit", "cr", "c", "income", "deposit", "in", "refund"]);
+/**
+ * `type` column values that decide the direction when the file's amounts are
+ * unsigned magnitudes. When the amounts are signed, these only cross-check.
+ */
+const DEBIT_TYPES = new Set([
+  "debit",
+  "dr",
+  "d",
+  "expense",
+  "withdrawal",
+  "out",
+  "payment",
+  "purchase",
+  "sale",
+  "fee",
+  "charge",
+]);
+const CREDIT_TYPES = new Set([
+  "credit",
+  "cr",
+  "c",
+  "income",
+  "deposit",
+  "in",
+  "refund",
+  "return",
+  "reversal",
+]);
+
+/**
+ * Values whose real direction depends on the account rather than the word: a
+ * "payment" is money OUT of a bank account but money IN to a credit card, and
+ * an "adjustment" can correct either way. Against a signed amount these never
+ * contradict the sign. Against unsigned magnitudes, "payment" falls back to
+ * the bank-file convention above (money out — the one direction unsigned bank
+ * exports actually use it for) and "adjustment" is rejected, because its
+ * direction is unknowable without a sign.
+ */
+const ACCOUNT_RELATIVE_TYPES = new Set(["payment", "adjustment"]);
+
+/** The accepted `type` values, spelled from the sets so this never drifts. */
+const TYPE_VALUES_HELP = `accepted values — money out: ${[...DEBIT_TYPES].join(", ")}; money in: ${[...CREDIT_TYPES].join(", ")}.`;
 
 const MAX_ROW_ERRORS = 12;
 
@@ -192,6 +246,23 @@ export function parseMoneyValue(raw: string): number | null {
   return negative ? -value : value;
 }
 
+/**
+ * Does this amount cell carry an explicit sign — a minus, a plus, or
+ * accounting parentheses? Mirrors `parseMoneyValue`'s normalisation, because
+ * the two must agree on what "signed" means. This is how the parser decides,
+ * per file, whether amounts are signed values (the signs are the directions)
+ * or unsigned magnitudes (a `type` column decides). The honest limit: a file
+ * whose window happens to contain only money-in rows looks unsigned — no
+ * heuristic can tell "all positive" from "all magnitudes".
+ */
+export function moneyHasExplicitSign(raw: string): boolean {
+  let text = raw.trim().replace(/−/g, "-"); // unicode minus
+  if (text === "") return false;
+  if (/^\(.*\)$/.test(text)) return true;
+  text = text.replace(/[$€£¥]|[A-Za-z]{3}/g, "").trim();
+  return text.startsWith("-") || text.startsWith("+");
+}
+
 /** A date cell under an explicit day/month order. Null when unparsable. */
 export function parseCsvDate(raw: string, order: CsvDateOrder): DayKey | null {
   const text = raw.trim();
@@ -237,17 +308,49 @@ export function detectDateOrder(
   return { order: "mdy", ambiguous: mdyPossible && dmyPossible };
 }
 
-/** Case-insensitive category match against keys and labels; unknown → other. */
-export function mapCsvCategory(raw: string): FinanceCategory {
+/**
+ * Persisted per-user category mappings, keyed by the trimmed, lowercased cell
+ * value. Written from the import preview's quick-map selectors; a mapping may
+ * target any category — mapping a card issuer's "Payment" onto `transfer` is
+ * the point — including `other`, which means "stop offering to map this".
+ */
+export type CsvCategoryRules = Readonly<Record<string, FinanceCategory>>;
+
+export interface CsvCategoryResolution {
+  category: FinanceCategory;
+  /** The trimmed cell value when it matched nothing and fell back to `other`. */
+  unmatched: string | null;
+  /** True when a persisted user mapping decided the category. */
+  viaRule: boolean;
+}
+
+/**
+ * Case-insensitive category match against the app's keys and labels, then the
+ * user's own persisted mappings; anything else falls back to `other` and is
+ * reported as unmatched so the preview can offer to map it. Bookkeeping
+ * categories (`transfer`, `adjustment`) resolve like any other when the file
+ * names them explicitly — a card payment IS a transfer, and refusing to say so
+ * was what let positive card payments masquerade as income. The preview
+ * surfaces such rows; summaries exclude them by category.
+ */
+export function resolveCsvCategory(raw: string, rules?: CsvCategoryRules): CsvCategoryResolution {
   const text = raw.trim().toLowerCase();
-  if (!text) return "other";
+  if (!text) return { category: "other", unmatched: null, viaRule: false };
   for (const category of FINANCE_CATEGORIES) {
-    if (isBookkeepingCategory(category)) continue;
     if (category === text || FINANCE_CATEGORY_META[category].label.toLowerCase() === text) {
-      return category;
+      return { category, unmatched: null, viaRule: false };
     }
   }
-  return "other";
+  const rule = rules?.[text];
+  if (rule && (FINANCE_CATEGORIES as readonly string[]).includes(rule)) {
+    return { category: rule, unmatched: null, viaRule: true };
+  }
+  return { category: "other", unmatched: raw.trim(), viaRule: false };
+}
+
+/** `resolveCsvCategory` reduced to the category alone. */
+export function mapCsvCategory(raw: string, rules?: CsvCategoryRules): FinanceCategory {
+  return resolveCsvCategory(raw, rules).category;
 }
 
 export interface FinanceImportRow {
@@ -261,6 +364,14 @@ export interface FinanceImportRow {
   notes: string | null;
   /** The deterministic dedup identity — see the module docs. */
   importKey: string;
+  /**
+   * Set when the row's `type` value contradicts its signed amount (the type
+   * cell's own text, for display). The sign wins — this is a preview flag,
+   * never a rewrite and never a rejection.
+   */
+  signConflict?: string;
+  /** True when a persisted user category mapping decided this row's category. */
+  categoryViaRule?: boolean;
 }
 
 export interface FinanceCsvParseResult {
@@ -272,10 +383,25 @@ export interface FinanceCsvParseResult {
   dateOrderAmbiguous: boolean;
   /** Data rows examined (header excluded). */
   examined: number;
+  /**
+   * True when the amount column's values carry explicit signs (so the signs
+   * are the directions and any `type` column only cross-checks); false when
+   * they are unsigned magnitudes (the `type` column decides). Meaningless —
+   * and false — for files with split debit/credit columns or no amount column.
+   */
+  amountsSigned: boolean;
   rows: FinanceImportRow[];
   invalid: Array<{ line: number; message: string }>;
   /** Capped copy of `invalid` for display. */
   invalidShown: Array<{ line: number; message: string }>;
+  /**
+   * Distinct category cell values that matched nothing — no key, no label, no
+   * persisted mapping — and fell back to `other`, in file order with row
+   * counts. The preview offers a quick-map selector for each.
+   */
+  unmappedCategories: Array<{ value: string; count: number }>;
+  /** Persisted mappings that decided at least one row, with row counts. */
+  appliedRules: Array<{ value: string; category: FinanceCategory; count: number }>;
 }
 
 function emptyResult(mapping: FinanceCsvMapping): FinanceCsvParseResult {
@@ -285,9 +411,12 @@ function emptyResult(mapping: FinanceCsvMapping): FinanceCsvParseResult {
     dateOrder: "iso",
     dateOrderAmbiguous: false,
     examined: 0,
+    amountsSigned: false,
     rows: [],
     invalid: [],
     invalidShown: [],
+    unmappedCategories: [],
+    appliedRules: [],
   };
 }
 
@@ -305,6 +434,8 @@ export function parseFinanceCsv(
     accountCurrency: string;
     /** Override the auto-detected day/month order (the preview offers this). */
     dateOrder?: CsvDateOrder;
+    /** The user's persisted category mappings — see `CsvCategoryRules`. */
+    categoryRules?: CsvCategoryRules;
   },
 ): FinanceCsvParseResult {
   const result = emptyResult({ columns: {}, headers: {}, unmapped: [] });
@@ -358,9 +489,22 @@ export function parseFinanceCsv(
   result.dateOrder = dateOrder;
   result.dateOrderAmbiguous = detected.ambiguous;
 
+  // Signed amounts or unsigned magnitudes? Decided once, over the whole file:
+  // one explicit sign anywhere means this export writes signed values, and a
+  // row-by-row guess would let "42.50, Payment" flip while "-42.50, Sale"
+  // held — the exact inconsistency this decision exists to prevent.
+  result.amountsSigned =
+    columns.amount !== undefined &&
+    rows.slice(1).some((cells) => moneyHasExplicitSign(cell(cells, "amount")));
+
   const rowError = (line: number, message: string): void => {
     result.invalid.push({ line, message });
   };
+
+  // Distinct-value accumulators for the preview, keyed case-insensitively;
+  // the first-seen original casing is what gets displayed.
+  const unmapped = new Map<string, { value: string; count: number }>();
+  const ruleHits = new Map<string, { value: string; category: FinanceCategory; count: number }>();
 
   // Occurrence counter per identity, so two identical rows in one file both
   // import while a re-imported file collides row for row.
@@ -385,6 +529,7 @@ export function parseFinanceCsv(
 
     // --- amount: signed column, debit/credit split, or amount + type --------
     let amount: number | null = null;
+    let signConflict: string | undefined;
     const amountRaw = cell(cells, "amount");
     const debitRaw = cell(cells, "debit");
     const creditRaw = cell(cells, "credit");
@@ -396,11 +541,36 @@ export function parseFinanceCsv(
         continue;
       }
       const typeRaw = cell(cells, "type").toLowerCase();
-      if (typeRaw) {
+      if (typeRaw && result.amountsSigned) {
+        // The file writes signed amounts, so the sign is the direction and the
+        // type column only cross-checks. A contradiction is flagged for the
+        // preview, never rewritten: rewriting is exactly what turned every
+        // credit-card payment (type "Payment", signed money-in) into money
+        // out. Account-relative values and unknown values have no fixed
+        // direction to contradict.
+        if (!ACCOUNT_RELATIVE_TYPES.has(typeRaw)) {
+          if (
+            (DEBIT_TYPES.has(typeRaw) && amount > 0) ||
+            (CREDIT_TYPES.has(typeRaw) && amount < 0)
+          ) {
+            signConflict = cell(cells, "type");
+          }
+        }
+      } else if (typeRaw) {
+        // Unsigned magnitudes: the type column is the only direction there is.
         if (DEBIT_TYPES.has(typeRaw)) amount = -Math.abs(amount);
         else if (CREDIT_TYPES.has(typeRaw)) amount = Math.abs(amount);
-        else {
-          rowError(line, `type "${cell(cells, "type")}" is not a recognised debit/credit marker.`);
+        else if (typeRaw === "adjustment") {
+          rowError(
+            line,
+            `type "${cell(cells, "type")}" does not say which way the money moved — with unsigned amounts an adjustment's direction is unknowable. Use a signed amount column.`,
+          );
+          continue;
+        } else {
+          rowError(
+            line,
+            `type "${cell(cells, "type")}" is not a recognised debit/credit marker; ${TYPE_VALUES_HELP}`,
+          );
           continue;
         }
       }
@@ -448,7 +618,23 @@ export function parseFinanceCsv(
 
     const payee = cell(cells, "payee").slice(0, 200) || null;
     const notes = cell(cells, "notes").slice(0, 2000) || null;
-    const category = mapCsvCategory(cell(cells, "category"));
+    const resolved = resolveCsvCategory(cell(cells, "category"), options.categoryRules);
+    if (resolved.unmatched !== null) {
+      const key = resolved.unmatched.toLowerCase();
+      const entry = unmapped.get(key) ?? { value: resolved.unmatched, count: 0 };
+      entry.count += 1;
+      unmapped.set(key, entry);
+    }
+    if (resolved.viaRule) {
+      const key = cell(cells, "category").trim().toLowerCase();
+      const entry = ruleHits.get(key) ?? {
+        value: cell(cells, "category").trim(),
+        category: resolved.category,
+        count: 0,
+      };
+      entry.count += 1;
+      ruleHits.set(key, entry);
+    }
 
     const identity = `${date}|${amount}|${(payee ?? "").toLowerCase()}`;
     const occurrence = seen.get(identity) ?? 0;
@@ -459,9 +645,11 @@ export function parseFinanceCsv(
       date,
       amount,
       payee,
-      category,
+      category: resolved.category,
       notes,
       importKey: buildImportKey({ accountId: options.accountId, date, amount, payee }, occurrence),
+      ...(signConflict !== undefined ? { signConflict } : {}),
+      ...(resolved.viaRule ? { categoryViaRule: true } : {}),
     });
   }
 
@@ -469,6 +657,8 @@ export function parseFinanceCsv(
     result.errors.push("No row in the file passed validation.");
   }
   result.invalidShown = result.invalid.slice(0, MAX_ROW_ERRORS);
+  result.unmappedCategories = [...unmapped.values()];
+  result.appliedRules = [...ruleHits.values()];
   return result;
 }
 

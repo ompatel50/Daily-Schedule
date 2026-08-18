@@ -132,6 +132,7 @@ model User {
   savingsGoals      SavingsGoal[]
   budgets           Budget[]
   financeImportBatches FinanceImportBatch[]
+  financeCategoryRules FinanceCategoryRule[]
   inboxItems        InboxItem[]
   documents         LifeDocument[]
   assistantProposals AssistantProposal[]
@@ -1812,6 +1813,31 @@ model FinanceImportBatch {
 
   @@index([userId, createdAt])
   @@index([accountId])
+}
+
+/// A persisted CSV category mapping: when an import's category cell says
+/// `value` (matched case-insensitively) and it matches none of the app's
+/// category keys or labels, the row imports as `category` instead of falling
+/// back to "other". Written from the import preview's quick-map selectors and
+/// applied automatically to every later import by the same user. See
+/// resolveCsvCategory in src/lib/logic/finance-import.ts.
+model FinanceCategoryRule {
+  id     String @id @default(cuid())
+  userId String
+  user   User   @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  /// The file's category value, trimmed and lowercased — the case-insensitive
+  /// match key.
+  value    String
+  /// See FINANCE_CATEGORIES in src/lib/enums.ts. May name a bookkeeping
+  /// category: mapping a card issuer's "Payment" onto `transfer` is the point.
+  /// A mapping onto `other` means "keep as Other and stop offering to map".
+  category String
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@unique([userId, value])
 }
 
 // ---------------------------------------------------------------------------

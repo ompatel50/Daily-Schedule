@@ -15,7 +15,7 @@ import {
   DialogTitle,
 } from "@/components/ui/dialog";
 import { Skeleton } from "@/components/ui/skeleton";
-import type { ImportBatchView } from "@/components/finance/finance-board";
+import type { ImportBatchView } from "@/components/finance/import-batches-section";
 import { formatDay } from "@/lib/date";
 import { formatMoney } from "@/lib/logic/finance";
 import { pluralize } from "@/lib/utils";

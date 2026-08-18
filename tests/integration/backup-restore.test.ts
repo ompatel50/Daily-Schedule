@@ -9,6 +9,7 @@
  */
 import { beforeEach, describe, expect, it } from "vitest";
 
+import { BACKUP_VERSION } from "@/lib/backup-format";
 import { prisma } from "@/lib/prisma";
 import { remapId } from "@/server/backup-restore";
 import { importBackup, previewBackup, exportBackup } from "@/server/actions/backup";
@@ -1017,7 +1018,7 @@ describe("health import batches across the backup boundary", () => {
     const exported = await exportBackup();
     expect(exported.ok).toBe(true);
     if (!exported.ok) return;
-    expect(exported.data.version).toBe(8);
+    expect(exported.data.version).toBe(BACKUP_VERSION);
     const [row] = exported.data.data.healthImportBatches as Array<Record<string, unknown>>;
     expect(row.protectedRows).toBe(5);
     expect(row.formatVersion).toBe(2);
@@ -1088,9 +1089,9 @@ describe("health import batches across the backup boundary", () => {
   });
 
   it("refuses a file claiming a format this app does not read", async () => {
-    // The guarantee the version bump buys: a v8 file taken to an older build
-    // is refused rather than silently restored without its newer columns.
-    const future = { app: "personal-os", version: 9, exportedAt: NOW, data: {} };
+    // The guarantee the version bump buys: a newer file taken to an older
+    // build is refused rather than silently restored without its newer parts.
+    const future = { app: "personal-os", version: BACKUP_VERSION + 1, exportedAt: NOW, data: {} };
     const preview = await previewBackup(future);
     expect(preview.ok).toBe(true);
     if (!preview.ok) return;

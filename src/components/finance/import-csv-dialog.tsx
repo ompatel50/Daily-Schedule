@@ -2,7 +2,7 @@
 
 import * as React from "react";
 import { useRouter } from "next/navigation";
-import { FileUp, Loader2, Upload } from "lucide-react";
+import { FileUp, Loader2, Upload, X } from "lucide-react";
 import { toast } from "sonner";
 
 import { Badge } from "@/components/ui/badge";
@@ -26,13 +26,19 @@ import {
 import { Switch } from "@/components/ui/switch";
 import type { AccountView } from "@/components/finance/account-dialog";
 import { formatDay } from "@/lib/date";
-import { FINANCE_CATEGORY_META, type FinanceCategory } from "@/lib/enums";
+import {
+  FINANCE_CATEGORIES,
+  FINANCE_CATEGORY_META,
+  type FinanceCategory,
+} from "@/lib/enums";
 import { formatMoney } from "@/lib/logic/finance";
 import { FINANCE_CSV_FIELDS, type FinanceCsvField } from "@/lib/logic/finance-import";
 import { cn, pluralize } from "@/lib/utils";
 import {
   commitFinanceCsvImport,
+  deleteFinanceCategoryRule,
   previewFinanceCsvImport,
+  saveFinanceCategoryRule,
   type FinanceImportPreview,
   type FinanceImportReport,
 } from "@/server/actions/finance-import";
@@ -52,6 +58,34 @@ const FIELD_LABELS: Record<FinanceCsvField, string> = {
   currency: "Currency",
   account: "Account (ignored)",
 };
+
+/** Compact category picker for the quick-map rows. */
+function CategoryPicker({
+  value,
+  placeholder,
+  ariaLabel,
+  onPick,
+}: {
+  value: string | undefined;
+  placeholder: string;
+  ariaLabel: string;
+  onPick: (category: string) => void;
+}) {
+  return (
+    <Select value={value ?? ""} onValueChange={onPick}>
+      <SelectTrigger className="h-8 w-44 text-xs" aria-label={ariaLabel}>
+        <SelectValue placeholder={placeholder} />
+      </SelectTrigger>
+      <SelectContent>
+        {FINANCE_CATEGORIES.map((category) => (
+          <SelectItem key={category} value={category}>
+            {FINANCE_CATEGORY_META[category].label}
+          </SelectItem>
+        ))}
+      </SelectContent>
+    </Select>
+  );
+}
 
 /**
  * CSV import: pick a file, see exactly what would happen, then commit.
@@ -79,15 +113,22 @@ export function ImportCsvDialog({
   const [preview, setPreview] = React.useState<FinanceImportPreview | null>(null);
   const [report, setReport] = React.useState<FinanceImportReport | null>(null);
 
+  // Reset ONLY when the dialog opens. `accounts` deliberately stays out of
+  // the dependencies: router.refresh() hands the open dialog a fresh array
+  // identity (right after an import commits, for instance), and resetting on
+  // that wiped the just-shown report and the chosen file out from under the
+  // user. The ref keeps the reset reading current data without re-arming it.
+  const accountsRef = React.useRef(accounts);
+  accountsRef.current = accounts;
   React.useEffect(() => {
     if (!open) return;
-    setAccountId(accounts[0]?.id ?? "");
+    setAccountId(accountsRef.current[0]?.id ?? "");
     setFileName(null);
     setContent(null);
     setDayFirst(false);
     setPreview(null);
     setReport(null);
-  }, [open, accounts]);
+  }, [open]);
 
   const requestPreview = React.useCallback(
     (args: { accountId: string; fileName: string; content: string; dayFirst: boolean }) => {
@@ -138,6 +179,38 @@ export function ImportCsvDialog({
     if (content && fileName && accountId) {
       requestPreview({ accountId, fileName, content, dayFirst: next });
     }
+  }
+
+  /** Re-parse with the current inputs — after a category mapping changes. */
+  const refreshPreview = React.useCallback(() => {
+    if (content && fileName && accountId) {
+      requestPreview({ accountId, fileName, content, dayFirst });
+    }
+  }, [accountId, content, dayFirst, fileName, requestPreview]);
+
+  function mapCategoryValue(value: string, category: string) {
+    startTransition(async () => {
+      const result = await saveFinanceCategoryRule({ value, category });
+      if (result.ok) {
+        toast.success(
+          `"${value}" now imports as ${FINANCE_CATEGORY_META[category as FinanceCategory]?.label ?? category}`,
+        );
+        refreshPreview();
+      } else {
+        toast.error(result.error);
+      }
+    });
+  }
+
+  function unmapCategoryValue(value: string) {
+    startTransition(async () => {
+      const result = await deleteFinanceCategoryRule(value);
+      if (result.ok) {
+        refreshPreview();
+      } else {
+        toast.error(result.error);
+      }
+    });
   }
 
   function commit() {
@@ -284,6 +357,81 @@ export function ImportCsvDialog({
                 <span className="text-muted-foreground">of {preview.rowCount} rows</span>
               </div>
 
+              {preview.unmappedCategories.length > 0 && (
+                <div className="space-y-2 rounded-lg border p-3">
+                  <p className="text-xs font-medium uppercase tracking-wide text-muted-foreground">
+                    Unrecognised categories
+                  </p>
+                  <p className="text-xs text-muted-foreground">
+                    These values from the file match none of the app&apos;s categories, so their
+                    rows import as <span className="font-medium text-foreground">Other</span>.
+                    Map a value once and every future import applies it automatically.
+                  </p>
+                  <ul className="space-y-1.5">
+                    {preview.unmappedCategories.map((entry) => (
+                      <li
+                        key={entry.value}
+                        className="flex flex-wrap items-center justify-between gap-2"
+                      >
+                        <span className="min-w-0 truncate text-sm">
+                          {entry.value}{" "}
+                          <span className="text-xs text-muted-foreground">
+                            · {entry.count} {pluralize(entry.count, "row")}
+                          </span>
+                        </span>
+                        <CategoryPicker
+                          value={undefined}
+                          placeholder="Map to…"
+                          ariaLabel={`Map category "${entry.value}"`}
+                          onPick={(category) => mapCategoryValue(entry.value, category)}
+                        />
+                      </li>
+                    ))}
+                  </ul>
+                </div>
+              )}
+
+              {preview.appliedRules.length > 0 && (
+                <div className="space-y-2 rounded-lg border p-3">
+                  <p className="text-xs font-medium uppercase tracking-wide text-muted-foreground">
+                    Your saved category mappings
+                  </p>
+                  <ul className="space-y-1.5">
+                    {preview.appliedRules.map((rule) => (
+                      <li
+                        key={rule.value}
+                        className="flex flex-wrap items-center justify-between gap-2"
+                      >
+                        <span className="min-w-0 truncate text-sm">
+                          {rule.value}{" "}
+                          <span className="text-xs text-muted-foreground">
+                            · {rule.count} {pluralize(rule.count, "row")}
+                          </span>
+                        </span>
+                        <span className="flex items-center gap-1">
+                          <CategoryPicker
+                            value={rule.category}
+                            placeholder="Category"
+                            ariaLabel={`Category for "${rule.value}"`}
+                            onPick={(category) => mapCategoryValue(rule.value, category)}
+                          />
+                          <Button
+                            type="button"
+                            variant="ghost"
+                            size="icon"
+                            className="size-8"
+                            aria-label={`Remove the mapping for "${rule.value}"`}
+                            onClick={() => unmapCategoryValue(rule.value)}
+                          >
+                            <X />
+                          </Button>
+                        </span>
+                      </li>
+                    ))}
+                  </ul>
+                </div>
+              )}
+
               {preview.sample.length > 0 && (
                 <div className="overflow-x-auto rounded-lg border">
                   <table className="w-full text-sm">
@@ -308,8 +456,15 @@ export function ImportCsvDialog({
                             )}
                           </td>
                           <td className="px-3 py-1.5 text-muted-foreground">
-                            {FINANCE_CATEGORY_META[row.category as FinanceCategory]?.label ??
-                              row.category}
+                            <span className="inline-flex flex-wrap items-center gap-1">
+                              {FINANCE_CATEGORY_META[row.category as FinanceCategory]?.label ??
+                                row.category}
+                              {row.bookkeeping && (
+                                <Badge variant="outline" className="text-[10px]">
+                                  balances only
+                                </Badge>
+                              )}
+                            </span>
                           </td>
                           <td
                             className={cn(
@@ -326,11 +481,76 @@ export function ImportCsvDialog({
                                 skip
                               </Badge>
                             )}
+                            {row.signConflict !== null && (
+                              <Badge
+                                variant="outline"
+                                className="border-amber-500/40 text-[10px] text-amber-800 dark:text-amber-400"
+                              >
+                                type: {row.signConflict}
+                              </Badge>
+                            )}
                           </td>
                         </tr>
                       ))}
                     </tbody>
                   </table>
+                </div>
+              )}
+
+              {preview.bookkeepingCount > 0 && (
+                <div className="space-y-1 rounded-lg border p-3">
+                  <p className="text-xs font-medium">
+                    {preview.bookkeepingCount} {pluralize(preview.bookkeepingCount, "row")} will
+                    import as bookkeeping (transfer / balance adjustment)
+                  </p>
+                  <p className="text-xs text-muted-foreground">
+                    They change the account balance but stay out of income, spending and budgets —
+                    a card payment or a transfer between your own accounts is not income.
+                  </p>
+                  <ul className="space-y-0.5 text-xs text-muted-foreground">
+                    {preview.bookkeepingShown.map((row) => (
+                      <li key={row.line}>
+                        Row {row.line}: {formatDay(row.date, "MMM d")} ·{" "}
+                        {row.payee ?? "(no description)"} · {row.amount > 0 ? "+" : ""}
+                        {formatMoney(row.amount, preview.accountCurrency)} ·{" "}
+                        {FINANCE_CATEGORY_META[row.category as FinanceCategory]?.label ??
+                          row.category}
+                      </li>
+                    ))}
+                    {preview.bookkeepingCount > preview.bookkeepingShown.length && (
+                      <li>
+                        …and {preview.bookkeepingCount - preview.bookkeepingShown.length} more.
+                      </li>
+                    )}
+                  </ul>
+                </div>
+              )}
+
+              {preview.signConflictCount > 0 && (
+                <div className="space-y-1 rounded-lg border border-amber-500/30 bg-amber-500/5 p-3">
+                  <p className="text-xs font-medium text-amber-800 dark:text-amber-400">
+                    On {preview.signConflictCount}{" "}
+                    {pluralize(preview.signConflictCount, "row")} the Type column disagrees with
+                    the signed amount
+                  </p>
+                  <p className="text-xs text-muted-foreground">
+                    The signed amount wins — nothing is rewritten. Check these rows after
+                    importing if the file looks off.
+                  </p>
+                  <ul className="space-y-0.5 text-xs text-muted-foreground">
+                    {preview.signConflictShown.map((row) => (
+                      <li key={row.line}>
+                        Row {row.line}: type &quot;{row.type}&quot; against{" "}
+                        {row.amount > 0 ? "+" : ""}
+                        {formatMoney(row.amount, preview.accountCurrency)}
+                      </li>
+                    ))}
+                    {preview.signConflictCount > preview.signConflictShown.length && (
+                      <li>
+                        …and {preview.signConflictCount - preview.signConflictShown.length} more.
+                      </li>
+                    )}
+                  </ul>
                 </div>
               )}
 

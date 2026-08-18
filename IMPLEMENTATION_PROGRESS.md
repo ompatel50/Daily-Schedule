@@ -5053,3 +5053,183 @@ model is untouched.
 Live with the night-owl flow for a week. If the row marker ("ends Aug 18")
 earns its keep at week/month density too, extend it there; otherwise leave
 those cells lean.
+
+---
+
+# Major update: finance correctness, foundations, features, polish
+
+> Twelve sequential phases on branch
+> `claude/finance-import-correctness-ozbr2o`. Standing rules: additive and
+> reversible migrations, pure logic in `src/lib/logic`, data access in
+> `src/server`, no placeholder UI, multi-user isolation everywhere, each
+> phase ends green (typecheck, lint, unit + integration, targeted E2E,
+> browser verification) with this file updated.
+
+## Phase checklist (major update)
+
+| #  | Phase                                             | Status |
+|----|---------------------------------------------------|--------|
+| 1  | Finance import correctness (1a–1d)                | ✅ done |
+| 2  | Split finance-board.tsx                           | ✅ done |
+| 3  | Transfers: reconciliation & auto-detection        | ⏳ next |
+| 4  | Credit card depth + recurring + insights          | not started |
+| 5  | Money as integer cents                            | not started |
+| 6  | Task ↔ Planner linking                            | not started |
+| 7  | Global undo: soft-delete + Trash                  | not started |
+| 8  | Planner & habit quality features                  | not started |
+| 9  | Weekly review + data transparency                 | not started |
+| 10 | Dependency & platform hygiene                     | not started |
+| 11 | Reminders/cron improvements                       | not started |
+| 12 | UI/UX redesign pass                               | not started |
+
+## Phase 1 — finance import correctness
+
+Three data-corrupting defects in `src/lib/logic/finance-import.ts`, fixed at
+the parser, plus the category quick-map loop. All parser behaviour stays
+pure and unit-tested; the server action layer only loads/persists rules and
+annotates the preview.
+
+### 1a — explicit bookkeeping categories import as themselves
+
+`mapCsvCategory` no longer skips `transfer`/`adjustment`: a category cell
+that names a bookkeeping category (key or label, case-insensitive) imports
+as that category. That is what stops a positive card payment categorised
+"transfer" from counting as income. The guard the task demanded is in the
+preview: `bookkeepingCount` + a capped `bookkeepingShown` list ("they change
+the account balance but stay out of income, spending and budgets") plus a
+"balances only" badge on sample rows. Bookkeeping counts cover the rows the
+commit will actually write (duplicates excluded).
+
+### 1b — signed amounts win; the type column becomes a cross-check
+
+New file-level decision, made once over the whole amount column
+(`moneyHasExplicitSign`, mirroring `parseMoneyValue`'s normalisation): one
+explicit sign (−, +, parentheses, unicode minus — through currency symbols)
+anywhere means the export writes signed values. Signed file → the sign IS
+the direction; the type column only cross-checks, and a contradiction sets
+`signConflict` on the row (preview flag + amber panel; never a rewrite,
+never a rejection). Types whose direction depends on the account —
+`payment` (bank: out; card: in) and `adjustment` (either way) — are
+`ACCOUNT_RELATIVE_TYPES` and never contradict a sign. Unknown type values
+don't reject signed rows either: the direction is already known. Unsigned
+magnitudes keep the old contract: the type column decides; `payment` keeps
+the bank-file convention (out); `adjustment` rejects (direction unknowable
+without a sign, message says so).
+
+*Documented limitation:* a signed-convention file whose window happens to
+contain only money-in rows is indistinguishable from a magnitude file — no
+heuristic can tell "all positive" from "all magnitudes". Noted in the module
+docs.
+
+### 1c — card-issuer type vocabulary
+
+`sale`/`fee`/`charge` → debit; `return`/`reversal` → credit. `adjustment`
+deliberately joins no set (see 1b). Unknown values still reject per row, and
+the message now names every accepted value, built from the sets themselves
+(`TYPE_VALUES_HELP`) so it can never drift. Also added: `"post date"` as a
+date alias (Chase carries both Transaction Date and Post Date; first match
+still wins, the loser is reported as ignored).
+
+### 1d — unmapped categories: the quick-map loop
+
+* Parser: `resolveCsvCategory(raw, rules)` — built-ins first, then the
+  user's persisted rules (keyed lowercase), else `other` + reported in
+  `unmappedCategories` (distinct values, counts, first-seen casing).
+  `appliedRules` reports which rules decided rows. A rule may target any
+  category including bookkeeping (mapping an issuer's "Payment" onto
+  `transfer` is the point) and `other` ("stop offering to map this").
+* New model `FinanceCategoryRule` (`userId`, normalised `value`, `category`,
+  unique `(userId, value)`), migration
+  `20260818033721_finance_category_rules` — purely additive.
+* Actions: `saveFinanceCategoryRule` (upsert, zod-validated against
+  `FINANCE_CATEGORIES`), `deleteFinanceCategoryRule`; `parseForUser` loads
+  the rules for preview AND commit, so what previews is what commits.
+* Dialog: "Unrecognised categories" panel with a per-value category picker
+  (saves the rule, re-previews), "Your saved category mappings" panel with
+  change/remove controls, bookkeeping panel, sign-conflict panel.
+* Backup format **v9**: `financeCategoryRules` in `BACKUP_TABLES`, export,
+  restore (simple own+remap), replace-mode delete, verification counts —
+  a restore that dropped the rules would silently re-corrupt the next
+  import's categories.
+
+### Verification
+
+* Unit **1,188 → 1,210**: bookkeeping mapping, rule precedence (built-in
+  beats rule, invalid rule target ignored), sign detection, signed-vs-type
+  matrix (trust/flag/account-relative/unknown), card vocabulary, unsigned
+  `adjustment` rejection, accepted-values error, the Chase-shaped fixture
+  (Transaction Date/Post Date/Description/Category/Type/Amount/Memo;
+  Sale/Payment/Fee/Adjustment/Return; signed amounts — nothing rejected,
+  nothing flipped, Payment positive), and the credit-card payment round
+  trip (unmapped → rule → money-in + `transfer` + `summarizeTransactions`
+  excludes it from income). Backup v9 coverage in `tests/backup.test.ts`.
+* Integration **400 → 405** (`finance-workflows.test.ts`): the quick-map
+  loop end-to-end (preview offers → save → re-preview applies → commit
+  writes `transfer` money-in; bookkeeping visible in the preview), upsert +
+  delete + re-offer, invalid category refused, **cross-user isolation**
+  (one user's rule never shapes another's import; same value, different
+  meanings per user), backup round trip of the rules. Two existing
+  backup-restore tests updated to track `BACKUP_VERSION` symbolically
+  instead of hard-coding 8/9.
+* E2E: new permanent spec `tests/e2e/finance-import.spec.ts` (production
+  build, console/page errors fail the test): creates a credit-card account,
+  imports the Chase fixture through the real dialog — +$300 payment shown
+  positive, 0 invalid — quick-maps "Payment" → Transfer, sees the persisted
+  mapping and the bookkeeping guard, commits, verifies the ledger row, then
+  removes the mapping and deletes the account through the app's own flows
+  (self-healing against a previously failed run's leftovers). Full suite:
+  **122 passed, 2 skipped** (the seeded health-labels spec skips in CI mode
+  as always).
+* Typecheck, lint, unit, integration, production build: all green.
+* README's CSV-import section updated to describe the new behaviour.
+
+### Phase 1 follow-up fix (found by the new E2E under load)
+
+The import dialog's reset effect was keyed on `[open, accounts]` — and
+`router.refresh()` after a commit hands the open dialog a fresh `accounts`
+array identity, which wiped the just-shown report and the chosen file out
+from under the user. Reset now runs only on open (current accounts read via
+a ref). The E2E's ledger assertions were also made strict-mode-safe and the
+spec self-heals a previously failed run's leftovers (accounts + mapping)
+through the app's own flows.
+
+### Known interim limitation (handed to Phase 3)
+
+An imported one-sided `transfer`-category row cannot be edited while
+KEEPING that category: the transaction dialog deliberately never offers
+"transfer" and `saveTransaction` refuses it (the pair-writing Transfer flow
+owns it). Recategorising such a row away works. Phase 3's mark-as-transfer /
+unlink flows are the real resolution — do not loosen the invariant ahead of
+them.
+
+## Phase 2 — finance-board.tsx split into section components
+
+Pure refactor, zero behaviour change, ahead of Phases 3–6 landing on this
+page. `finance-board.tsx` (1,024 lines) is now a 274-line orchestrator that
+owns exactly what spans sections — which dialog is open over which record,
+and the mutate-toast-refresh cycle (`run`, `markPaid`) — composing seven
+focused components in `src/components/finance/`:
+
+| Component | Contents |
+|---|---|
+| `transactions-section.tsx` | ledger list + `TransactionRow` |
+| `bills-section.tsx` | bills list + `BillRow` + due-urgency classes |
+| `accounts-section.tsx` | accounts + archived fold-away (state moved in — nothing else read it) + `AccountRow` |
+| `savings-goals-section.tsx` | goals + `GoalRow` |
+| `budgets-section.tsx` | budgets + `BudgetRow` |
+| `import-batches-section.tsx` | CSV import history + `ImportBatchRow`; owns `ImportBatchView` |
+| `category-spend-section.tsx` | month-by-category bars; owns `CategoryTotalView` |
+| `row-menu.tsx` | the shared two-step-delete overflow menu |
+
+Sections take data + callbacks (`onEdit(bill)`, `onDelete(account)` …);
+`finance-board` re-exports the two view types so `finance/page.tsx` is
+untouched, and `undo-import-dialog` now imports `ImportBatchView` from the
+section that owns it (removing a type-only import cycle). All row markup,
+class names, texts and aria labels are copied verbatim.
+
+Verification: typecheck, lint, unit 1,210, production build green; full E2E
+suite run unmodified against the build — 122 passed / 2 skipped, twice
+consecutively. (One `planner-recurrence` and one `assistant` spec failure
+appeared in single earlier runs under 2-worker load and passed on every
+re-run — pre-existing load flakiness, not the refactor: the finance specs
+were green in those same runs.)
