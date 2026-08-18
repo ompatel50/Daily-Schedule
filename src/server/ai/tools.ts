@@ -677,7 +677,7 @@ const scheduleTool: AssistantTool = {
         priority: item.priority,
         recurring: Boolean(item.seriesId) || Boolean(item.recurrenceRule),
         recurrence: summarize(item),
-        ...(item.task
+        ...(item.task && !item.task.deletedAt
           ? { task: { id: item.task.id, title: item.task.title, status: item.task.status } }
           : {}),
       })),

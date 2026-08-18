@@ -1,5 +1,6 @@
 import type { Metadata } from "next";
-import { Database, Keyboard } from "lucide-react";
+import Link from "next/link";
+import { Database, Keyboard, Trash2 } from "lucide-react";
 
 import { AssistantPanel } from "@/components/settings/assistant-panel";
 import { BackupPanel } from "@/components/settings/backup-panel";
@@ -17,6 +18,8 @@ import { KEYBOARD_SHORTCUTS } from "@/lib/navigation";
 import { isAssistantMode } from "@/lib/logic/assistant";
 import { parseOnboardingState } from "@/lib/logic/onboarding";
 import { getDemoStatus } from "@/server/demo";
+import { getTrashCount } from "@/server/trash";
+import { TRASH_RETENTION_DAYS } from "@/lib/soft-delete";
 import { getGoalRows, getHabitOptions, getUser } from "@/server/queries";
 import { getLatestMetricValues } from "@/server/health";
 import { scheduleSettingsFor } from "@/server/schedule";
@@ -27,13 +30,15 @@ export const dynamic = "force-dynamic";
 export default async function SettingsPage() {
   const user = await getUser();
   const settings = scheduleSettingsFor(user);
-  const [goals, habits, latest, demoStatus, recoveryCodesRemaining] = await Promise.all([
-    getGoalRows(),
-    getHabitOptions(),
-    getLatestMetricValues(),
-    getDemoStatus(user.id),
-    countRemainingRecoveryCodes(user.id),
-  ]);
+  const [goals, habits, latest, demoStatus, recoveryCodesRemaining, trashCount] =
+    await Promise.all([
+      getGoalRows(),
+      getHabitOptions(),
+      getLatestMetricValues(),
+      getDemoStatus(user.id),
+      countRemainingRecoveryCodes(user.id),
+      getTrashCount(),
+    ]);
   const weight = latest.get("body_weight");
   const onboarding = parseOnboardingState(user.onboardingState);
 
@@ -116,6 +121,29 @@ export default async function SettingsPage() {
                 </kbd>
               </div>
             ))}
+          </div>
+        </SectionCard>
+
+        <SectionCard
+          title="Trash"
+          icon={Trash2}
+          accent="text-muted-foreground"
+          description="Deleted items wait here before they are removed for good"
+        >
+          <div className="flex flex-wrap items-center justify-between gap-3 text-sm text-muted-foreground">
+            <p>
+              Deleting anything — a task, a transaction, a planner block — moves it to the
+              trash, where it can be restored for {TRASH_RETENTION_DAYS} days.
+              {trashCount > 0
+                ? ` ${trashCount === 1 ? "1 item is" : `${trashCount} items are`} in the trash now.`
+                : " It is currently empty."}
+            </p>
+            <Link
+              href="/settings/trash"
+              className="inline-flex min-h-9 items-center rounded-md border px-3 text-sm font-medium text-foreground transition-colors hover:bg-accent"
+            >
+              Open trash
+            </Link>
           </div>
         </SectionCard>
 

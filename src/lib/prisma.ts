@@ -1,6 +1,7 @@
 import type { Prisma } from "@prisma/client";
 
 import { createDbClient, type DbClient } from "../../prisma/db-client";
+import { softDeleteGuard } from "@/lib/soft-delete";
 
 /**
  * One Prisma client, reused across hot reloads so `next dev` doesn't exhaust
@@ -41,6 +42,33 @@ function createClient(): DbClient {
   return client;
 }
 
-export const prisma = globalForPrisma.prisma ?? createClient();
+const base = globalForPrisma.prisma ?? createClient();
 
-if (process.env.NODE_ENV !== "production") globalForPrisma.prisma = prisma;
+if (process.env.NODE_ENV !== "production") globalForPrisma.prisma = base;
+
+/**
+ * The app's client: soft-delete guarded. Every query through it excludes
+ * trashed rows (deletedAt set) on the models in
+ * `SOFT_DELETE_MODEL_NAMES` — see src/lib/soft-delete.ts, the single place
+ * that builds the filter.
+ */
+export const prisma = base.$extends(softDeleteGuard);
+
+/**
+ * The SAME connection without the guard: trashed rows are visible. Only for
+ * the documented paths that must see them — Trash list/restore/purge, the
+ * purge sweep, backup-restore's replace wipe, demo removal, import-undo's
+ * remove, and identity/dedup reads. Reach for `prisma` everywhere else.
+ */
+export const prismaIncludingTrashed: DbClient = base;
+
+/**
+ * The interactive-transaction client of the GUARDED client. Helper functions
+ * that run inside `prisma.$transaction(async (tx) => …)` type their parameter
+ * with this instead of `Prisma.TransactionClient` (which names the raw
+ * client's shape and no longer matches).
+ */
+export type Tx = Omit<
+  typeof prisma,
+  "$connect" | "$disconnect" | "$on" | "$transaction" | "$use" | "$extends"
+>;

@@ -3,6 +3,7 @@
 import { revalidatePath } from "next/cache";
 
 import { getCurrentUser, prisma } from "@/lib/db";
+import { prismaIncludingTrashed } from "@/lib/prisma";
 import { FINANCE_CATEGORIES, isBookkeepingCategory, type FinanceCategory } from "@/lib/enums";
 import {
   parseFinanceCsv,
@@ -41,7 +42,11 @@ async function findExistingImportKeys(userId: string, keys: string[]): Promise<S
   const existing = new Set<string>();
   for (let index = 0; index < keys.length; index += KEY_LOOKUP_CHUNK) {
     const slice = keys.slice(index, index + KEY_LOOKUP_CHUNK);
-    const rows = await prisma.financeTransaction.findMany({
+    // Deliberately INCLUDES trashed rows (see src/lib/soft-delete.ts): a
+    // transaction the user moved to the Trash still holds its import key, so
+    // re-importing the same file keeps deduplicating against it instead of
+    // colliding with the unique constraint — until the purge frees the key.
+    const rows = await prismaIncludingTrashed.financeTransaction.findMany({
       where: { userId, importKey: { in: slice } },
       select: { importKey: true },
     });
@@ -477,7 +482,10 @@ export async function undoFinanceImport(batchId: string): Promise<ActionResult<I
   if (!batch) return fail("Import not found");
   if (batch.undoneAt) return fail("This import has already been undone");
 
-  const report = await prisma.$transaction(async (db) => {
+  // The raw client's transaction: import undo is a documented HARD delete
+  // ("undoing restores importability" — the keys must actually free), and it
+  // must also remove imported rows the user separately moved to the Trash.
+  const report = await prismaIncludingTrashed.$transaction(async (db) => {
     // Re-read inside the transaction: the preview the user saw may be seconds
     // stale, and the delete must be planned from what is true now.
     const raw = await db.financeTransaction.findMany({

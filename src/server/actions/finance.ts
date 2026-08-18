@@ -5,6 +5,8 @@ import { randomUUID } from "node:crypto";
 import { revalidatePath } from "next/cache";
 
 import { getCurrentUser, prisma } from "@/lib/db";
+import { prismaIncludingTrashed } from "@/lib/prisma";
+import { trashStamp } from "@/lib/soft-delete";
 import { FINANCE_CATEGORY_META, type FinanceCategory } from "@/lib/enums";
 import { advanceBillAfterPayment, moneyRound, transferLegs } from "@/lib/logic/finance";
 import { centsOrLegacy, centsToAmount, toCents } from "@/lib/logic/money";
@@ -101,9 +103,32 @@ export async function setFinanceAccountArchived(
  * Deleting an account deletes its ledger with it (bills merely lose their
  * default account). The UI confirms; archiving is the reversible path.
  */
+/**
+ * Move an account to the Trash, its transactions with it (children follow
+ * parents, sharing the stamp so restore brings back exactly this delete).
+ * Bills keep their accountId while the account is trashed and re-attach on
+ * restore; purging detaches them (schema `SetNull`). A transfer whose other
+ * leg lives in a different account keeps that leg live — the pair re-links
+ * when this account is restored.
+ */
 export async function deleteFinanceAccount(id: string): Promise<ActionResult<null>> {
   const user = await getCurrentUser();
-  await prisma.financeAccount.deleteMany({ where: { id, userId: user.id } });
+  const account = await prisma.financeAccount.findFirst({
+    where: { id, userId: user.id },
+    select: { id: true },
+  });
+  if (!account) return succeed(null);
+  const stamp = trashStamp();
+  await prisma.$transaction([
+    prisma.financeTransaction.updateMany({
+      where: { accountId: id, userId: user.id },
+      data: { deletedAt: stamp },
+    }),
+    prisma.financeAccount.updateMany({
+      where: { id, userId: user.id },
+      data: { deletedAt: stamp },
+    }),
+  ]);
   revalidateAll();
   return succeed(null);
 }
@@ -216,6 +241,12 @@ export async function saveTransaction(input: unknown): Promise<ActionResult<{ id
 /** Deleting one leg of a transfer removes the pair — never half a transfer.
  *  Like every scoped delete here, deleting a row that is not yours (or is
  *  already gone) is a silent no-op, not an error. */
+/**
+ * Move a transaction to the Trash. A transfer leg takes its counterpart with
+ * it (one shared stamp) — half a transfer is a lie in both balances — and
+ * restoring either leg restores the pair, or clearly detaches if the
+ * counterpart was purged meanwhile (see the trash actions).
+ */
 export async function deleteTransaction(id: string): Promise<ActionResult<null>> {
   const user = await getCurrentUser();
   const existing = await prisma.financeTransaction.findFirst({
@@ -223,10 +254,11 @@ export async function deleteTransaction(id: string): Promise<ActionResult<null>>
     select: { transferGroupId: true },
   });
   if (existing) {
-    await prisma.financeTransaction.deleteMany({
+    await prisma.financeTransaction.updateMany({
       where: existing.transferGroupId
         ? { userId: user.id, transferGroupId: existing.transferGroupId }
         : { id, userId: user.id },
+      data: { deletedAt: trashStamp() },
     });
   }
   revalidateAll();
@@ -320,6 +352,12 @@ export async function saveBudget(input: unknown): Promise<ActionResult<{ id: str
       return succeed({ id });
     }
 
+    // A trashed budget still holds its (user, category) unique key. Creating
+    // a replacement supersedes it: purge the trashed row first (documented
+    // hard delete — the new budget takes the slot; see src/lib/soft-delete.ts).
+    await prismaIncludingTrashed.budget.deleteMany({
+      where: { userId: user.id, category: data.category, deletedAt: { not: null } },
+    });
     const created = await prisma.budget.create({ data: { ...payload, userId: user.id } });
     revalidateAll();
     return succeed({ id: created.id });
@@ -334,7 +372,10 @@ export async function saveBudget(input: unknown): Promise<ActionResult<{ id: str
 
 export async function deleteBudget(id: string): Promise<ActionResult<null>> {
   const user = await getCurrentUser();
-  await prisma.budget.deleteMany({ where: { id, userId: user.id } });
+  await prisma.budget.updateMany({
+    where: { id, userId: user.id },
+    data: { deletedAt: trashStamp() },
+  });
   revalidateAll();
   return succeed(null);
 }
@@ -489,7 +530,10 @@ export async function setBillArchived(id: string, archived: boolean): Promise<Ac
 
 export async function deleteBill(id: string): Promise<ActionResult<null>> {
   const user = await getCurrentUser();
-  await prisma.bill.deleteMany({ where: { id, userId: user.id } });
+  await prisma.bill.updateMany({
+    where: { id, userId: user.id },
+    data: { deletedAt: trashStamp() },
+  });
   revalidateAll();
   return succeed(null);
 }
@@ -569,7 +613,10 @@ export async function setSavingsGoalArchived(
 
 export async function deleteSavingsGoal(id: string): Promise<ActionResult<null>> {
   const user = await getCurrentUser();
-  await prisma.savingsGoal.deleteMany({ where: { id, userId: user.id } });
+  await prisma.savingsGoal.updateMany({
+    where: { id, userId: user.id },
+    data: { deletedAt: trashStamp() },
+  });
   revalidateAll();
   return succeed(null);
 }

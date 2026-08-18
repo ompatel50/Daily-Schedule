@@ -72,6 +72,14 @@
  * A v11 file restored by an older app loses only the new parts, which is
  * why the version was bumped rather than left alone: `inspectBackup` refuses a
  * file newer than the app reading it, and that refusal is the honest answer.
+ *
+ * SOFT-DELETED ROWS ARE NOT EXPORTED. The export reads through the guarded
+ * client (src/lib/soft-delete.ts), so anything sitting in Settings → Trash is
+ * simply absent from the file — a backup captures your data, not your trash
+ * can. No format change was needed for this, so the version stays. Restoring
+ * a backup also clears the Trash for the restored tables first: a trashed row
+ * still holds its unique keys (import keys, budget categories, journal
+ * dates…) and would otherwise block the very rows being restored.
  */
 export const BACKUP_VERSION = 11;
 

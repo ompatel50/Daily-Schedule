@@ -5075,8 +5075,8 @@ those cells lean.
 | 4  | Credit card depth + recurring + insights          | ✅ done |
 | 5  | Money as integer cents                            | ✅ done |
 | 6  | Task ↔ Planner linking                            | ✅ done |
-| 7  | Global undo: soft-delete + Trash                  | ⏳ next |
-| 8  | Planner & habit quality features                  | not started |
+| 7  | Global undo: soft-delete + Trash                  | ✅ done |
+| 8  | Planner & habit quality features                  | ⏳ next |
 | 9  | Weekly review + data transparency                 | not started |
 | 10 | Dependency & platform hygiene                     | not started |
 | 11 | Reminders/cron improvements                       | not started |
@@ -5629,3 +5629,105 @@ sweeps every planned occurrence.
 * Linking an EXISTING block to a task has no UI (links are born from "Add to
   planner"); if a later phase adds one, the scope semantics are already
   consistent because the link is a row column.
+
+## Phase 7 — global undo: soft-delete + Trash
+
+One misclick no longer destroys data. `deletedAt` (additive migration, plus
+`(userId, deletedAt)` indexes) on the 16 user-facing primary models:
+ScheduleItem, Task, Project, Habit, Meal, Workout, FinanceTransaction,
+FinanceAccount, Bill, SavingsGoal, Budget, Reminder, JournalEntry, Goal,
+InboxItem, LifeDocument.
+
+### The centralised filter: a Prisma client extension, not a helper to call
+
+`src/lib/soft-delete.ts` is the SINGLE place that builds `deletedAt: null` —
+no query call site anywhere spells the condition. It exports a client
+extension applied once in `src/lib/prisma.ts`:
+
+* top-level `findMany`/`findFirst(+OrThrow)`/`count`/`aggregate`/`groupBy`/
+  `updateMany`/`deleteMany` on the 16 models get the filter AND-merged into
+  `where`;
+* include/select trees are walked recursively (relation graph from the
+  DMMF): every to-MANY relation targeting a guarded model gets the filter,
+  filtered relation `_count` selects included — a live parent never lists
+  trashed children, even from an unguarded parent model's read.
+
+Deliberately not guarded, and why it is safe: unique-key operations
+(`findUnique`, `update`, `delete`, `upsert` — Prisma cannot attach
+non-unique conditions), covered by the action layer's universal
+guarded-`findFirst`-first pattern; and to-ONE includes (unfilterable), where
+the three real link surfaces select `deletedAt` and null the link at the
+boundary (planner block → task in the serializer + `get_schedule`, task →
+project in `server/tasks.ts`). Each site points back to the module.
+
+`prismaIncludingTrashed` (same connection, no guard) exists for the
+documented raw paths only: Trash list/restore/purge, the retention sweep,
+backup-restore's transaction, demo removal, both import undos, and identity
+reads (below).
+
+### Semantics
+
+* **Children follow parents, by stamp.** A delete writes one `trashStamp()`
+  onto the row and its dependents — task→subtasks, account→its ledger,
+  workout→its mirror block, planner rows→their reminders. Restore clears
+  exactly the rows carrying that stamp, so something trashed separately
+  stays trashed.
+* **Series stay coherent.** `one` still records the skip tombstone (restore
+  gives the slot back); trashing the FIRST occurrence promotes the next
+  parent and stores the old row as a detached exception (no rule to
+  resurrect); `future` truncates the rule and stamps the tail; `all` stamps
+  the series. Regeneration cannot refill any of it.
+* **Identity keys stay occupied until purge.** A trashed row still owns its
+  import key / routine sourceKey / Apple-Health externalId: the dedup reads
+  deliberately use the raw client, so re-importing dedups against the Trash
+  instead of resurrecting or colliding (finance-workflows test updated to
+  this contract). Where re-creating must win, the trashed holder is purged
+  explicitly: `saveBudget` on its `(user, category)` unique, journal saves
+  on `(user, date)`, routine "replace".
+* **Restore is link-aware.** A transfer restores as a pair — or clearly
+  detaches (transferGroupId null, preTransferCategory back) when the
+  counterpart was purged; a transaction revives its trashed account; a
+  subtask revives its trashed parent; a habit/goal re-enables its
+  polymorphic schedule.
+
+### Trash surface + retention
+
+`src/server/trash.ts` (list, per-module labels, counts) + Settings → Trash
+(`/settings/trash`, restore / delete-forever per item, empty-trash) + a
+Settings card with the live count. 30-day purge (`TRASH_RETENTION_DAYS`)
+folded into `/api/reminders/run` next to `sweepExpiredUploads`, never fatal;
+purge relies on the existing FK cascades for dependents.
+
+### Backup
+
+Exports read the guarded client → trashed rows are simply absent
+(documented in backup-format.ts; NO version bump — the format is
+unchanged). The restore transaction runs on the raw client and first purges
+the user's trashed rows for the tables being restored, so held unique keys
+cannot block the insert.
+
+### Documented hard-delete exceptions
+
+Account deletion (DB cascade from User), demo-data removal, finance/health
+import "remove" (undo must free identity keys), routine "replace", the
+purge paths themselves, and housekeeping deletes of empty shells (a meal
+whose last entry was removed; a journal upsert superseding a trashed date).
+Non-primary models (tags, templates, logs, sets, entries…) keep their old
+hard deletes.
+
+### Verification
+
+* Typecheck, lint, build clean. Unit **1,257** green (backup source-shape
+  test updated to the raw-client transaction).
+* Integration **440 → 452**: new `trash.test.ts` (12) — guard hides rows
+  from finds/counts/nested includes + `_count`, trash page listing +
+  cross-user emptiness, stamp-scoped task restore, transfer pair
+  restore/detach round trip, account+ledger restore, series slot give-back,
+  cross-user restore/purge denial, per-item purge finality, retention-window
+  sweep, per-user empty-trash, export-exclusion + restore-clears-trash. Six
+  existing tests updated from hard- to soft-delete contracts (each comments
+  the new semantics).
+* E2E **126 → 128**, full suite green against the production build: new
+  `trash.spec.ts` rounds a task and a finance transaction through delete →
+  Settings → Trash → restore, then purges; every pre-existing delete flow in
+  every spec now exercises soft delete unmodified.

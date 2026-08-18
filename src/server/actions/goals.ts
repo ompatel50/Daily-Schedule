@@ -3,6 +3,7 @@
 import { revalidatePath } from "next/cache";
 
 import { getCurrentUser, prisma } from "@/lib/db";
+import { trashStamp } from "@/lib/soft-delete";
 import { type DayKey } from "@/lib/date";
 import {
   dateOverrideSchema,
@@ -15,7 +16,6 @@ import {
 } from "@/lib/validation";
 import {
   clearDateOverride,
-  deleteSchedule,
   scheduleSettingsFor,
   setDateOverride,
   setScheduleEnabled,
@@ -136,16 +136,19 @@ export async function archiveGoal(id: string, archived = true): Promise<ActionRe
   return succeed(null);
 }
 
+/**
+ * "Delete" now means the Trash: the goal (and, implicitly, its entries —
+ * they hide with it and cascade away on purge) can be restored from
+ * Settings → Trash for 30 days. The polymorphic schedule is disabled, not
+ * deleted, so a restore can switch it back on.
+ */
 export async function deleteGoalPermanently(id: string): Promise<ActionResult<null>> {
   const user = await getCurrentUser();
   const goal = await prisma.goal.findFirst({ where: { id, userId: user.id } });
   if (!goal) return fail("Goal not found");
 
-  await prisma.$transaction([
-    prisma.goalEntry.deleteMany({ where: { goalId: id } }),
-    prisma.goal.delete({ where: { id } }),
-  ]);
-  await deleteSchedule(user.id, "goal", id);
+  await prisma.goal.update({ where: { id }, data: { deletedAt: trashStamp() } });
+  await setScheduleEnabled(user.id, "goal", id, false);
 
   await recomputeDay(user.id, scheduleSettingsFor(user).today);
   revalidateAll();

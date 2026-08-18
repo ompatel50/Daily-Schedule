@@ -9,7 +9,7 @@
  */
 import { beforeAll, beforeEach, describe, expect, it } from "vitest";
 
-import { prisma } from "@/lib/prisma";
+import { prisma, prismaIncludingTrashed } from "@/lib/prisma";
 import { shiftDay, weekRange } from "@/lib/date";
 import { scheduleSettingsFor } from "@/server/schedule";
 import { lowBalanceReminderKey } from "@/lib/logic/reminders";
@@ -173,7 +173,7 @@ describe("CSV import", () => {
     expect(await prisma.financeTransaction.count({ where: { userId: alice.id } })).toBe(3);
   });
 
-  it("deleting an imported row then re-importing restores exactly it", async () => {
+  it("a trashed imported row keeps its import key until it is purged", async () => {
     const account = await makeAccount(alice.id);
     await commitFinanceCsvImport({ accountId: account.id, fileName: "b.csv", content: CSV });
     const victim = await prisma.financeTransaction.findFirstOrThrow({
@@ -181,13 +181,29 @@ describe("CSV import", () => {
     });
     await deleteTransaction(victim.id);
 
+    // Soft delete: the row sits in the Trash still holding its import key, so
+    // re-importing the same file DEDUPLICATES against it instead of quietly
+    // resurrecting a row the user just deleted.
     const again = await commitFinanceCsvImport({
       accountId: account.id,
       fileName: "b.csv",
       content: CSV,
     });
     expect(again.ok).toBe(true);
-    if (again.ok) expect(again.data.createdCount).toBe(1);
+    if (again.ok) expect(again.data.createdCount).toBe(0);
+    expect(await prisma.financeTransaction.count({ where: { userId: alice.id } })).toBe(2);
+
+    // Purging frees the key — the next import restores exactly that row.
+    await prismaIncludingTrashed.financeTransaction.deleteMany({
+      where: { id: victim.id },
+    });
+    const after = await commitFinanceCsvImport({
+      accountId: account.id,
+      fileName: "b.csv",
+      content: CSV,
+    });
+    expect(after.ok).toBe(true);
+    if (after.ok) expect(after.data.createdCount).toBe(1);
     expect(await prisma.financeTransaction.count({ where: { userId: alice.id } })).toBe(3);
   });
 

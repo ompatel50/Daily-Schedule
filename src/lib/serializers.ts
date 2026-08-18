@@ -32,7 +32,12 @@ export function toScheduleRowItem(
     seriesId: item.seriesId,
     seriesRule: item.series?.recurrenceRule ?? null,
     workoutId: item.workoutId,
-    task: item.task ? { id: item.task.id, title: item.task.title, status: item.task.status } : null,
+    // A task in the Trash is no link at all (the to-one soft-delete boundary
+    // — see src/lib/soft-delete.ts).
+    task:
+      item.task && !item.task.deletedAt
+        ? { id: item.task.id, title: item.task.title, status: item.task.status }
+        : null,
     tags: item.tags.map(({ tag }) => ({ tag: { id: tag.id, name: tag.name } })),
   };
 }

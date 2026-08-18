@@ -2,10 +2,9 @@
 
 import { revalidatePath } from "next/cache";
 
-import type { Prisma } from "@prisma/client";
-
 import { prisma } from "@/lib/db";
 import { getCurrentUser } from "@/lib/db";
+import { prismaIncludingTrashed, type Tx } from "@/lib/prisma";
 import { type DayKey, shiftDay } from "@/lib/date";
 import {
   calendarDateForOperationalTime,
@@ -33,6 +32,7 @@ import {
   type TemplateRow,
 } from "@/lib/logic/planner";
 import { comparePlannerSpans } from "@/lib/logic/schedule-span";
+import { trashStamp } from "@/lib/soft-delete";
 import {
   conflictPreviewSchema,
   fail,
@@ -193,8 +193,6 @@ export async function quickAddScheduleItem(input: unknown): Promise<ActionResult
   });
 }
 
-/** The transaction-client slice these helpers need. */
-type Tx = Prisma.TransactionClient;
 
 /** Replace an item's tag links with the given set. */
 async function setItemTags(tx: Tx, scheduleItemId: string, tagIds: string[]) {
@@ -726,22 +724,27 @@ export async function reorderScheduleItems(
 }
 
 /**
- * Delete one occurrence, this one and every later one, or the whole series.
+ * Trash one occurrence, this one and every later one, or the whole series.
+ * Deletes are SOFT — rows get a `deletedAt` stamp and move to Settings →
+ * Trash; the series bookkeeping around them is unchanged, so regeneration
+ * can never quietly refill what the user removed:
  *
- *  * `one` on an occurrence really deletes the row AND records its slot in
- *    the parent's `skipDates`, so regeneration can never quietly bring it
- *    back. `one` on the FIRST occurrence promotes the next occurrence to
- *    series parent first — deleting the rule holder must not take the whole
- *    series down with it.
+ *  * `one` on an occurrence stamps the row AND records its slot in the
+ *    parent's `skipDates`. `one` on the FIRST occurrence promotes the next
+ *    occurrence to series parent first, then stamps the old parent as a
+ *    detached exception (rule cleared, re-pointed at the new parent) — so a
+ *    later restore yields one sane standalone-ish block, not a second rule
+ *    holder.
  *
  *  * `future` terminates the series at the selected occurrence: the parent's
  *    rule gains an `until` on the day before (so nothing regenerates), and
- *    every row from that day on is removed. History before it is untouched.
- *    Selecting the first occurrence means there is no history to preserve —
- *    the whole series goes.
+ *    every row from that day on is stamped. History before it is untouched.
  *
- *  * `all` deletes the entire series including history — the long-standing
+ *  * `all` stamps the entire series including history — the long-standing
  *    explicit option, kept for exactly that explicit choice.
+ *
+ * Reminders attached to the stamped rows are stamped with them (children
+ * follow parents), sharing the stamp so a restore brings both back.
  */
 export async function deleteScheduleItem(
   id: string,
@@ -753,8 +756,23 @@ export async function deleteScheduleItem(
 
   const reset = resetFor(user);
   const isSeriesRow = Boolean(item.seriesId) || Boolean(item.recurrenceRule);
+  const stamp = trashStamp();
   let deleted = 0;
   const touched: DayKey[] = [operationalDayOfRecord(item, reset)];
+
+  /** Stamp these rows and their reminders in one transaction step. */
+  const stampRows = async (tx: Tx, ids: string[]) => {
+    if (ids.length === 0) return 0;
+    const result = await tx.scheduleItem.updateMany({
+      where: { id: { in: ids }, userId: user.id },
+      data: { deletedAt: stamp },
+    });
+    await tx.reminder.updateMany({
+      where: { scheduleItemId: { in: ids }, userId: user.id },
+      data: { deletedAt: stamp },
+    });
+    return result.count;
+  };
 
   if (scope === "one" || !isSeriesRow) {
     if (item.seriesId) {
@@ -765,7 +783,7 @@ export async function deleteScheduleItem(
         select: { id: true, skipDates: true },
       });
       await prisma.$transaction(async (tx) => {
-        await tx.scheduleItem.delete({ where: { id } });
+        await stampRows(tx, [id]);
         if (parent) {
           await tx.scheduleItem.update({
             where: { id: parent.id },
@@ -776,22 +794,42 @@ export async function deleteScheduleItem(
       deleted = 1;
     } else if (item.recurrenceRule) {
       // The series parent. Hand the series to the next occurrence before the
-      // row goes — a cascade here would erase every occurrence.
+      // row goes — trashing the rule holder must not take the series down.
       const rule = parseRule(item.recurrenceRule);
       const children = await prisma.scheduleItem.findMany({
         where: { seriesId: item.id, userId: user.id },
       });
       if (rule && children.length > 0) {
         await prisma.$transaction(async (tx) => {
-          await promoteNextOccurrence(tx, item, children, rule, reset);
-          await tx.scheduleItem.delete({ where: { id } });
+          const newParentId = await promoteNextOccurrence(tx, item, children, rule, reset);
+          // The stamped row leaves as a detached exception: no rule to
+          // resurrect, its slot still occupied under the new parent.
+          await tx.scheduleItem.update({
+            where: { id: item.id },
+            data: {
+              deletedAt: stamp,
+              recurrenceRule: null,
+              skipDates: null,
+              seriesId: newParentId,
+              isException: true,
+              originalDate: item.originalDate ?? slotOfOccurrence(item, reset),
+            },
+          });
+          await tx.reminder.updateMany({
+            where: { scheduleItemId: item.id, userId: user.id },
+            data: { deletedAt: stamp },
+          });
         });
       } else {
-        await prisma.scheduleItem.delete({ where: { id } });
+        await prisma.$transaction(async (tx) => {
+          await stampRows(tx, [id]);
+        });
       }
       deleted = 1;
     } else {
-      await prisma.scheduleItem.delete({ where: { id } });
+      await prisma.$transaction(async (tx) => {
+        await stampRows(tx, [id]);
+      });
       deleted = 1;
     }
   } else if (scope === "future") {
@@ -803,15 +841,15 @@ export async function deleteScheduleItem(
     const selectedDay = operationalDayOfRecord(item, reset);
 
     if (!parent || item.id === parent.id) {
-      // Deleting from the first occurrence on = the whole series; cascade
-      // removes the occurrences with the parent.
+      // Trashing from the first occurrence on = the whole series.
       const affected = await prisma.scheduleItem.findMany({
         where: { userId: user.id, OR: [{ id: item.id }, { seriesId: item.id }] },
-        select: { date: true, startMinute: true },
+        select: { id: true, date: true, startMinute: true },
       });
       touched.push(...affected.map((row) => operationalDayOfRecord(row, reset)));
-      await prisma.scheduleItem.delete({ where: { id: item.id } });
-      deleted = affected.length;
+      await prisma.$transaction(async (tx) => {
+        deleted = await stampRows(tx, affected.map((row) => row.id));
+      });
     } else {
       const children = await prisma.scheduleItem.findMany({
         where: { seriesId: parent.id, userId: user.id },
@@ -834,10 +872,7 @@ export async function deleteScheduleItem(
             },
           });
         }
-        const result = await tx.scheduleItem.deleteMany({
-          where: { id: { in: removing.map((row) => row.id) }, userId: user.id },
-        });
-        deleted = result.count;
+        deleted = await stampRows(tx, removing.map((row) => row.id));
       });
     }
   } else {
@@ -846,11 +881,12 @@ export async function deleteScheduleItem(
     const where = { userId: user.id, OR: [{ id: seriesId }, { seriesId }] };
     const affected = await prisma.scheduleItem.findMany({
       where,
-      select: { date: true, startMinute: true },
+      select: { id: true, date: true, startMinute: true },
     });
     touched.push(...affected.map((row) => operationalDayOfRecord(row, reset)));
-    const result = await prisma.scheduleItem.deleteMany({ where });
-    deleted = result.count;
+    await prisma.$transaction(async (tx) => {
+      deleted = await stampRows(tx, affected.map((row) => row.id));
+    });
   }
 
   await touchDays(user.id, touched);
@@ -1033,8 +1069,12 @@ export async function applyScheduleTemplate(
   // The routine is stamped onto an OPERATIONAL day: rows timed before the
   // daily reset (a night routine's 1:00 AM wind-down) store on the next
   // calendar date, so the duplicate check spans both dates the day covers.
+  // The read deliberately INCLUDES trashed rows (see src/lib/soft-delete.ts):
+  // a stamped block sitting in the Trash still occupies its
+  // (user, date, template, key) identity until purged, so re-applying asks
+  // instead of colliding with the unique constraint.
   const reset = resetFor(user);
-  const existing = await prisma.scheduleItem.findMany({
+  const existing = await prismaIncludingTrashed.scheduleItem.findMany({
     where: { userId: user.id, templateId: template.id, ...operationalDayWhere(date, reset) },
     select: { id: true, sourceKey: true },
   });
@@ -1064,7 +1104,12 @@ export async function applyScheduleTemplate(
   let removed = 0;
 
   try {
-    await prisma.$transaction(async (tx) => {
+    // The raw client's transaction: "replace" clears the previous application
+    // outright — a documented HARD delete, since the rows may include trashed
+    // ones whose (user, date, template, key) identities would otherwise block
+    // the re-stamp. The fresh copy takes their place, so there is nothing
+    // meaningful to restore.
+    await prismaIncludingTrashed.$transaction(async (tx) => {
       if (plan.remove.length > 0) {
         const result = await tx.scheduleItem.deleteMany({
           where: { id: { in: plan.remove }, userId: user.id },

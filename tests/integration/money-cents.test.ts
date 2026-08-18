@@ -7,7 +7,7 @@
  */
 import { beforeAll, beforeEach, describe, expect, it } from "vitest";
 
-import { prisma } from "@/lib/prisma";
+import { prisma, prismaIncludingTrashed } from "@/lib/prisma";
 import { run as runMoneyCentsBackfill } from "../../prisma/migrations-data/004-money-cents";
 import { exportBackup, importBackup } from "@/server/actions/backup";
 import { saveTransaction, saveFinanceAccount } from "@/server/actions/finance";
@@ -137,7 +137,7 @@ describe("legacy float-only rows", () => {
       },
     });
 
-    const notes = await runMoneyCentsBackfill(prisma);
+    const notes = await runMoneyCentsBackfill(prismaIncludingTrashed);
     expect(notes.join(" ")).toContain("filled cents on 3 row(s)");
     expect(notes.join(" ")).toMatch(/verified \d+ account balance\(s\) identical to the cent/);
 
@@ -154,7 +154,7 @@ describe("legacy float-only rows", () => {
     ).toBe(1234);
 
     // Idempotent: a second run fills nothing and still verifies.
-    const again = await runMoneyCentsBackfill(prisma);
+    const again = await runMoneyCentsBackfill(prismaIncludingTrashed);
     expect(again.join(" ")).toContain("nothing to fill");
   });
 });

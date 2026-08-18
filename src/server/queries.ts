@@ -74,7 +74,10 @@ const SCHEDULE_ITEM_INCLUDE = {
   habit: { select: { id: true, name: true, color: true } },
   // The linked task ("add to planner"): the block shows what it schedules,
   // and the done-checkbox offer needs to know the task is still open.
-  task: { select: { id: true, title: true, status: true } },
+  // `deletedAt` rides along because Prisma cannot filter a to-one include —
+  // consumers null the link when the task sits in the Trash
+  // (src/lib/soft-delete.ts documents this boundary).
+  task: { select: { id: true, title: true, status: true, deletedAt: true } },
   // An occurrence's own recurrenceRule is null; the SERIES' rule lives on the
   // parent. The edit dialog pre-fills its recurrence controls from it, which
   // is what makes a "this and future" edit inherit the pattern and end date

@@ -4,8 +4,9 @@ import { createHash } from "node:crypto";
 
 import { Prisma } from "@prisma/client";
 
-import { prisma } from "@/lib/prisma";
+import { prisma, prismaIncludingTrashed } from "@/lib/prisma";
 import { BACKUP_TABLES, type BackupFile, type BackupTable } from "@/lib/backup-format";
+import { SOFT_DELETE_MODELS } from "@/lib/soft-delete";
 
 /**
  * Restoring a backup into a *hosted, multi-user* database.
@@ -809,8 +810,25 @@ export async function restoreBackupForUser(
   // ---- the transaction -------------------------------------------------------
   const outcomes: TableOutcome[] = [];
 
-  await prisma.$transaction(
+  // The RAW client's transaction, deliberately (src/lib/soft-delete.ts):
+  // replace-mode must wipe trashed rows too (a guarded delete would leave
+  // them holding unique keys the restore is about to re-insert), and the
+  // verification counts below must count what is really in the tables.
+  await prismaIncludingTrashed.$transaction(
     async (db) => {
+      // Restored tables start from a clean Trash in BOTH modes: a trashed
+      // row still holds its unique keys (import keys, budget categories,
+      // journal dates…) and would fail the insert. Backups exclude trashed
+      // rows by design, so this only drops rows already headed for the
+      // 30-day purge.
+      for (const { table, rows } of prepared) {
+        if (rows.length === 0) continue;
+        const model = MODEL_BY_TABLE[table];
+        if (!SOFT_DELETE_MODELS.has(model)) continue;
+        const delegate = (model[0].toLowerCase() + model.slice(1)) as "task";
+        await db[delegate].deleteMany({ where: { userId, deletedAt: { not: null } } });
+      }
+
       if (mode === "replace") {
         // Children before parents. Every delete is scoped to this user.
         await db.scheduleItemTag.deleteMany({ where: { scheduleItem: { userId } } });
@@ -968,7 +986,7 @@ export async function restoreBackupForUser(
   return { report };
 }
 
-type DbClient = Parameters<Parameters<typeof prisma.$transaction>[0]>[0];
+type DbClient = Parameters<Parameters<typeof prismaIncludingTrashed.$transaction>[0]>[0];
 
 /**
  * Give any goal or habit that arrived without a schedule an every-day rule.

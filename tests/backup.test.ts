@@ -262,7 +262,9 @@ describe("the backup covers every table the app writes", () => {
   });
 
   it("wraps the restore in one transaction and rolls back on failure", () => {
-    expect(restoreSource).toContain("prisma.$transaction(");
+    // The RAW client's transaction, deliberately: replace-mode must wipe
+    // trashed rows too, or their unique keys would block the re-insert.
+    expect(restoreSource).toContain("prismaIncludingTrashed.$transaction(");
     expect(exportSource).toContain("rolled back");
   });
 

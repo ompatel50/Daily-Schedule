@@ -3,6 +3,7 @@ import { NextResponse, type NextRequest } from "next/server";
 
 import { sweepExpiredUploads } from "@/server/health-upload/session";
 import { runScheduledReminderPush } from "@/server/push";
+import { purgeExpiredTrash } from "@/server/trash";
 
 /** Constant-time equality over digests, safe for unequal lengths. */
 function secretMatches(candidate: string, expected: string): boolean {
@@ -43,7 +44,11 @@ export async function GET(request: NextRequest): Promise<NextResponse> {
    */
   const sweptUploads = await sweepExpiredUploads().catch(() => 0);
 
-  return NextResponse.json({ ...result, sweptUploads });
+  // The Trash's 30-day retention, same pattern: rows soft-deleted longer
+  // than the window are purged for good (src/server/trash.ts). Never fatal.
+  const purgedTrash = await purgeExpiredTrash().catch(() => 0);
+
+  return NextResponse.json({ ...result, sweptUploads, purgedTrash });
 }
 
 export const dynamic = "force-dynamic";

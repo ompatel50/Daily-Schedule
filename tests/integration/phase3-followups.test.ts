@@ -9,7 +9,7 @@
  */
 import { beforeAll, beforeEach, describe, expect, it } from "vitest";
 
-import { prisma } from "@/lib/prisma";
+import { prisma, prismaIncludingTrashed } from "@/lib/prisma";
 import { BACKUP_VERSION } from "@/lib/backup-format";
 import { monthRange, shiftDay, weekRange } from "@/lib/date";
 import { budgetThresholdReminderKey, dueReminderKey } from "@/lib/logic/reminders";
@@ -657,10 +657,15 @@ describe("task tags", () => {
     ]);
   });
 
-  it("deleting a task removes its links but not the shared tags", async () => {
+  it("deleting a task trashes it — links wait with it, shared tags stay", async () => {
     const id = await task("Temp", ["admin"]);
     await deleteTask(id);
-    expect(await prisma.taskTag.count({ where: { taskId: id } })).toBe(0);
+    // Soft delete: the task sits in the Trash with its tag links intact (a
+    // restore brings both back); the tag itself is untouched either way.
+    expect(await prisma.task.findFirst({ where: { id } })).toBeNull();
+    const trashed = await prismaIncludingTrashed.task.findUniqueOrThrow({ where: { id } });
+    expect(trashed.deletedAt).not.toBeNull();
+    expect(await prisma.taskTag.count({ where: { taskId: id } })).toBe(1);
     expect(await prisma.tag.count({ where: { userId: alice.id } })).toBe(1);
   });
 

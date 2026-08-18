@@ -1,6 +1,7 @@
 import "server-only";
 
 import { prisma } from "@/lib/db";
+import { prismaIncludingTrashed } from "@/lib/prisma";
 import { type DayKey, shiftDay } from "@/lib/date";
 import {
   HEALTH_METRIC_META,
@@ -543,8 +544,12 @@ async function findWorkoutDuplicates(
   if (workouts.length === 0) return { exact: [], potential: [] };
 
   const ids = workouts.map((workout) => workout.externalId);
+  // Deliberately INCLUDES trashed rows (see src/lib/soft-delete.ts): a
+  // workout the user moved to the Trash still holds its
+  // (user, source, externalId) identity, so re-importing skips it instead of
+  // colliding with the unique index — until the purge frees the key.
   const existingRows = await chunked(ids, CHUNK, (chunk) =>
-    prisma.workout.findMany({
+    prismaIncludingTrashed.workout.findMany({
       where: { userId, source: "apple_health", externalId: { in: chunk } },
       select: { externalId: true },
     }),
@@ -1299,7 +1304,9 @@ export async function removeImportBatch(
       where: { batchId, userId },
       select: { id: true, date: true, updatedAt: true },
     }),
-    prisma.workout.findMany({
+    // Raw read: the removal plan must cover imported workouts the user
+    // separately moved to the Trash, so nothing is left holding its keys.
+    prismaIncludingTrashed.workout.findMany({
       where: { importBatchId: batchId, userId },
       select: {
         id: true,
@@ -1342,7 +1349,10 @@ export async function removeImportBatch(
 
   const keptCount = metricPlan.keptCount + workoutPlan.keptCount + recordPlan.keptCount;
 
-  const report = await prisma.$transaction(
+  // The raw client's transaction: import-batch removal is a documented HARD
+  // delete ("remove" must actually free the identity keys), and it must also
+  // remove imported rows the user separately moved to the Trash.
+  const report = await prismaIncludingTrashed.$transaction(
     async (tx) => {
       let removedMetrics = 0;
       for (let index = 0; index < metricPlan.removeIds.length; index += CHUNK) {

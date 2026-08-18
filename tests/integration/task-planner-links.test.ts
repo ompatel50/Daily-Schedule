@@ -10,7 +10,7 @@
  */
 import { beforeAll, beforeEach, describe, expect, it } from "vitest";
 
-import { prisma } from "@/lib/prisma";
+import { prisma, prismaIncludingTrashed } from "@/lib/prisma";
 import { shiftDay, type DayKey } from "@/lib/date";
 import type { ScheduleSettings } from "@/lib/logic/schedule";
 import { runTool } from "@/server/ai/tools";
@@ -184,16 +184,22 @@ describe("completion reflection (task → blocks)", () => {
 });
 
 describe("deletes detach, never cascade", () => {
-  it("deleting the task keeps the block and unlinks it", async () => {
+  it("deleting the task keeps the block; the link hides, and purge unlinks", async () => {
     const task = await makeTask(alice.id);
     const blockId = await scheduleOn(task.id, today());
     expect((await deleteTask(task.id)).ok).toBe(true);
 
+    // Soft delete: the block keeps its taskId (restore would re-attach) but
+    // the link is dead everywhere — no completion offer, no chip.
     const block = await prisma.scheduleItem.findUniqueOrThrow({ where: { id: blockId } });
-    expect(block.taskId).toBeNull();
-    // And the now-unlinked block offers nothing when checked off.
+    expect(block.taskId).toBe(task.id);
     const toggled = await toggleScheduleItem(blockId);
     expect(toggled.ok && toggled.data.taskOffer).toBeNull();
+
+    // Purging the trashed task detaches for good (schema SetNull).
+    await prismaIncludingTrashed.task.delete({ where: { id: task.id } });
+    const after = await prisma.scheduleItem.findUniqueOrThrow({ where: { id: blockId } });
+    expect(after.taskId).toBeNull();
   });
 
   it("deleting the block leaves the task open", async () => {

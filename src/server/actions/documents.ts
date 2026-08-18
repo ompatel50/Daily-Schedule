@@ -3,6 +3,7 @@
 import { revalidatePath } from "next/cache";
 
 import { getCurrentUser, prisma } from "@/lib/db";
+import { trashStamp } from "@/lib/soft-delete";
 import { documentSchema, fail, fromZod, succeed, type ActionResult } from "@/lib/validation";
 
 /**
@@ -62,7 +63,10 @@ export async function setDocumentArchived(
 
 export async function deleteDocument(id: string): Promise<ActionResult<null>> {
   const user = await getCurrentUser();
-  await prisma.lifeDocument.deleteMany({ where: { id, userId: user.id } });
+  await prisma.lifeDocument.updateMany({
+    where: { id, userId: user.id },
+    data: { deletedAt: trashStamp() },
+  });
   revalidateAll();
   return succeed(null);
 }
