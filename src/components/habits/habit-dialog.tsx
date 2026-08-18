@@ -242,7 +242,7 @@ export function HabitDialog({
             </div>
 
             <div className="space-y-1.5 rounded-lg border p-3">
-              <Label>Pause (optional)</Label>
+              <p className="section-title">Pause (optional)</p>
               <p className="text-xs text-muted-foreground">
                 Paused days are neither due nor missed — streaks and scores skip them. The pause
                 ends by itself when the range does.
@@ -268,10 +268,13 @@ export function HabitDialog({
                     type="date"
                     value={form.pausedUntil ?? ""}
                     aria-invalid={Boolean(errors.pausedUntil)}
+                    aria-describedby={errors.pausedUntil ? "habit-pause-until-error" : undefined}
                     onChange={(event) => set("pausedUntil", event.target.value || null)}
                   />
                   {errors.pausedUntil && (
-                    <p className="text-xs text-destructive">{errors.pausedUntil[0]}</p>
+                    <p id="habit-pause-until-error" className="text-xs text-destructive">
+                      {errors.pausedUntil[0]}
+                    </p>
                   )}
                 </div>
               </div>
@@ -335,7 +338,7 @@ export function HabitDialog({
                       variant="destructive"
                       disabled={pending}
                       onClick={() =>
-                        run(() => deleteHabit(form.id as string), "Habit and its logs deleted")
+                        run(() => deleteHabit(form.id as string), "Habit and its logs moved to Trash")
                       }
                     >
                       Delete everything

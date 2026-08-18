@@ -88,7 +88,7 @@ export function TransferSuggestionsSection({
             className="rounded-lg border px-3 py-2.5"
           >
             <div className="flex flex-wrap items-center gap-x-2 gap-y-1 text-sm">
-              <span className="min-w-0 truncate">
+              <span className="min-w-0 flex-[1_1_7rem] truncate">
                 <span className="font-medium">{suggestion.outAccountName}</span>{" "}
                 <span className="text-muted-foreground">
                   {formatDay(suggestion.outDate, "MMM d")}
@@ -96,7 +96,7 @@ export function TransferSuggestionsSection({
                 </span>
               </span>
               <ArrowRight className="h-3.5 w-3.5 shrink-0 text-muted-foreground" aria-hidden="true" />
-              <span className="min-w-0 truncate">
+              <span className="min-w-0 flex-[1_1_7rem] truncate">
                 <span className="font-medium">{suggestion.intoAccountName}</span>{" "}
                 <span className="text-muted-foreground">
                   {formatDay(suggestion.intoDate, "MMM d")}
@@ -120,6 +120,7 @@ export function TransferSuggestionsSection({
                   size="sm"
                   variant="outline"
                   disabled={pending}
+                  aria-label={`Link ${suggestion.outAccountName} to ${suggestion.intoAccountName} as one transfer`}
                   onClick={() =>
                     run(
                       () =>

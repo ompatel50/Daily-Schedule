@@ -26,6 +26,8 @@ import {
 } from "lucide-react";
 import { toast } from "sonner";
 
+import { toastMovedToTrash } from "@/components/shared/trash-toast";
+
 import { EmptyState } from "@/components/shared/empty-state";
 import { SectionCard } from "@/components/shared/section-card";
 import { Badge } from "@/components/ui/badge";
@@ -205,6 +207,16 @@ export function TaskBoard({ board }: { board: TaskBoardData }) {
     });
   }
 
+  /** Deletes are soft: the toast names the Trash and offers the real undo. */
+  function runDelete(fn: () => Promise<ActionResult<unknown>>, message: string, id: string) {
+    startTransition(async () => {
+      const result = await fn();
+      if (result.ok) toastMovedToTrash(message, "Task", id, () => router.refresh());
+      else toast.error(result.error);
+      router.refresh();
+    });
+  }
+
   /** Checkbox click: complete an open task, reopen a checked subtask. */
   function toggleDone(id: string, status: string) {
     if (status !== "open") {
@@ -373,7 +385,7 @@ export function TaskBoard({ board }: { board: TaskBoardData }) {
                       setScheduling({ id: task.id, title: task.title, dueDate: task.dueDate })
                     }
                     onDrop={() => run(() => dropTask(task.id), "Task dropped")}
-                    onDelete={() => run(() => deleteTask(task.id), "Task deleted")}
+                    onDelete={() => runDelete(() => deleteTask(task.id), "Task moved to Trash", task.id)}
                   />
                 ))}
               </div>

@@ -188,9 +188,9 @@ test.describe("recurring series scopes (desktop)", () => {
     await dialog.getByLabel("Date", { exact: true }).fill(anchor);
     await dialog.getByLabel("Start").fill("10:00");
     await dialog.getByLabel("End", { exact: true }).fill("10:50");
-    await dialog.getByLabel("Repeats").click();
+    await dialog.getByLabel("Repeat", { exact: true }).click();
     await page.getByRole("option", { name: "Weekly", exact: true }).click();
-    for (const dayButton of ["Mo", "We", "Fr"]) {
+    for (const dayButton of ["Monday", "Wednesday", "Friday"]) {
       await dialog.getByRole("button", { name: dayButton, exact: true }).click();
     }
     await dialog.getByLabel("Ends").click();
@@ -334,7 +334,7 @@ test.describe("recurring scopes on a phone", () => {
     await dialog.getByLabel("Date", { exact: true }).fill(anchor);
     await dialog.getByLabel("Start").fill("09:00");
     await dialog.getByLabel("End", { exact: true }).fill("09:30");
-    await dialog.getByLabel("Repeats").click();
+    await dialog.getByLabel("Repeat", { exact: true }).click();
     await page.getByRole("option", { name: "Daily" }).click();
     await dialog.getByLabel("Ends").click();
     await page.getByRole("option", { name: "On date" }).click();

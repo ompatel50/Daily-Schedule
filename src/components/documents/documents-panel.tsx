@@ -15,6 +15,8 @@ import {
 } from "lucide-react";
 import { toast } from "sonner";
 
+import { toastMovedToTrash } from "@/components/shared/trash-toast";
+
 import { EmptyState } from "@/components/shared/empty-state";
 import { SectionCard } from "@/components/shared/section-card";
 import { Badge } from "@/components/ui/badge";
@@ -76,6 +78,19 @@ export function DocumentsPanel({
       const result = await fn();
       if (result.ok) {
         toast.success(message);
+        router.refresh();
+      } else {
+        toast.error(result.error ?? "Something went wrong");
+      }
+    });
+  }
+
+  /** Deletes are soft: the toast names the Trash and offers the real undo. */
+  function runDelete(fn: () => Promise<{ ok: boolean; error?: string }>, message: string, id: string) {
+    startTransition(async () => {
+      const result = await fn();
+      if (result.ok) {
+        toastMovedToTrash(message, "LifeDocument", id, () => router.refresh());
         router.refresh();
       } else {
         toast.error(result.error ?? "Something went wrong");
@@ -226,7 +241,7 @@ export function DocumentsPanel({
                       <DropdownMenuItem
                         destructive
                         onSelect={() =>
-                          run(() => deleteDocument(document.id), "Document deleted")
+                          runDelete(() => deleteDocument(document.id), "Document moved to Trash", document.id)
                         }
                       >
                         <Trash2 /> Delete

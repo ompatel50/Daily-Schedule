@@ -48,14 +48,31 @@ export default async function DataPage() {
             overview.trashCount > 0 ? ` · ${overview.trashCount} in the trash` : ""
           }`}
         >
-          <div className="overflow-x-auto">
-            <table className="w-full text-sm">
+          {/* Phones get cards; the table needs its min width so it scrolls
+              sideways instead of silently squeezing the date columns. */}
+          <ul className="space-y-2 md:hidden">
+            {overview.modules.map((row) => (
+              <li key={row.module} className="rounded-lg border px-3 py-2 text-sm">
+                <div className="flex items-baseline justify-between gap-2">
+                  <span>{row.module}</span>
+                  <span className="tabular">{row.count.toLocaleString("en-US")}</span>
+                </div>
+                <p className="mt-0.5 text-xs text-muted-foreground">
+                  {row.oldest && row.newest
+                    ? `${formatDay(row.oldest, "MMM d, yyyy")} – ${formatDay(row.newest, "MMM d, yyyy")}`
+                    : "No dated records"}
+                </p>
+              </li>
+            ))}
+          </ul>
+          <div className="hidden overflow-x-auto md:block">
+            <table className="w-full min-w-[560px] text-sm">
               <thead>
                 <tr className="border-b text-left text-xs uppercase tracking-wide text-muted-foreground">
-                  <th className="py-1.5 pr-3 font-medium">Module</th>
-                  <th className="py-1.5 pr-3 text-right font-medium">Records</th>
-                  <th className="py-1.5 pr-3 font-medium">Oldest</th>
-                  <th className="py-1.5 font-medium">Newest</th>
+                  <th scope="col" className="py-1.5 pr-3 font-medium">Module</th>
+                  <th scope="col" className="py-1.5 pr-3 text-right font-medium">Records</th>
+                  <th scope="col" className="py-1.5 pr-3 font-medium">Oldest</th>
+                  <th scope="col" className="py-1.5 font-medium">Newest</th>
                 </tr>
               </thead>
               <tbody>

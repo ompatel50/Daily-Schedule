@@ -334,7 +334,7 @@ export function ScheduleRow({
           ) : (
             <DropdownMenuItem
               destructive
-              onClick={() => act(() => deleteScheduleItem(item.id, "one"), "Item deleted")}
+              onClick={() => act(() => deleteScheduleItem(item.id, "one"), "Item moved to Trash")}
             >
               <Trash2 /> Delete
             </DropdownMenuItem>
@@ -354,7 +354,7 @@ export function ScheduleRow({
             setDeleteChooserOpen(false);
             act(
               () => deleteScheduleItem(item.id, scope),
-              scope === "one" ? "Occurrence deleted" : "Deleted",
+              scope === "one" ? "Occurrence moved to Trash" : "Series moved to Trash",
             );
           }}
         />

@@ -246,7 +246,7 @@ test.describe("cross-midnight blocks (desktop)", () => {
     await dialog.getByLabel("Date", { exact: true }).fill(day);
     await dialog.getByLabel("Start").fill("23:45");
     await dialog.getByLabel("End", { exact: true }).fill("00:15");
-    await dialog.getByLabel("Repeats").click();
+    await dialog.getByLabel("Repeat", { exact: true }).click();
     await page.getByRole("option", { name: "Daily", exact: true }).click();
     await dialog.getByLabel("Ends").click();
     await page.getByRole("option", { name: "On date" }).click();

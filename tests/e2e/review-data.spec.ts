@@ -49,7 +49,7 @@ test("the review page rolls an unfinished task into next week", async ({ page })
   await expect(dialog).toBeHidden();
 
   await page.goto("/review");
-  await expect(page.getByRole("heading", { name: "Weekly review" })).toBeVisible();
+  await expect(page.getByRole("heading", { level: 2, name: "Weekly review" })).toBeVisible();
   await expect(page.getByText("How the week went")).toBeVisible();
   await expect(page.getByText("Money this month")).toBeVisible();
   await expect(page.getByText("Reflection", { exact: true })).toBeVisible();

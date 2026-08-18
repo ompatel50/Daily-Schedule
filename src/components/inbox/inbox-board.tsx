@@ -14,6 +14,8 @@ import {
 } from "lucide-react";
 import { toast } from "sonner";
 
+import { toastMovedToTrash } from "@/components/shared/trash-toast";
+
 import { EmptyState } from "@/components/shared/empty-state";
 import { SectionCard } from "@/components/shared/section-card";
 import { Badge } from "@/components/ui/badge";
@@ -114,10 +116,11 @@ export function InboxBoard({
     });
   }
 
-  function run(fn: () => Promise<ActionResult<unknown>>, message: string) {
+  /** Deletes are soft: the toast names the Trash and offers the real undo. */
+  function runDelete(fn: () => Promise<ActionResult<unknown>>, message: string, id: string) {
     startTransition(async () => {
       const result = await fn();
-      if (result.ok) toast.success(message);
+      if (result.ok) toastMovedToTrash(message, "InboxItem", id, () => router.refresh());
       else toast.error(result.error);
       router.refresh();
     });
@@ -271,7 +274,7 @@ export function InboxBoard({
                         <ItemMenu
                           title={item.title}
                           onEdit={() => openEdit(item)}
-                          onDelete={() => run(() => deleteInboxItem(item.id), "Item deleted")}
+                          onDelete={() => runDelete(() => deleteInboxItem(item.id), "Item moved to Trash", item.id)}
                         />
                       </div>
                     </div>
@@ -346,7 +349,7 @@ export function InboxBoard({
                             className="touch-target h-7 px-2 text-xs"
                             onClick={() => {
                               setConfirmingDeleteId(null);
-                              run(() => deleteInboxItem(item.id), "Item deleted");
+                              runDelete(() => deleteInboxItem(item.id), "Item moved to Trash", item.id);
                             }}
                           >
                             Sure?

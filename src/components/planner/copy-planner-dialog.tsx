@@ -80,7 +80,12 @@ export function CopyPlannerDialog({
       if (result.data.status === "conflict") {
         const summary = summarizeConflicts(result.data.conflicts);
         toast.warning(`Would overlap ${summary ?? "existing blocks"}.`, {
+          description: "Nothing was copied yet.",
           action: { label: "Copy anyway", onClick: () => submit(true) },
+          // The action needs reaching and reading — sonner's ~4 s default is
+          // too short for a keyboard or screen-reader user (move-conflict.ts
+          // sets the same window for the same pattern).
+          duration: 10_000,
         });
         return;
       }

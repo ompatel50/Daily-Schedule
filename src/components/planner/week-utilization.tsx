@@ -4,6 +4,7 @@ import * as React from "react";
 import { Gauge } from "lucide-react";
 
 import type { ScheduleRowItem } from "@/components/planner/schedule-row";
+import { Progress } from "@/components/ui/progress";
 import { CATEGORY_META, type ScheduleCategory } from "@/lib/enums";
 import { formatDuration } from "@/lib/date";
 import { weekUtilization } from "@/lib/logic/utilization";
@@ -86,12 +87,7 @@ export function WeekUtilization({
                     {row.doneMinutes > 0 && ` · ${formatDuration(row.doneMinutes)} done`}
                   </span>
                 </div>
-                <div className="mt-0.5 h-1 overflow-hidden rounded-full bg-muted">
-                  <div
-                    className={cn("h-full rounded-full", meta.dot)}
-                    style={{ width: `${width}%` }}
-                  />
-                </div>
+                <Progress value={width} className="mt-0.5 h-1 bg-muted" indicatorClassName={meta.dot} />
               </li>
             );
           })}

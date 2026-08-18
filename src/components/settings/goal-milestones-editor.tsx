@@ -6,6 +6,7 @@ import { Bell, BellOff, CheckCircle2, Circle, Plus, Trash2 } from "lucide-react"
 import { toast } from "sonner";
 
 import { Button } from "@/components/ui/button";
+import { Checkbox } from "@/components/ui/checkbox";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { formatDay } from "@/lib/date";
@@ -34,11 +35,13 @@ export function GoalMilestonesEditor({
   const [target, setTarget] = React.useState("");
   const [date, setDate] = React.useState("");
   const [remind, setRemind] = React.useState(false);
+  // Removal is a hard delete (milestones don't go to the Trash), so it gets
+  // the app's two-step confirm; only one row confirms at a time.
+  const [confirmingRemove, setConfirmingRemove] = React.useState<string | null>(null);
 
   React.useEffect(() => setRows(milestones), [milestones]);
 
-  function add(event: React.MouseEvent) {
-    event.preventDefault();
+  function add() {
     const targetValue = Number(target);
     if (!target.trim() || !Number.isFinite(targetValue)) {
       toast.error("Give the milestone a numeric target");
@@ -76,6 +79,14 @@ export function GoalMilestonesEditor({
     });
   }
 
+  /** Enter in the add row adds the milestone — implicit submission would save
+   *  and close the whole goal dialog, losing what was just typed. */
+  function addOnEnter(event: React.KeyboardEvent) {
+    if (event.key !== "Enter") return;
+    event.preventDefault();
+    add();
+  }
+
   function toggleReminder(row: GoalMilestoneRow) {
     startTransition(async () => {
       const result = await saveGoalMilestone({
@@ -100,6 +111,7 @@ export function GoalMilestonesEditor({
   }
 
   function remove(row: GoalMilestoneRow) {
+    setConfirmingRemove(null);
     startTransition(async () => {
       const result = await deleteGoalMilestone(row.id);
       if (!result.ok) {
@@ -107,13 +119,14 @@ export function GoalMilestonesEditor({
         return;
       }
       setRows((current) => current.filter((entry) => entry.id !== row.id));
+      toast.success(`Milestone ${row.label ?? row.targetValue} removed`);
       router.refresh();
     });
   }
 
   return (
     <div className="space-y-2 rounded-lg border p-3">
-      <Label>Milestones</Label>
+      <p className="section-title">Milestones</p>
       <p className="text-xs text-muted-foreground">
         Checkpoints on the way to the target. Reaching one is recorded automatically; a milestone
         with a date can remind you as it approaches.
@@ -122,19 +135,27 @@ export function GoalMilestonesEditor({
       {rows.length > 0 && (
         <ul className="space-y-1">
           {rows.map((row) => (
-            <li key={row.id} className="flex items-center gap-2 rounded-md border px-2 py-1.5 text-sm">
+            <li
+              key={row.id}
+              className="flex flex-wrap items-center gap-x-2 gap-y-1 rounded-md border px-2 py-1.5 text-sm"
+            >
               {row.reachedAt ? (
                 <CheckCircle2
+                  role="img"
                   className="h-4 w-4 shrink-0 text-emerald-500"
                   aria-label={`Reached ${formatDay(row.reachedAt.slice(0, 10))}`}
                 />
               ) : (
-                <Circle className="h-4 w-4 shrink-0 text-muted-foreground/50" aria-label="Not reached yet" />
+                <Circle
+                  role="img"
+                  className="h-4 w-4 shrink-0 text-muted-foreground/50"
+                  aria-label="Not reached yet"
+                />
               )}
               <span className="min-w-0 flex-1 truncate">
                 {row.label ?? `${row.targetValue}${unit ? ` ${unit}` : ""}`}
               </span>
-              <span className="text-xs text-muted-foreground">
+              <span className="shrink-0 whitespace-nowrap text-xs text-muted-foreground">
                 {row.targetValue}
                 {unit ? ` ${unit}` : ""}
                 {row.targetDate ? ` · by ${formatDay(row.targetDate, "MMM d")}` : ""}
@@ -145,6 +166,7 @@ export function GoalMilestonesEditor({
                   size="icon-sm"
                   variant="ghost"
                   disabled={pending}
+                  className="touch-target shrink-0"
                   aria-label={
                     row.reminderEnabled
                       ? `Turn off the reminder for ${row.label ?? row.targetValue}`
@@ -155,17 +177,39 @@ export function GoalMilestonesEditor({
                   {row.reminderEnabled ? <Bell className="text-domain-habit" /> : <BellOff />}
                 </Button>
               )}
-              <Button
-                type="button"
-                size="icon-sm"
-                variant="ghost"
-                disabled={pending}
-                aria-label={`Delete milestone ${row.label ?? row.targetValue}`}
-                className="text-destructive hover:text-destructive"
-                onClick={() => remove(row)}
-              >
-                <Trash2 />
-              </Button>
+              {confirmingRemove === row.id ? (
+                <span role="status" className="flex shrink-0 items-center gap-1">
+                  <Button
+                    type="button"
+                    size="sm"
+                    variant="destructive"
+                    disabled={pending}
+                    onClick={() => remove(row)}
+                  >
+                    Really remove?
+                  </Button>
+                  <Button
+                    type="button"
+                    size="sm"
+                    variant="ghost"
+                    onClick={() => setConfirmingRemove(null)}
+                  >
+                    Keep
+                  </Button>
+                </span>
+              ) : (
+                <Button
+                  type="button"
+                  size="icon-sm"
+                  variant="ghost"
+                  disabled={pending}
+                  aria-label={`Delete milestone ${row.label ?? row.targetValue}`}
+                  className="touch-target shrink-0 text-destructive hover:text-destructive"
+                  onClick={() => setConfirmingRemove(row.id)}
+                >
+                  <Trash2 />
+                </Button>
+              )}
             </li>
           ))}
         </ul>
@@ -177,6 +221,7 @@ export function GoalMilestonesEditor({
           placeholder="Label (optional)"
           value={label}
           onChange={(event) => setLabel(event.target.value)}
+          onKeyDown={addOnEnter}
         />
         <Input
           aria-label="Milestone target value"
@@ -184,6 +229,7 @@ export function GoalMilestonesEditor({
           inputMode="decimal"
           value={target}
           onChange={(event) => setTarget(event.target.value)}
+          onKeyDown={addOnEnter}
         />
         <Input
           aria-label="Milestone target date"
@@ -193,20 +239,23 @@ export function GoalMilestonesEditor({
             setDate(event.target.value);
             if (!event.target.value) setRemind(false);
           }}
+          onKeyDown={addOnEnter}
         />
-        <Button type="button" variant="outline" disabled={pending} onClick={add}>
+        <Button type="button" variant="outline" disabled={pending} onClick={() => add()}>
           <Plus /> Add
         </Button>
       </div>
       {date && (
-        <label className="flex items-center gap-2 text-xs text-muted-foreground">
-          <input
-            type="checkbox"
+        <div className="flex items-center gap-2">
+          <Checkbox
+            id="milestone-remind"
             checked={remind}
-            onChange={(event) => setRemind(event.target.checked)}
+            onCheckedChange={(checked) => setRemind(checked === true)}
           />
-          Remind me as the date approaches
-        </label>
+          <Label htmlFor="milestone-remind" className="text-xs font-normal text-muted-foreground">
+            Remind me as the date approaches
+          </Label>
+        </div>
       )}
     </div>
   );

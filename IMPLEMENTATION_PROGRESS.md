@@ -5080,7 +5080,7 @@ those cells lean.
 | 9  | Weekly review + data transparency                 | ✅ done |
 | 10 | Dependency & platform hygiene                     | ✅ done |
 | 11 | Reminders/cron improvements                       | ✅ done |
-| 12 | UI/UX redesign pass                               | ⏳ next |
+| 12 | UI/UX redesign pass                               | ✅ done |
 
 ## Phase 1 — finance import correctness
 
@@ -6044,3 +6044,114 @@ Actions) as the exact-time path; `docs/deployment-guide.md` step 8 matches.
   verification: the four new copy statements render on /settings (push
   configured and not), no console errors beyond the known local
   `_vercel/insights` noise. Typecheck, lint, build clean.
+
+## Phase 12 — UI/UX polish, last
+
+No functional changes mixed in; every edit is presentation, honesty, or
+access. The phase ran as a CSP hardening step plus three systematic audits
+(mobile/consistency, accessibility, toast coverage) of every surface this
+update added, with each verified finding fixed or explicitly deferred.
+
+### CSP: nonce-based script-src, `'unsafe-inline'` dropped
+
+The policy moved from next.config.mjs's static headers into the proxy,
+which is the only place a fresh per-request nonce can exist: it builds
+`script-src 'self' 'nonce-…'`, rebuilds the pass-through response so the
+policy rides the REQUEST headers (how Next stamps its own hydration
+scripts), and forwards the nonce as `x-nonce` for the root layout to hand
+to next-themes' theme bootstrap. Styles keep `'unsafe-inline'` (Tailwind /
+Radix / charts set inline styles; none carry script-injection risk); dev
+builds relax script-src for HMR — the nonce policy is a production
+property. Verified live: hydration interactive, all recharts surfaces
+rendered, theme applied before paint, zero CSP refusals (the only console
+noise is the local-dev `_vercel/insights` 404 that every spec already
+filters). The a11y spec's axe injection now needs `bypassCSP: true` — a
+property of the test harness, noted in the spec. next.config keeps the
+other security headers; docs/security-and-privacy.md updated.
+
+### Access and consistency
+
+* `/review` was unreachable on a phone: it was in no NAV_ITEMS entry, no
+  drawer group, and not the command palette — only a dashboard banner shown
+  two days a week. It is now a first-class surface (`g r`, Review drawer
+  group) and `/insights` stops claiming "Weekly review" as its description.
+  The review page's week links moved into the PageHeader as real Buttons
+  (focus ring, touch targets) — deliberately NOT the shared DateNav, whose
+  free two-way stepping would reach future weeks and write reflections
+  under future journal dates.
+* The Settings data table gets the established two-shape treatment: a card
+  list on phones, `min-w` + `overflow-x-auto` + `scope="col"` at md-and-up
+  (before, `w-full` never overflowed — it silently crushed the date
+  columns).
+* Shared primitives replace hand-rolled copies where the same data already
+  has a canonical form elsewhere: EmptyState in the Trash and both review
+  empty cases (the "Unfinished tasks" card no longer renders a titled but
+  bodyless shell on a clean week), Progress for the review budget bars and
+  utilisation category bars, the Checkbox component for the milestone
+  reminder opt-in (the repo's only raw checkbox input), full Badge padding
+  in the Trash.
+* `/review` got a page-shaped loading.tsx; new surfaces already used
+  PageHeader + SectionCard throughout (audit-verified).
+
+### Accessibility
+
+* schedule-item-dialog: the three unnamed Selects (Category, Priority,
+  Status) and the Repeat select are Label/htmlFor-paired; the weekday
+  toggles carry `aria-pressed`, full-day-name accessible names and a focus
+  ring; the async double-booking warning announces via `role="status"`.
+* mark-transfer-dialog: the hand-rolled radiogroup now honours its
+  contract — roving tabIndex, arrow-key movement, focus ring, and a check
+  glyph so selection isn't color-only; the disabled "Create missing leg"
+  explains itself in visible text instead of an unreachable `title`.
+* Milestones editor: Enter adds the milestone instead of implicitly
+  submitting (and closing) the whole goal dialog; status icons carry
+  `role="img"`; both row buttons gained `touch-target`.
+* review-board: per-row roll buttons are row-scoped ("Roll “X” to next
+  week"); over-budget is stated in text ("· over by $120"), not color
+  alone. habit-dialog: the pause error is `aria-describedby`-paired.
+  transfer suggestions: the Link button names its pair; account spans got
+  flex bases so a phone wrap keeps "A → B" readable.
+* The Trash purge deadline is visible text ("deleted Aug 12 · gone
+  Sep 11"), not a hover-only title; the copy-planner conflict toast holds
+  10 s (sonner's ~4 s default was unreachable for AT users).
+* The axe floor now audits `/finance`, `/review`, `/settings/data` and
+  `/settings/trash` (135 E2E, up 4) — all clean at phone width.
+
+### Toasts: the Trash became visible at the moment of deletion
+
+Every soft delete's toast said "deleted" as if it were permanent — two
+were outright wrong ("Account and its ledger deleted", "Habit and its
+logs deleted"). A shared `toastMovedToTrash` helper now names the Trash
+and carries a one-click Undo that runs the REAL `restoreTrashItem` (the
+Settings → Trash action) — wired for tasks, inbox items, documents, and
+all five finance deletes. Planner deletes name the Trash without the
+one-click undo, deliberately: restoring a series or skipped occurrence has
+follow-on questions the Trash page presents properly. Also: the pre-import
+safety backup can no longer fail silently — if it cannot be produced the
+import (crucially replace mode) refuses to run, keeping the promise the
+dialog makes twice; staged backup uploads show live progress
+(`role="status"` + Progress + byte counts — the transport's callback was
+simply never consumed); milestone removal is two-step confirmed and
+announced; per-item Trash purge is two-step (matching Empty trash, which
+now also reports its count and offers Cancel); a failing roll-all stops at
+the first error instead of stacking one toast per task.
+
+### Deliberately not done (documented, not forgotten)
+
+* backup-panel's "Reset everything" keeps its two stacked `window.confirm`s
+  — natively accessible, just unstyled; converting it buys polish only.
+* Milestone add / reminder-toggle stay success-silent: additive,
+  self-evident row changes (the audits agreed).
+* The react-hooks v7 warn-level burn-down (58 sites) remains open — it is
+  a behaviour-preserving refactor pass of its own, not polish.
+
+### Verification
+
+Typecheck clean; lint 0 errors (the 58 documented v7 warnings); production
+build clean. Unit **1,285**, integration **485**, E2E **135 passed / 2
+skipped** (spec selectors updated where accessible names deliberately
+changed: weekday full names, "Repeat" label pairing, the Link button's
+row-scoped name, two-step purge, the topbar/page heading collision on
+/review). Browser verification: nonce CSP live-probed (hydration, charts,
+theme, cookie headers), 390 px overflow sweep clean on /review,
+/settings/trash, /settings/data, /finance, /planner.

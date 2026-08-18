@@ -112,9 +112,9 @@ test("suggest → link → unlink → mark-as-transfer round trip", async ({ pag
   const suggestion = page
     .locator("div.rounded-lg.border")
     .filter({ hasText: PAYEE_OUT })
-    .filter({ has: page.getByRole("button", { name: "Link", exact: true }) })
+    .filter({ has: page.getByRole("button", { name: /^Link .* as one transfer$/ }) })
     .first();
-  await suggestion.getByRole("button", { name: "Link", exact: true }).click();
+  await suggestion.getByRole("button", { name: /^Link .* as one transfer$/ }).click();
 
   // Both rows now wear the Transfer badge; the suggestion card is gone.
   const outRow = txRow(page, PAYEE_OUT);

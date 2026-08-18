@@ -4,6 +4,7 @@ import {
   CalendarDays,
   CalendarRange,
   CheckSquare,
+  ClipboardCheck,
   Dumbbell,
   HeartPulse,
   Inbox,
@@ -124,8 +125,16 @@ export const NAV_ITEMS: NavItem[] = [
     label: "Insights",
     icon: LineChart,
     shortcut: "i",
-    description: "Weekly review and trends",
+    description: "Scores, trends and correlations",
     accent: "text-domain-workout",
+  },
+  {
+    href: "/review",
+    label: "Weekly review",
+    icon: ClipboardCheck,
+    shortcut: "r",
+    description: "Close the week: recap, roll tasks, reflect",
+    accent: "text-domain-planner",
   },
   {
     href: "/assistant",
@@ -161,7 +170,7 @@ export function isNavItemActive(href: string, pathname: string): boolean {
 export const NAV_GROUPS: Array<{ label: string; hrefs: string[] }> = [
   { label: "Plan", hrefs: ["/", "/today", "/planner", "/tasks", "/inbox"] },
   { label: "Track", hrefs: ["/habits", "/nutrition", "/workouts", "/health"] },
-  { label: "Review", hrefs: ["/calendar", "/insights", "/finance"] },
+  { label: "Review", hrefs: ["/calendar", "/insights", "/review", "/finance"] },
   { label: "App", hrefs: ["/assistant", "/settings"] },
 ];
 

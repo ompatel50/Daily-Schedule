@@ -4,6 +4,7 @@ import { ChevronLeft, ChevronRight } from "lucide-react";
 
 import { ReviewBoard } from "@/components/review/review-board";
 import { PageHeader } from "@/components/shared/page-header";
+import { Button } from "@/components/ui/button";
 import { isDayKey, type DayKey } from "@/lib/date";
 import { getWeeklyReviewPage } from "@/server/review";
 
@@ -25,37 +26,37 @@ export default async function ReviewPage({
 
   return (
     <div className="mx-auto max-w-4xl">
+      {/* Deliberately NOT the shared DateNav: it steps freely in both
+          directions, and a future week must stay unreachable here — its
+          reflection would write a journal entry under a future date. The
+          links keep the one-way semantics but wear the Button anatomy, so
+          they get the focus ring and full touch targets the raw links
+          lacked. */}
       <PageHeader
         title="Weekly review"
         description={`${page.week.label}${page.isCurrentWeek ? " — this week" : ""}`}
-      />
-
-      <div className="mb-4 flex items-center gap-2">
-        <Link
-          href={`/review?date=${page.previousAnchor}`}
-          className="inline-flex min-h-9 items-center gap-1 rounded-md border px-2.5 text-sm transition-colors hover:bg-accent"
-        >
-          <ChevronLeft className="h-4 w-4" /> Previous week
-        </Link>
-        {!page.isCurrentWeek && (
-          <>
-            {page.nextAnchor && (
-              <Link
-                href={`/review?date=${page.nextAnchor}`}
-                className="inline-flex min-h-9 items-center gap-1 rounded-md border px-2.5 text-sm transition-colors hover:bg-accent"
-              >
-                Next week <ChevronRight className="h-4 w-4" />
+        actions={
+          <div className="flex flex-wrap items-center gap-1.5">
+            <Button asChild variant="outline" size="sm" className="touch-target">
+              <Link href={`/review?date=${page.previousAnchor}`}>
+                <ChevronLeft /> Previous<span className="hidden sm:inline"> week</span>
               </Link>
+            </Button>
+            {!page.isCurrentWeek && page.nextAnchor && (
+              <Button asChild variant="outline" size="sm" className="touch-target">
+                <Link href={`/review?date=${page.nextAnchor}`}>
+                  Next<span className="hidden sm:inline"> week</span> <ChevronRight />
+                </Link>
+              </Button>
             )}
-            <Link
-              href="/review"
-              className="inline-flex min-h-9 items-center rounded-md border px-2.5 text-sm transition-colors hover:bg-accent"
-            >
-              This week
-            </Link>
-          </>
-        )}
-      </div>
+            {!page.isCurrentWeek && (
+              <Button asChild variant="outline" size="sm" className="touch-target">
+                <Link href="/review">This week</Link>
+              </Button>
+            )}
+          </div>
+        }
+      />
 
       <ReviewBoard page={page} />
     </div>

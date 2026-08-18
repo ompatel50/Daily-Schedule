@@ -2,7 +2,7 @@
 
 import * as React from "react";
 import { useRouter } from "next/navigation";
-import { Link2, Loader2, Plus } from "lucide-react";
+import { Check, Link2, Loader2, Plus } from "lucide-react";
 import { toast } from "sonner";
 
 import { Badge } from "@/components/ui/badge";
@@ -57,6 +57,7 @@ export function MarkTransferDialog({
   const [windowDays, setWindowDays] = React.useState<number>(5);
   const [accountId, setAccountId] = React.useState<string>(ANY_ACCOUNT);
   const [selectedId, setSelectedId] = React.useState<string | null>(null);
+  const radioGroupRef = React.useRef<HTMLDivElement>(null);
 
   const transactionId = transaction?.id ?? null;
 
@@ -192,24 +193,64 @@ export function MarkTransferDialog({
             {pending && !data ? (
               <p className="py-2 text-sm text-muted-foreground">Looking for matches…</p>
             ) : visibleCandidates.length > 0 ? (
-              <div className="space-y-1.5" role="radiogroup" aria-label="Candidate matches">
-                {visibleCandidates.map((candidate) => (
+              // A real radiogroup contract: one tab stop (roving tabIndex),
+              // arrows move the selection, and the checked row shows a glyph
+              // rather than color alone.
+              <div
+                ref={radioGroupRef}
+                className="space-y-1.5"
+                role="radiogroup"
+                aria-label="Candidate matches"
+                onKeyDown={(event) => {
+                  const step =
+                    event.key === "ArrowDown" || event.key === "ArrowRight"
+                      ? 1
+                      : event.key === "ArrowUp" || event.key === "ArrowLeft"
+                        ? -1
+                        : 0;
+                  if (step === 0) return;
+                  event.preventDefault();
+                  const index = visibleCandidates.findIndex(
+                    (candidate) => candidate.id === selectedId,
+                  );
+                  const next =
+                    (Math.max(index, 0) + step + visibleCandidates.length) %
+                    visibleCandidates.length;
+                  setSelectedId(visibleCandidates[next].id);
+                  const radios =
+                    radioGroupRef.current?.querySelectorAll<HTMLButtonElement>('[role="radio"]');
+                  radios?.[next]?.focus();
+                }}
+              >
+                {visibleCandidates.map((candidate, index) => (
                   <button
                     key={candidate.id}
                     type="button"
                     role="radio"
                     aria-checked={selectedId === candidate.id}
+                    tabIndex={
+                      selectedId === candidate.id || (selectedId === null && index === 0) ? 0 : -1
+                    }
                     onClick={() => setSelectedId(candidate.id)}
                     className={cn(
                       "w-full rounded-lg border px-3 py-2 text-left text-sm transition-colors",
+                      "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2",
                       selectedId === candidate.id
                         ? "border-domain-finance bg-domain-finance/5"
                         : "hover:bg-muted/50",
                     )}
                   >
                     <div className="flex flex-wrap items-center justify-between gap-2">
-                      <span className="min-w-0 truncate font-medium">
-                        {candidate.payee ?? "(no description)"}
+                      <span className="inline-flex min-w-0 items-center gap-1.5">
+                        {selectedId === candidate.id && (
+                          <Check
+                            className="h-3.5 w-3.5 shrink-0 text-domain-finance"
+                            aria-hidden="true"
+                          />
+                        )}
+                        <span className="min-w-0 truncate font-medium">
+                          {candidate.payee ?? "(no description)"}
+                        </span>
                       </span>
                       <span className="tabular shrink-0 font-semibold">
                         {candidate.amount > 0 ? "+" : ""}
@@ -238,16 +279,18 @@ export function MarkTransferDialog({
           </div>
         )}
 
+        {accountId === ANY_ACCOUNT && (
+          // Visible, not a title tooltip: a disabled button is unfocusable,
+          // so a hover-only explanation reaches neither keyboard nor touch.
+          <p className="text-xs text-muted-foreground">
+            To create the missing leg, pick the counterpart account first.
+          </p>
+        )}
         <DialogFooter className="gap-2 sm:justify-between">
           <Button
             type="button"
             variant="outline"
             disabled={pending || accountId === ANY_ACCOUNT}
-            title={
-              accountId === ANY_ACCOUNT
-                ? "Pick the counterpart account first"
-                : undefined
-            }
             onClick={createLeg}
           >
             <Plus /> Create missing leg

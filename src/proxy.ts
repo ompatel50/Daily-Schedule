@@ -13,7 +13,7 @@
  * src/server/auth/current-user.ts. Defense in depth, not a single gate.
  */
 import NextAuth from "next-auth";
-import type { NextFetchEvent, NextRequest } from "next/server";
+import { NextResponse, type NextFetchEvent, type NextRequest } from "next/server";
 
 import { authConfig } from "@/server/auth/config";
 
@@ -55,9 +55,62 @@ function withoutSessionRefresh(response: Response): Response {
   return response;
 }
 
+/**
+ * The Content-Security-Policy, built per request because `script-src` is
+ * nonce-based: no `'unsafe-inline'` — every inline script must carry this
+ * request's nonce (Next stamps its own hydration scripts with it when the
+ * policy travels on the request headers; next-themes takes it as a prop in
+ * the root layout). `'self'` still admits the app's own chunk files.
+ * Styles keep `'unsafe-inline'`: Tailwind's runtime style attributes,
+ * Radix and the charts all set inline styles, which carry none of the
+ * injection risk executable script does. Dev builds relax script-src to
+ * keep HMR and React Refresh working — the nonce policy is a production
+ * property, verified by the E2E suite against the production build.
+ */
+function contentSecurityPolicy(nonce: string | null): string {
+  return [
+    "default-src 'self'",
+    nonce === null
+      ? "script-src 'self' 'unsafe-inline' 'unsafe-eval'"
+      : `script-src 'self' 'nonce-${nonce}'`,
+    "style-src 'self' 'unsafe-inline'",
+    "img-src 'self' blob: data:",
+    "font-src 'self'",
+    "connect-src 'self'",
+    "worker-src 'self' blob:",
+    "frame-ancestors 'none'",
+    "base-uri 'self'",
+    "form-action 'self'",
+    "object-src 'none'",
+  ].join("; ");
+}
+
 export default async function proxy(request: NextRequest, event: NextFetchEvent) {
   const response = await handle(request, event);
-  return response ? withoutSessionRefresh(response) : response;
+  if (!response) return response;
+  withoutSessionRefresh(response);
+
+  // A redirect renders no document — the policy would decorate nothing.
+  if (response.headers.has("location")) return response;
+
+  const nonce =
+    process.env.NODE_ENV === "production"
+      ? Buffer.from(crypto.randomUUID()).toString("base64")
+      : null;
+  const csp = contentSecurityPolicy(nonce);
+
+  // The nonce must reach the renderer as a REQUEST header for Next to stamp
+  // its own inline scripts, so the pass-through response is rebuilt with the
+  // amended request; the auth response's surviving cookies come along.
+  const requestHeaders = new Headers(request.headers);
+  requestHeaders.set("content-security-policy", csp);
+  if (nonce !== null) requestHeaders.set("x-nonce", nonce);
+  const rendered = NextResponse.next({ request: { headers: requestHeaders } });
+  for (const cookie of response.headers.getSetCookie()) {
+    rendered.headers.append("set-cookie", cookie);
+  }
+  rendered.headers.set("content-security-policy", csp);
+  return rendered;
 }
 
 export const config = {

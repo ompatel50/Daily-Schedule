@@ -24,9 +24,10 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import { SectionCard } from "@/components/shared/section-card";
+import { Progress } from "@/components/ui/progress";
 import type { BackupCompatibility, CsvTable } from "@/lib/backup-format";
 import { toDayKey } from "@/lib/date";
-import { formatNumber } from "@/lib/utils";
+import { formatBytes, formatNumber } from "@/lib/utils";
 import {
   exportBackup,
   exportCsv,
@@ -112,6 +113,14 @@ export function BackupPanel() {
     }
   }
 
+  // Bytes-on-the-server progress while a large file stages in parts; null
+  // outside an upload. Rendered as a live region so the multi-minute case
+  // (a big backup over cellular) is never a bare spinner.
+  const [uploadProgress, setUploadProgress] = React.useState<{
+    sent: number;
+    total: number;
+  } | null>(null);
+
   const [pending, setPending] = React.useState<{
     /** The parsed file, when it was small enough to travel as one body. */
     parsed?: unknown;
@@ -139,7 +148,9 @@ export function BackupPanel() {
       if (file.size > DIRECT_IMPORT_MAX_BYTES) {
         // Too big for one request body — stage it in parts. The preview the
         // dialog shows is the server's inspection of the reassembled file.
-        const staged = await stageBackupFile(file);
+        const staged = await stageBackupFile(file, (progress) =>
+          setUploadProgress({ sent: progress.sent, total: progress.total }),
+        );
         if (!staged.ok) {
           toast.error(staged.error);
           return;
@@ -168,6 +179,7 @@ export function BackupPanel() {
       toast.error("That file isn't valid JSON");
     } finally {
       setBusy(null);
+      setUploadProgress(null);
     }
   }
 
@@ -177,14 +189,21 @@ export function BackupPanel() {
     if (!pending) return;
     setBusy("import");
     try {
+      // The dialog promises this download twice; if it cannot be produced,
+      // proceeding (especially in replace mode, which wipes first) would be
+      // an unannounced broken promise — stop instead, import nothing.
       const safety = await exportBackup();
-      if (safety.ok) {
-        download(
-          `pre-import-backup-${toDayKey(new Date())}.json`,
-          JSON.stringify(safety.data),
-          "application/json",
+      if (!safety.ok) {
+        toast.error(
+          `Couldn't back up your current data first (${safety.error}) — nothing was imported. Try again.`,
         );
+        return;
       }
+      download(
+        `pre-import-backup-${toDayKey(new Date())}.json`,
+        JSON.stringify(safety.data),
+        "application/json",
+      );
 
       // A staged file finalizes server-side (the finalize runs the same
       // importBackup and returns its result verbatim); a small file takes the
@@ -310,6 +329,27 @@ export function BackupPanel() {
           </Button>
           <input ref={fileRef} type="file" accept="application/json,.json" hidden onChange={onFile} />
         </div>
+
+        {uploadProgress && (
+          // The multi-part staging of a large file, announced as it goes —
+          // the same presentation the health importer gives this transport.
+          <div role="status" aria-live="polite" className="mt-3 space-y-1.5">
+            <Progress
+              value={
+                uploadProgress.total > 0
+                  ? Math.round((uploadProgress.sent / uploadProgress.total) * 100)
+                  : 0
+              }
+              className="h-1.5"
+            />
+            <p className="text-xs text-muted-foreground">
+              Uploading {formatBytes(uploadProgress.sent)} of {formatBytes(uploadProgress.total)}
+              {uploadProgress.total > 0
+                ? ` · ${Math.round((uploadProgress.sent / uploadProgress.total) * 100)}%`
+                : ""}
+            </p>
+          </div>
+        )}
         <p className="mt-3 text-xs text-muted-foreground">
           You&apos;ll see what the file contains before anything is written, and a backup of your
           current data downloads automatically first. Records are matched by id, so importing the
@@ -318,7 +358,7 @@ export function BackupPanel() {
         </p>
 
         <Dialog open={pending !== null} onOpenChange={(open) => !open && dismissPending()}>
-          <DialogContent className="max-h-[85vh] max-w-lg overflow-y-auto">
+          <DialogContent className="max-h-[calc(100dvh-2rem)] max-w-lg overflow-y-auto">
             {pending && (
               <>
                 <DialogHeader>

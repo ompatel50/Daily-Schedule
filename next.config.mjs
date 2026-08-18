@@ -2,34 +2,13 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 
 /**
- * Content Security Policy.
- *
- * Everything the app needs is same-origin: self-hosted fonts (next/font),
- * same-origin server actions, webpack-built workers, no third-party scripts
- * and no analytics. `'unsafe-inline'` remains for scripts and styles because
- * Next.js hydration and Tailwind/styled-jsx inject inline code; a nonce-based
- * policy would require per-request middleware rewriting and is documented as
- * a possible hardening step. `blob:` covers chart rendering; `data:` covers
- * inline SVG/image data URIs. `worker-src` stays permitted because Next's own
- * build may emit workers, even though the health import no longer uses one —
- * health exports are parsed on the server (see docs/health-import-privacy.md).
+ * The Content-Security-Policy is NOT set here: a nonce-based `script-src`
+ * needs a fresh nonce per request, which a static headers() block cannot
+ * carry. The proxy (src/proxy.ts) builds and attaches it on every response
+ * that renders a document. The static headers below apply everywhere,
+ * including the few public files the proxy's matcher skips.
  */
-const contentSecurityPolicy = [
-  "default-src 'self'",
-  "script-src 'self' 'unsafe-inline'",
-  "style-src 'self' 'unsafe-inline'",
-  "img-src 'self' blob: data:",
-  "font-src 'self'",
-  "connect-src 'self'",
-  "worker-src 'self' blob:",
-  "frame-ancestors 'none'",
-  "base-uri 'self'",
-  "form-action 'self'",
-  "object-src 'none'",
-].join("; ");
-
 const securityHeaders = [
-  { key: "Content-Security-Policy", value: contentSecurityPolicy },
   { key: "X-Content-Type-Options", value: "nosniff" },
   { key: "X-Frame-Options", value: "DENY" },
   { key: "Referrer-Policy", value: "strict-origin-when-cross-origin" },

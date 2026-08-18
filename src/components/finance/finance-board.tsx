@@ -43,6 +43,7 @@ import { TransactionsSection } from "@/components/finance/transactions-section";
 import { TransferDialog } from "@/components/finance/transfer-dialog";
 import { TransferSuggestionsSection } from "@/components/finance/transfer-suggestions-section";
 import { UndoImportDialog } from "@/components/finance/undo-import-dialog";
+import { toastMovedToTrash } from "@/components/shared/trash-toast";
 import { formatDay } from "@/lib/date";
 import { BILL_RECURRENCES, isBookkeepingCategory } from "@/lib/enums";
 import type { CategoryDelta } from "@/lib/logic/finance";
@@ -160,6 +161,24 @@ export function FinanceBoard({
     });
   }
 
+  /** Deletes are soft: the toast names the Trash and offers the real undo. */
+  function runDelete(
+    fn: () => Promise<{ ok: boolean; error?: string }>,
+    message: string,
+    model: Parameters<typeof toastMovedToTrash>[1],
+    id: string,
+  ) {
+    startTransition(async () => {
+      const result = await fn();
+      if (result.ok) {
+        toastMovedToTrash(message, model, id, () => router.refresh());
+        router.refresh();
+      } else {
+        toast.error(result.error ?? "Something went wrong");
+      }
+    });
+  }
+
   function markPaid(bill: BillRowView) {
     startTransition(async () => {
       const result = await markBillPaid({ billId: bill.id, date: today, recordTransaction: true });
@@ -200,7 +219,12 @@ export function FinanceBoard({
             setTxOpen(true);
           }}
           onDelete={(transaction) =>
-            run(() => deleteTransaction(transaction.id), "Transaction deleted")
+            runDelete(
+              () => deleteTransaction(transaction.id),
+              "Transaction moved to Trash",
+              "FinanceTransaction",
+              transaction.id,
+            )
           }
           onMarkTransfer={setMarkingTransfer}
           onUnlinkTransfer={(transaction) =>
@@ -229,7 +253,7 @@ export function FinanceBoard({
             setBillOpen(true);
           }}
           onArchive={(bill) => run(() => setBillArchived(bill.id, true), "Bill archived")}
-          onDelete={(bill) => run(() => deleteBill(bill.id), "Bill deleted")}
+          onDelete={(bill) => runDelete(() => deleteBill(bill.id), "Bill moved to Trash", "Bill", bill.id)}
           onTrackSuggestion={trackSuggestion}
           onDismissSuggestion={(suggestion) =>
             run(
@@ -267,7 +291,12 @@ export function FinanceBoard({
             run(() => setFinanceAccountArchived(account.id, false), "Account restored")
           }
           onDelete={(account) =>
-            run(() => deleteFinanceAccount(account.id), "Account and its ledger deleted")
+            runDelete(
+              () => deleteFinanceAccount(account.id),
+              "Account and its ledger moved to Trash",
+              "FinanceAccount",
+              account.id,
+            )
           }
         />
 
@@ -284,7 +313,9 @@ export function FinanceBoard({
             setGoalOpen(true);
           }}
           onArchive={(goal) => run(() => setSavingsGoalArchived(goal.id, true), "Goal archived")}
-          onDelete={(goal) => run(() => deleteSavingsGoal(goal.id), "Goal deleted")}
+          onDelete={(goal) =>
+            runDelete(() => deleteSavingsGoal(goal.id), "Goal moved to Trash", "SavingsGoal", goal.id)
+          }
         />
 
         <BudgetsSection
@@ -298,7 +329,9 @@ export function FinanceBoard({
             setBudgetEditing(budget);
             setBudgetOpen(true);
           }}
-          onDelete={(budget) => run(() => deleteBudget(budget.id), "Budget deleted")}
+          onDelete={(budget) =>
+            runDelete(() => deleteBudget(budget.id), "Budget moved to Trash", "Budget", budget.id)
+          }
         />
 
         <ImportBatchesSection batches={importBatches} onUndo={setUndoBatch} />

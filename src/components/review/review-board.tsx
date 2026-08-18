@@ -6,7 +6,9 @@ import { ArrowRight, BookOpenCheck, Loader2, NotebookPen } from "lucide-react";
 import { toast } from "sonner";
 
 import { Badge } from "@/components/ui/badge";
+import { EmptyState } from "@/components/shared/empty-state";
 import { Button } from "@/components/ui/button";
+import { Progress } from "@/components/ui/progress";
 import { SectionCard } from "@/components/shared/section-card";
 import { StatCard } from "@/components/shared/stat-card";
 import { Textarea } from "@/components/ui/textarea";
@@ -45,7 +47,10 @@ export function ReviewBoard({ page }: { page: WeeklyReviewPage }) {
           moved += 1;
           setRolled((state) => ({ ...state, [id]: true }));
         } else {
+          // One error toast, then stop — a failing roll-all would otherwise
+          // stack a toast per remaining task for the same root cause.
           toast.error(result.error);
+          break;
         }
       }
       if (moved > 0) {
@@ -139,7 +144,7 @@ export function ReviewBoard({ page }: { page: WeeklyReviewPage }) {
         accent="text-domain-task"
         description={
           remaining.length === 0
-            ? "Nothing due this week is still open. Clean slate."
+            ? "Everything due this week is closed out"
             : `${remaining.length} still open — roll what still matters into next week`
         }
         action={
@@ -155,6 +160,13 @@ export function ReviewBoard({ page }: { page: WeeklyReviewPage }) {
           ) : undefined
         }
       >
+        {remaining.length === 0 && (
+          <EmptyState
+            icon={ArrowRight}
+            title="Clean slate"
+            description="Nothing due this week is still open."
+          />
+        )}
         {remaining.length > 0 && (
           <ul className="space-y-1.5">
             {remaining.map((task) => (
@@ -175,6 +187,7 @@ export function ReviewBoard({ page }: { page: WeeklyReviewPage }) {
                   size="sm"
                   variant="outline"
                   disabled={pending}
+                  aria-label={`Roll “${task.title}” to next week`}
                   onClick={() => roll([task.id])}
                 >
                   <ArrowRight /> Next week
@@ -193,7 +206,11 @@ export function ReviewBoard({ page }: { page: WeeklyReviewPage }) {
         description={`${formatCents(page.money.month.spending)} spent · ${formatCents(page.money.month.income)} in`}
       >
         {page.money.budgets.length === 0 ? (
-          <p className="text-sm text-muted-foreground">No budgets set up.</p>
+          <EmptyState
+            icon={BookOpenCheck}
+            title="No budgets set up"
+            description="Create budgets on the Finance page to see them here."
+          />
         ) : (
           <ul className="space-y-2">
             {page.money.budgets.map((budget) => (
@@ -211,17 +228,16 @@ export function ReviewBoard({ page }: { page: WeeklyReviewPage }) {
                   >
                     {formatCents(budget.spent)} of {formatCents(budget.effectiveAmount)} ·{" "}
                     {budget.percent}%
+                    {budget.over
+                      ? ` · over by ${formatCents(budget.spent - budget.effectiveAmount)}`
+                      : ""}
                   </span>
                 </div>
-                <div className="mt-1 h-1.5 overflow-hidden rounded-full bg-muted">
-                  <div
-                    className={cn(
-                      "h-full rounded-full",
-                      budget.over ? "bg-red-500" : "bg-domain-finance",
-                    )}
-                    style={{ width: `${Math.min(100, budget.percent)}%` }}
-                  />
-                </div>
+                <Progress
+                  value={Math.min(100, budget.percent)}
+                  className="mt-1 h-1.5"
+                  indicatorClassName={budget.over ? "bg-red-500" : "bg-domain-finance"}
+                />
               </li>
             ))}
           </ul>

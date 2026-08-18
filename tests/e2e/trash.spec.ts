@@ -31,7 +31,9 @@ async function sweepTrash(page: Page) {
   const purgeButtons = page.getByRole("button", { name: /^Delete TRSH .* forever$/ });
   let count = await purgeButtons.count();
   while (count > 0) {
+    // Purging is two-step now: the row swaps to a "Really?" confirm.
     await purgeButtons.first().click();
+    await page.getByRole("button", { name: "Really?" }).click();
     await expect(purgeButtons).toHaveCount(count - 1);
     count -= 1;
   }
@@ -101,6 +103,7 @@ test("a deleted task round-trips through the Trash, and purge is final", async (
   await page.getByRole("menuitem", { name: "Really delete?" }).click();
   await page.goto("/settings/trash");
   await page.getByRole("button", { name: `Delete ${title} forever` }).click();
+  await page.getByRole("button", { name: "Really?" }).click();
   await expect(page.getByRole("button", { name: `Delete ${title} forever` })).toHaveCount(0);
   await page.goto("/tasks");
   await expect(page.getByRole("button", { name: `Actions for ${title}` })).toHaveCount(0);
