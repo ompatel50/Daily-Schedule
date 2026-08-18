@@ -34,15 +34,19 @@ datasource db {
 // ---------------------------------------------------------------------------
 
 model User {
-  id        String   @id @default(cuid())
-  name      String
+  id                 String    @id @default(cuid())
+  name               String
   /// The sign-in identifier. Kept nullable deliberately: a row without an
   /// email (or without a password) simply can never sign in — the credential
   /// check fails closed on null — and forcing NOT NULL here would make the
   /// migration fail on any historical row rather than harmlessly stranding
   /// it. Every account created through public sign-up has one.
-  email     String?  @unique
-  timezone  String   @default("America/New_York")
+  email              String?   @unique
+  timezone           String    @default("America/New_York")
+  /// When this account last exported a full backup — the Settings data page's
+  /// "backup recency" line. Stamped by exportBackup; null = never exported.
+  lastBackupExportAt DateTime?
+
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 

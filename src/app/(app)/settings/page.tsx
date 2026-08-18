@@ -125,6 +125,26 @@ export default async function SettingsPage() {
         </SectionCard>
 
         <SectionCard
+          title="Your data"
+          icon={Database}
+          accent="text-muted-foreground"
+          description="Record counts, oldest and newest entries, import and backup recency"
+        >
+          <div className="flex flex-wrap items-center justify-between gap-3 text-sm text-muted-foreground">
+            <p>
+              A read-only, module-by-module view of everything this account holds — the same
+              numbers the assistant reports, surfaced for you.
+            </p>
+            <Link
+              href="/settings/data"
+              className="inline-flex min-h-9 items-center rounded-md border px-3 text-sm font-medium text-foreground transition-colors hover:bg-accent"
+            >
+              View your data
+            </Link>
+          </div>
+        </SectionCard>
+
+        <SectionCard
           title="Trash"
           icon={Trash2}
           accent="text-muted-foreground"

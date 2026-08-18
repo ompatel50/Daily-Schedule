@@ -224,6 +224,12 @@ export async function exportBackup(): Promise<ActionResult<BackupFile>> {
   );
   const exportedAt = new Date().toISOString();
 
+  // The Settings data page's "backup recency" line. Best-effort — a failed
+  // stamp must not cost the user their export file.
+  await prisma.user
+    .update({ where: { id: user.id }, data: { lastBackupExportAt: new Date(exportedAt) } })
+    .catch(() => {});
+
   return succeed({
     version: BACKUP_VERSION,
     exportedAt,

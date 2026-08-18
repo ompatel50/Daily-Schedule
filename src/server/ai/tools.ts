@@ -751,6 +751,7 @@ const backupStatusTool: AssistantTool = {
     return toolOk({
       backupFormatVersion: BACKUP_VERSION,
       exportPath: "/settings#backup",
+      lastBackupExportAt: ctx.user.lastBackupExportAt?.toISOString() ?? null,
       recordCounts: {
         tasks, projects, scheduleItems, habits, meals, workouts, healthMetrics,
         transactions, accounts, bills, inboxItems, documents, reminders,

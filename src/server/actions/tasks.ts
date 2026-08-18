@@ -301,6 +301,32 @@ export async function deleteTask(id: string): Promise<ActionResult<null>> {
   return succeed(null);
 }
 
+/**
+ * "Didn't get to it" — the weekly review's one-click roll: move an OPEN
+ * task's due date forward (typically to the next week's start). A repeating
+ * task re-anchors on the new date, exactly as an edit through the dialog
+ * would, so its cadence walks from where it actually restarts.
+ */
+export async function rollTaskForward(
+  id: string,
+  toDate: string,
+): Promise<ActionResult<{ dueDate: string }>> {
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(toDate)) return fail("Expected a YYYY-MM-DD date");
+  const user = await getCurrentUser();
+  const task = await prisma.task.findFirst({ where: { id, userId: user.id, status: "open" } });
+  if (!task) return fail("Task not found");
+
+  await prisma.task.update({
+    where: { id },
+    data: {
+      dueDate: toDate,
+      repeatAnchor: task.repeat === "none" ? task.repeatAnchor : toDate,
+    },
+  });
+  revalidateAll();
+  return succeed({ dueDate: toDate });
+}
+
 export interface ScheduleTaskOutcome {
   scheduleItemId: string;
   date: string;

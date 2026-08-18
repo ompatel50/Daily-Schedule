@@ -435,3 +435,39 @@ export async function getFinanceSummary() {
 }
 
 export type FinanceSummary = Awaited<ReturnType<typeof getFinanceSummary>>;
+
+/**
+ * The weekly review's money section: this month's totals plus each budget's
+ * progress over its own current window — the same computation the finance
+ * page renders, reduced to what a review needs. Integer cents throughout.
+ */
+export async function getBudgetSnapshot() {
+  const user = await getCurrentUser();
+  const settings = scheduleSettingsFor(user);
+  const { month, windows, fetch } = financeWindows(settings.today, settings.weekStartsOn);
+
+  const [ledger, budgets] = await Promise.all([
+    getTransactionsBetween(fetch.start, fetch.end),
+    budgetsMemo(user.id),
+  ]);
+
+  const monthTotals = summarizeTransactions(slice(ledger, month));
+  const views = budgetProgress(budgets, ledger, windows);
+
+  return {
+    month: monthTotals,
+    budgets: views.map((view) => ({
+      id: view.budget.id,
+      label: view.label,
+      period: view.period,
+      spent: view.spent,
+      effectiveAmount: view.effectiveAmount,
+      percent: view.percent,
+      over: view.over,
+    })),
+  };
+}
+
+export type BudgetSnapshot = Awaited<ReturnType<typeof getBudgetSnapshot>>;
+
+

@@ -68,6 +68,10 @@ async function addTransaction(
 
 /** Self-healing cleanup for everything this spec's runs create. */
 async function cleanUp(page: Page) {
+  // The finance page streams its sections; counting menus before the stream
+  // settles reads 0 and silently skips the cleanup — which is exactly how a
+  // leftover gym bill once survived to suppress the recurring suggestion.
+  await page.waitForLoadState("networkidle");
   // Bills named after the gym payee.
   const billMenus = page.getByRole("button", { name: /^Actions for E2E GYM/ });
   let bills = await billMenus.count();

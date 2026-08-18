@@ -9,6 +9,7 @@ import {
   Flame,
   Footprints,
   Inbox,
+  BookOpenCheck,
   Moon,
   Repeat,
   Sparkles,
@@ -28,6 +29,7 @@ import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { CATEGORY_META, type ScheduleCategory } from "@/lib/enums";
 import {
+  daysBetween,
   formatDay,
   formatDuration,
   formatTimeRange,
@@ -38,13 +40,14 @@ import { describeDueDistance } from "@/lib/logic/due";
 import { formatCents } from "@/lib/logic/money";
 import { parseOnboardingState } from "@/lib/logic/onboarding";
 import { trendDelta } from "@/lib/logic/scoring";
-import { nowMinuteIn } from "@/lib/logic/schedule";
+import { getWeekBounds, nowMinuteIn } from "@/lib/logic/schedule";
 import { SURFACE_ROLES, surfaceHref } from "@/lib/logic/surfaces";
 import { cn, formatNumber, pct, pluralize, sum } from "@/lib/utils";
 import { PRIORITY_META, type Priority } from "@/lib/enums";
 import { getCommandCenterSummary } from "@/server/command-center";
 import { getDemoStatus } from "@/server/demo";
 import { getConsistencyWindow, getDayOverview, getToday, getWindowStats } from "@/server/queries";
+import { scheduleSettingsFor } from "@/server/schedule";
 
 export const dynamic = "force-dynamic";
 
@@ -134,6 +137,21 @@ export default async function DashboardPage() {
 
       {!onboarding.dismissed && (
         <OnboardingCard state={onboarding} canLoadSample={demoStatus?.canLoad ?? false} />
+      )}
+
+      {/* Near the week's end, the standing invitation to close it out. */}
+      {daysBetween(date, getWeekBounds(date, scheduleSettingsFor(user)).end) <= 1 && (
+        <div className="mb-6 flex flex-wrap items-center justify-between gap-3 rounded-xl border border-domain-habit/30 bg-domain-habit/5 px-4 py-3">
+          <p className="inline-flex items-center gap-2 text-sm">
+            <BookOpenCheck className="h-4 w-4 text-domain-habit" aria-hidden="true" />
+            The week is wrapping up — take five minutes to review it.
+          </p>
+          <Button asChild size="sm" variant="outline">
+            <Link href="/review">
+              Weekly review <ArrowRight />
+            </Link>
+          </Button>
+        </div>
       )}
 
       {/*

@@ -5077,8 +5077,8 @@ those cells lean.
 | 6  | Task ↔ Planner linking                            | ✅ done |
 | 7  | Global undo: soft-delete + Trash                  | ✅ done |
 | 8  | Planner & habit quality features                  | ✅ done |
-| 9  | Weekly review + data transparency                 | ⏳ next |
-| 10 | Dependency & platform hygiene                     | not started |
+| 9  | Weekly review + data transparency                 | ✅ done |
+| 10 | Dependency & platform hygiene                     | ⏳ next |
 | 11 | Reminders/cron improvements                       | not started |
 | 12 | UI/UX redesign pass                               | not started |
 
@@ -5813,3 +5813,61 @@ existing habits table. Older files simply have neither.
   dialog and the utilisation card summing the week; full suite green
   against the production build (129 passed / 2 skipped). Typecheck, lint,
   build clean.
+
+## Phase 9 — weekly review + data transparency
+
+One migration (`backup_recency`): `User.lastBackupExportAt`, stamped
+best-effort by `exportBackup`.
+
+### 9a — the weekly review page (`/review`)
+
+`src/server/review.ts` assembles the page from the computations that
+already exist — `getWeeklyReview` (the SAME engine behind the assistant's
+`get_week_review` and the insights page) plus a new lean
+`getBudgetSnapshot` (the finance page's own `budgetProgress` reduced to
+what a review needs) — and adds the two review-specific slices: the week's
+unfinished OPEN tasks (due on or before the week's end) and the journal
+entry the reflection saves into.
+
+* **Score recap** (average, scored/rest days, the factual focus sentence),
+  planner and habit completion, strongest / most-missed areas, workouts and
+  nutrition — all `getWeeklyReview` verbatim.
+* **Roll-forward**: `rollTaskForward(id, toDate)` moves an open task's due
+  date to the next week's start (a repeating task re-anchors, exactly as an
+  edit would); per-task buttons + "Roll all".
+* **Money snapshot**: this month's totals + per-budget progress bars, all
+  integer cents.
+* **Reflection**: saves through the ordinary `saveJournalEntry` under
+  today's date (a past week reviews under its own last day), PREFILLED with
+  that day's existing entry so saving can never overwrite a page unseen.
+* Entry points: the direct route with `?date=` week navigation, and a
+  dashboard banner in the week's last two days.
+
+### 9b — the Settings data page (`/settings/data`)
+
+`getDataOverview` — the `get_backup_status` computation surfaced for
+humans, read-only: per-module record counts through the GUARDED client
+(your data, not your trash — the Trash count rides as its own line), oldest
+/ newest natural dates where the module has them, the last finance and
+health imports, backup recency and format version. `get_backup_status`
+itself now reports `lastBackupExportAt` too, so the tool and the page can
+never disagree. Linked from a Settings card.
+
+### Verification
+
+* Integration **465 → 473**: new `phase9.test.ts` — the page model
+  (unfinished-task filtering, cents-exact money, reflection prefill +
+  round-trip on one journal row, past-week anchoring, cross-user
+  emptiness), roll-forward (re-anchoring, refusals), the data overview
+  (guarded counts vs the trash line, date bounds, never→stamped backup
+  recency, per-account isolation).
+* E2E **129 → 131**: new `review-data.spec.ts` — rolling a task into next
+  week through the real page, and the data page's read-only table +
+  Settings entry point. Full suite green (131 passed / 2 skipped).
+* Unit 1,275 unchanged (the phase reuses existing pure logic). Typecheck,
+  lint, build clean.
+* Fixed en route: `finance-depth.spec.ts`'s cleanup counted bill menus
+  before the finance page's streamed sections settled — reading 0, skipping
+  cleanup, and letting a leftover bill suppress the recurring suggestion.
+  The cleanup now waits for network idle first (a latent race, surfaced by
+  accumulated seed data).
