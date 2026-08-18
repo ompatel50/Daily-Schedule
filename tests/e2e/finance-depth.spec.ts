@@ -71,16 +71,25 @@ async function cleanUp(page: Page) {
   // The finance page streams its sections; counting menus before the stream
   // settles reads 0 and silently skips the cleanup — which is exactly how a
   // leftover gym bill once survived to suppress the recurring suggestion.
+  // Each deletion also kicks off a router refresh that re-streams the
+  // sections, so a check made right after one reads the page mid-refresh and
+  // misses real leftovers (observed under Next 16); after any family of
+  // deletions, reload and settle before reading the next.
   await page.waitForLoadState("networkidle");
   // Bills named after the gym payee.
   const billMenus = page.getByRole("button", { name: /^Actions for E2E GYM/ });
   let bills = await billMenus.count();
+  const hadBills = bills > 0;
   while (bills > 0) {
     await billMenus.first().click();
     await page.getByRole("menuitem", { name: "Delete" }).click();
     await page.getByRole("menuitem", { name: "Confirm delete" }).click();
     await expect(billMenus).toHaveCount(bills - 1);
     bills -= 1;
+  }
+  if (hadBills) {
+    await page.reload();
+    await page.waitForLoadState("networkidle");
   }
   // The travel budget this spec creates.
   const budgetMenu = page.getByRole("button", { name: "Actions for the Travel budget" });
@@ -89,6 +98,8 @@ async function cleanUp(page: Page) {
     await page.getByRole("menuitem", { name: "Delete" }).click();
     await page.getByRole("menuitem", { name: "Confirm delete" }).click();
     await expect(budgetMenu).toHaveCount(0);
+    await page.reload();
+    await page.waitForLoadState("networkidle");
   }
   // Depth accounts and their ledgers.
   const accountMenus = page.getByRole("button", { name: /^Actions for Depth Card / });

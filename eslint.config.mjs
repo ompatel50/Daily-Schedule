@@ -1,20 +1,15 @@
-import path from "node:path";
-import { fileURLToPath } from "node:url";
-
-import { FlatCompat } from "@eslint/eslintrc";
+import nextCoreWebVitals from "eslint-config-next/core-web-vitals";
+import nextTypescript from "eslint-config-next/typescript";
 
 /**
- * ESLint 9 flat config. `next lint` is deprecated in Next 15, so the `lint`
- * script runs eslint directly; the Next.js rule sets (core-web-vitals +
- * TypeScript) still come from eslint-config-next via the compat bridge.
+ * ESLint 9 flat config. The `lint` script runs eslint directly (`next lint`
+ * was removed in Next 16); the Next.js rule sets (core-web-vitals +
+ * TypeScript) come from eslint-config-next, which ships native flat configs
+ * as of v16 — no eslintrc compat bridge.
  *
  * Narrow, documented exceptions only — a rule is never disabled repo-wide to
  * get a green run.
  */
-const compat = new FlatCompat({
-  baseDirectory: path.dirname(fileURLToPath(import.meta.url)),
-});
-
 const config = [
   {
     ignores: [
@@ -26,7 +21,8 @@ const config = [
       "next-env.d.ts",
     ],
   },
-  ...compat.extends("next/core-web-vitals", "next/typescript"),
+  ...nextCoreWebVitals,
+  ...nextTypescript,
   {
     rules: {
       // The codebase deliberately prefixes intentionally-unused values with _
@@ -35,6 +31,14 @@ const config = [
         "error",
         { argsIgnorePattern: "^_", varsIgnorePattern: "^_", caughtErrors: "none" },
       ],
+      // New in eslint-plugin-react-hooks v7 (arrived with eslint-config-next
+      // 16). They flag ~50 pre-existing sites — mostly the "reset dialog form
+      // state when it opens" effect pattern. Rewriting those belongs to its
+      // own pass, not the framework migration, so they warn instead of error
+      // until that pass happens. Deliberately NOT "off": new code should see
+      // them.
+      "react-hooks/set-state-in-effect": "warn",
+      "react-hooks/refs": "warn",
     },
   },
   {

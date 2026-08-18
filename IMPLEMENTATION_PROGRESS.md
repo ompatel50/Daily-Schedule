@@ -5078,8 +5078,8 @@ those cells lean.
 | 7  | Global undo: soft-delete + Trash                  | ✅ done |
 | 8  | Planner & habit quality features                  | ✅ done |
 | 9  | Weekly review + data transparency                 | ✅ done |
-| 10 | Dependency & platform hygiene                     | ⏳ next |
-| 11 | Reminders/cron improvements                       | not started |
+| 10 | Dependency & platform hygiene                     | ✅ done |
+| 11 | Reminders/cron improvements                       | ⏳ next |
 | 12 | UI/UX redesign pass                               | not started |
 
 ## Phase 1 — finance import correctness
@@ -5871,3 +5871,102 @@ never disagree. Linked from a Settings card.
   cleanup, and letting a leftover bill suppress the recurring suggestion.
   The cleanup now waits for network idle first (a latent race, surfaced by
   accumulated seed data).
+
+## Phase 10 — dependency & platform hygiene
+
+Three isolated steps, each its own commit range: the audit pass, the staged
+backup import, and the Next.js 16 migration.
+
+### 10a — the audit pass
+
+`npm audit fix` took the non-breaking set only: nanoid, js-yaml,
+brace-expansion. **Deferred, deliberately:** the deepmerge-ts high
+(GHSA-ggr8-5vv4-36mx, stack exhaustion on recursive object graphs) is
+reachable only through `@prisma/config` → `prisma` — a build-time config
+reader, not request-path code — and npm's only offered "fix" *downgrades*
+prisma 6.19.3 → 6.12.0, a real regression to silence a theoretical one.
+It stays until prisma ships a patched chain; `npm audit` counts the one
+root cause as 3 highs. The postcss and sharp advisories were pinned on
+Next 15 and expected to clear with the framework — 10c confirmed both gone.
+
+### 10b — staged backup import
+
+A backup used to travel as ONE server-action body, which a hosted platform
+caps near 4 MB before any code runs. Now the health importer's transport is
+reused verbatim under `HealthUploadSession.kind = "backup"` (kind checked at
+every resolve, so neither consumer can be fed the other's bytes):
+`src/server/backup-upload.ts` wraps open/receive/finalize with a 64 MB
+ceiling (`BACKUP_MAX_UPLOAD_BYTES` — the finalize must hold decoded JSON in
+memory, unlike the streaming health parser), `/api/backup/import{,/part,/finalize}`
+mirror the health routes (auth-first, `maxDuration` literals), and the
+finalize is two-phase to preserve the panel's preview-then-confirm contract:
+**preview** assembles, parses, `inspectBackup`s, then *releases* the session
+(new `releaseUpload` — parsing → receiving, expiry refreshed) so the parts
+survive for the confirm; **import** assembles again and runs the ordinary
+`importBackup`, then discards. Bad JSON discards immediately — deterministic
+failures don't hold disk. The panel stages any file over 3 MB
+(`DIRECT_IMPORT_MAX_BYTES`) through `src/lib/backup/staged-upload.ts`
+(sequential parts, per-part retry with backoff, abandon on walk-away) and
+keeps the small-file single-request path unchanged. Integration
+**473 → 479**: preview-without-writing + session-survives + import-consumes,
+multi-part byte fidelity (9 MB padded), bad-JSON frees parts, 413 oversize,
+health-kind invisible to backup finalize, cross-user 404s.
+
+### 10c — Next.js 15 → 16, its own isolated step
+
+`next` 15.5.22 → 16.3.1, `eslint-config-next` → 16.3.1; React stays 19.2.
+Breaking changes resolved, in the order the toolchain surfaced them:
+
+* **middleware → proxy.** Next 16 no longer accepts
+  `export const { auth: middleware } = NextAuth(...)` (the destructured
+  export isn't statically recognized as a function export). `src/middleware.ts`
+  became `src/proxy.ts` with an explicit default-export function invoking
+  the same edge-safe `auth` — same matcher, same policy.
+* **Sign-out could be silently undone — found by E2E, fixed in the proxy.**
+  Auth.js re-issues the session cookie on every proxied response (sliding
+  expiration). Next 16 prefetches the sidebar aggressively AND strips every
+  prefetch marker (`Next-Router-Prefetch`, `RSC`, `_rsc`) before the proxy
+  runs, so a prefetch issued while signed in that lands *after* the
+  sign-out action cleared the cookie re-installs a valid session — and the
+  proxy cannot even tell such a response apart from a navigation. Observed
+  deterministically (signup.spec's fence assertion; reproduced at the
+  cookie level with a scripted browser: the straggler `?_rsc=` responses
+  carried fresh `Set-Cookie` after the `Max-Age=0` clear). The proxy now
+  strips the session-token `Set-Cookie` from EVERY response it returns:
+  signing in and out set/clear the cookie through their server-action
+  responses, which don't pass through the proxy's response object, so the
+  only thing lost is proxy-driven sliding expiration — a session lasts
+  Auth.js's `maxAge` from sign-in rather than from last activity. Probed
+  3× clean; the full suite agrees.
+* **ESLint.** eslint-config-next 16 ships native flat configs, so the
+  `FlatCompat` bridge (which now crashes in `@eslint/eslintrc`) is gone —
+  `eslint.config.mjs` spreads `eslint-config-next/core-web-vitals` and
+  `/typescript` directly. The bundled eslint-plugin-react-hooks v7
+  introduces `set-state-in-effect` and `refs`, which flag ~50 pre-existing
+  sites (almost all the "reset dialog form state when it opens" effect).
+  Rewriting 45 components is not a framework migration, so exactly those
+  two rules are set to **warn** — deliberately not "off": new code still
+  sees them, and the burn-down is a natural Phase 12 companion.
+* **next.config.mjs** lost its now-unsupported `eslint` key (lint hasn't
+  run in builds here since Next 15; the CI step is `npm run lint`).
+* **tsconfig.json** — Next 16 rewrites it on first build (`jsx:
+  "react-jsx"`, `.next/dev/types` include, reformat); kept as-is.
+* **finance-depth cleanup hardened.** Deleting a leftover through the UI
+  kicks off a router refresh that re-streams the finance sections; the next
+  family's existence check, made ~45 ms later, read the mid-refresh page as
+  empty and skipped real leftovers (trace-verified). Next 15 usually won
+  that race, Next 16 deterministically lost it. The cleanup now reloads and
+  settles after any family of deletions before reading the next.
+
+Advisories after the upgrade: postcss and sharp **cleared**; the
+deepmerge-ts chain remains as documented in 10a.
+
+### Verification
+
+Typecheck clean; lint 0 errors (58 warnings, all the two documented
+react-hooks v7 rules); production build clean — no config warnings, proxy
+registered. Unit **1,275**, integration **479**, E2E **131 passed / 2
+skipped** — all against the Next 16 production build, before and after
+states compared (same totals on 15.5.22 immediately pre-upgrade). Browser
+verification: sign-in → prefetch-heavy dashboard → sign-out → fence probed
+at the cookie level; uncookied protected routes 307 to `/signin`.

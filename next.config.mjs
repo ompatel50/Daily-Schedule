@@ -60,18 +60,13 @@ const nextConfig = {
   // workspace root, which mis-scopes file tracing and prints a warning on
   // every dev start.
   outputFileTracingRoot: path.dirname(fileURLToPath(import.meta.url)),
-  // ESLint runs as its own CI step (npm run lint); builds don't repeat it.
-  eslint: { ignoreDuringBuilds: true },
   experimental: {
-    // The largest server-action payload is a full JSON backup on import.
-    // Health exports deliberately do NOT travel through an action, and no
-    // longer travel as a single request at all: an Apple Health archive is
-    // uploaded in bounded parts to /api/health/import/part and reassembled
-    // server-side, because a serverless platform refuses a large body at the
-    // edge before any code here runs (Vercel's cap is ~4.5 MB). That cap still
-    // bounds importable *backup* size on such a platform — backup import is
-    // one action with one whole body — which is the next candidate for the
-    // same treatment (see docs/troubleshooting.md).
+    // Server actions never carry a large body by design: an Apple Health
+    // archive travels in bounded parts to /api/health/import/part, and a
+    // large backup travels the same way to /api/backup/import/part, because
+    // a serverless platform refuses a large body at the edge before any code
+    // here runs (Vercel's cap is ~4.5 MB). This limit only covers the small
+    // direct-import path (backups under 3 MB) with headroom to spare.
     serverActions: { bodySizeLimit: "16mb" },
   },
 };
