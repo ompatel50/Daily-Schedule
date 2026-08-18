@@ -40,7 +40,7 @@ evaluates every opted-in user's reminder feed in *that user's* timezone and
 pushes what is due. Something has to call that endpoint regularly. On the
 free setup, two things do — and it matters which one is which.
 
-### The built-in daily run (safety net, not the delivery path)
+### The built-in daily run: your daily digest
 
 The repository's `vercel.json` declares one Vercel cron, **once a day**.
 That is deliberate, not an oversight:
@@ -50,20 +50,26 @@ That is deliberate, not an oversight:
   fail**. Leave the file as it is.
 * Hobby crons also fire *sometime within* the scheduled hour, not at the
   exact minute.
-* The runner skips any reminder occurrence more than **30 minutes** past its
-  time rather than delivering it absurdly late.
+* The runner skips any *exact-time* reminder occurrence more than
+  **30 minutes** past its time rather than delivering it absurdly late.
 
-Put those together and a daily cron alone can never deliver timely push — by
-the time it fires, almost everything due that day is already past the
-30-minute window and is skipped. The daily run is a safety net and a daily
-proof the pipeline works, nothing more. (Vercel does handle its own
-authentication: because `CRON_SECRET` is set, it sends the
-`Authorization: Bearer` header with each call automatically.)
+A daily cron alone can therefore never deliver exact-time push — by the time
+it fires, almost everything due that day is outside the 30-minute window. So
+the daily run does something a single run can honestly do: it sends **one
+digest notification** summarizing everything still ahead in your operational
+day — timed reminders with their clock times, bills and tasks due, threshold
+alerts — built from the same schedule-aware feed as every other channel. The
+digest goes out at most once per day per account (it rides the same delivery
+ledger as individual reminders), and a day with nothing due sends nothing.
+(Vercel handles its own authentication: because `CRON_SECRET` is set, it
+sends the `Authorization: Bearer` header with each call automatically.)
 
-### The primary path: a free external scheduler (cron-job.org)
+### Exact-time push: a free external scheduler (cron-job.org)
 
-Timely delivery comes from a scheduler outside Vercel calling the same
-endpoint every 10–15 minutes. [cron-job.org](https://cron-job.org) does this
+Exact-time delivery comes from a scheduler outside Vercel calling the same
+endpoint every 10–15 minutes. On such a cadence the first run of each day
+sends the digest and every run pushes what is due right then, at most once
+per occurrence — the ledger keeps the channels from double-delivering. [cron-job.org](https://cron-job.org) does this
 well: free, **no credit card**, and it can send the required header.
 
 1. Create a free account at **cron-job.org**.

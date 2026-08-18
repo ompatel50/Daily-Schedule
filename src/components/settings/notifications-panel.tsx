@@ -46,10 +46,10 @@ export function NotificationsPanel() {
           {permission === "unsupported"
             ? "This browser doesn't support notifications — reminders still appear as in-app toasts."
             : permission === "granted"
-              ? "Reminders will show as a desktop notification and an in-app toast while a Personal OS tab is open."
+              ? "While the app is open, reminders fire at their exact minutes as a system notification and an in-app toast. With nothing open, delivery is up to Background reminders below."
               : permission === "denied"
                 ? "Notifications are blocked for this site. You can re-enable them in your browser's site settings — reminders will still appear as in-app toasts."
-                : "Allow notifications to get reminded about scheduled blocks while the app is open."}
+                : "Allow notifications and reminders fire at their exact minutes while the app is open — as a system notification alongside the in-app toast."}
         </p>
         {permission === "default" && (
           <Button variant="outline" size="sm" onClick={request}>

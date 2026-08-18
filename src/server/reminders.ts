@@ -65,6 +65,9 @@ export async function getReminderFeedFor(user: {
   id: string;
   timezone: string;
   weekStartsOn: number;
+  /** Optional so older callers keep working; the runner passes it through so
+   *  a custom day reset shapes the same operational day here as in-tab. */
+  dayResetMinute?: number;
 }): Promise<ReminderOccurrence[]> {
   const settings = scheduleSettingsFor(user);
   const date = settings.today;
@@ -438,8 +441,16 @@ export async function getReminderFeedFor(user: {
  * Record a delivery and, for a classic reminder, advance or disable the row —
  * the same behaviour `markReminderFired` always had, now keyed so an
  * occurrence can never fire twice even across tabs and reloads.
+ *
+ * Returns whether THIS call claimed the occurrence. A false is the signal a
+ * caller needs to stay silent: another tab, device, or the push runner got
+ * there first, and showing the notification anyway would be the double
+ * delivery the ledger exists to prevent.
  */
-export async function recordReminderDelivery(key: string, reminderId: string | null): Promise<void> {
+export async function recordReminderDelivery(
+  key: string,
+  reminderId: string | null,
+): Promise<boolean> {
   const user = await getCurrentUser();
   return recordReminderDeliveryFor(user.id, key, reminderId);
 }
@@ -449,21 +460,21 @@ export async function recordReminderDeliveryFor(
   userId: string,
   key: string,
   reminderId: string | null,
-): Promise<void> {
+): Promise<boolean> {
   const user = { id: userId };
 
   try {
     await prisma.reminderDelivery.create({ data: { userId: user.id, key } });
   } catch {
     // Unique collision: another tab delivered it first. Nothing more to do.
-    return;
+    return false;
   }
 
   if (reminderId) {
     const reminder = await prisma.reminder.findFirst({
       where: { id: reminderId, userId: user.id },
     });
-    if (!reminder) return;
+    if (!reminder) return true;
     const next = nextOccurrence(reminder.remindAt, reminder.repeat);
     await prisma.reminder.update({
       where: { id: reminder.id },
@@ -480,6 +491,8 @@ export async function recordReminderDeliveryFor(
   await prisma.reminderDelivery
     .deleteMany({ where: { userId: user.id, deliveredAt: { lt: cutoff } } })
     .catch(() => {});
+
+  return true;
 }
 
 function nextOccurrence(from: Date, repeat: string): Date | null {

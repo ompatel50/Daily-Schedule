@@ -186,6 +186,14 @@ export function PushPanel() {
               )}
             </div>
 
+            <p className="max-w-2xl text-xs text-muted-foreground">
+              When pushes arrive depends on how often this deployment&apos;s scheduler runs. The
+              default hosted schedule runs <strong>once a day</strong> and sends a single digest of
+              everything ahead in your day; exact-time pushes only happen when the scheduler runs
+              every few minutes (see the Web Push setup guide&apos;s external-scheduler step).
+              Reminders in an open tab always fire at their exact minutes either way.
+            </p>
+
             {status && status.subscriptions.length > 0 && (
               <ul className="space-y-1.5">
                 {status.subscriptions.map((subscription) => (

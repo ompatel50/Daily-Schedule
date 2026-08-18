@@ -5079,8 +5079,8 @@ those cells lean.
 | 8  | Planner & habit quality features                  | ✅ done |
 | 9  | Weekly review + data transparency                 | ✅ done |
 | 10 | Dependency & platform hygiene                     | ✅ done |
-| 11 | Reminders/cron improvements                       | ⏳ next |
-| 12 | UI/UX redesign pass                               | not started |
+| 11 | Reminders/cron improvements                       | ✅ done |
+| 12 | UI/UX redesign pass                               | ⏳ next |
 
 ## Phase 1 — finance import correctness
 
@@ -5970,3 +5970,77 @@ skipped** — all against the Next 16 production build, before and after
 states compared (same totals on 15.5.22 immediately pre-upgrade). Browser
 verification: sign-in → prefetch-heavy dashboard → sign-out → fence probed
 at the cookie level; uncookied protected routes 307 to `/signin`.
+
+## Phase 11 — reminders/cron, within platform limits
+
+The hosted cron fires once a day; the phase makes that honest instead of
+pretending otherwise. No migrations — everything rides the existing
+`ReminderDelivery` ledger.
+
+### The daily digest
+
+A once-daily run can almost never hit a reminder's ±30-minute precise
+window, so it now does what a single run CAN do: send one push summarizing
+everything still ahead in the user's coming operational day.
+`src/lib/logic/digest.ts` is the pure half — agenda lines with clock times
+for timed kinds (habits, goals, classic reminders), the occurrence's own
+phrasing for due items and alerts, 6 lines then an honest fold, empty day →
+null (silence, not an empty notification). Classic reminders are windowed
+(still-deliverable now, or within 24 h) because the feed deliberately
+carries future instants; every wall-clock occurrence belongs by
+construction — the feed is already day-scoped, including small-hours items
+whose fireAt carries the next calendar date. The runner claims
+`digest:<operational day>` on the ledger BEFORE sending (collision = already
+digested today), releases the claim if no subscription accepts, and leaves
+each occurrence's own key untouched — an open tab still delivers the exact
+minute. Occurrences the same run pushed precisely are left out of the
+digest. A frequent external scheduler therefore gets: first run of the day
+digests, every run pushes what is due right then, nothing ever twice. The
+runner also now selects `dayResetMinute`, fixing a quiet gap where a custom
+day reset shaped the in-tab feed but not the push runner's.
+
+### Claim-first in-tab delivery + PWA-correct notifications
+
+The watcher used to toast first and record after — two tabs could both show
+the same occurrence, and a push that had already delivered didn't silence
+an open tab within the same minute. `recordReminderDelivery(For)` now
+returns whether THIS call claimed the key; `deliverReminderAction` passes
+that through, and the watcher claims first, showing the toast and system
+notification only on a fresh claim (offline degrades to delivering anyway —
+a rare duplicate beats a silent miss, and the OS-level `tag` still collapses
+same-key duplicates). The system notification goes through
+`registration.showNotification` when a service-worker registration exists —
+the only path an installed PWA supports; `new Notification` throws there —
+falling back to the bare constructor in plain tabs. No platform currently
+lets a web app schedule a notification for later with nothing running, so
+there is no pretend-scheduling: precise minutes need the app open or the
+push path, and the copy says so.
+
+### Honest settings copy + docs
+
+The Reminders panel states that exact minutes fire while the app is open;
+the Background reminders panel states the deployment reality — default
+hosted schedule = one daily digest, exact-time pushes only with a
+frequent external scheduler — instead of implying precision the platform
+does not have. `docs/web-push-setup.md` reframes the built-in daily run
+from "safety net, nothing more" to the digest it now sends, and keeps the
+full CRON_SECRET external-scheduler walkthrough (cron-job.org / GitHub
+Actions) as the exact-time path; `docs/deployment-guide.md` step 8 matches.
+
+### Verification
+
+* Unit **1,275 → 1,285**: `tests/digest.test.ts` — empty-day null, agenda
+  vs phrasing lines, clock ordering, small-hours inclusion, instant
+  windowing on the user's clock, the cap and fold, line clipping, singular
+  title, broken-timezone degradation, key shape.
+* Integration **479 → 485**: digest exactly-once per operational day with
+  the occurrence keys left unconsumed, precise-push exclusion, silent empty
+  day, per-account isolation of digest contents, failed-send claim release
+  and retry; the fresh-claim signal (winner true, every later surface false,
+  per-account key scoping).
+* E2E: full suite green (131 passed / 2 skipped) against the production
+  build — the watcher runs on every page of every spec with console-error
+  tracking, so the claim-first rewrite is exercised broadly. Browser
+  verification: the four new copy statements render on /settings (push
+  configured and not), no console errors beyond the known local
+  `_vercel/insights` noise. Typecheck, lint, build clean.
