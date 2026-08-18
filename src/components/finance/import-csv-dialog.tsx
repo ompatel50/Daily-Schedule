@@ -113,15 +113,22 @@ export function ImportCsvDialog({
   const [preview, setPreview] = React.useState<FinanceImportPreview | null>(null);
   const [report, setReport] = React.useState<FinanceImportReport | null>(null);
 
+  // Reset ONLY when the dialog opens. `accounts` deliberately stays out of
+  // the dependencies: router.refresh() hands the open dialog a fresh array
+  // identity (right after an import commits, for instance), and resetting on
+  // that wiped the just-shown report and the chosen file out from under the
+  // user. The ref keeps the reset reading current data without re-arming it.
+  const accountsRef = React.useRef(accounts);
+  accountsRef.current = accounts;
   React.useEffect(() => {
     if (!open) return;
-    setAccountId(accounts[0]?.id ?? "");
+    setAccountId(accountsRef.current[0]?.id ?? "");
     setFileName(null);
     setContent(null);
     setDayFirst(false);
     setPreview(null);
     setReport(null);
-  }, [open, accounts]);
+  }, [open]);
 
   const requestPreview = React.useCallback(
     (args: { accountId: string; fileName: string; content: string; dayFirst: boolean }) => {

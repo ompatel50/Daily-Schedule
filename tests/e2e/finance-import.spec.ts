@@ -147,7 +147,7 @@ test("a Chase-shaped export imports with trusted signs and a quick-mapped Paymen
     .filter({ has: page.getByText("+$300") })
     .first();
   await expect(paymentRow).toBeVisible();
-  await expect(page.getByText("AMAZON MKTPL*XY123")).toBeVisible();
+  await expect(page.getByText("AMAZON MKTPL*XY123").first()).toBeVisible();
 
   // --- clean up: remove the mapping through the dialog's own control --------
   const again = await openImportWithFile(page);
