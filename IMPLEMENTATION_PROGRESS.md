@@ -5070,8 +5070,8 @@ those cells lean.
 | #  | Phase                                             | Status |
 |----|---------------------------------------------------|--------|
 | 1  | Finance import correctness (1a–1d)                | ✅ done |
-| 2  | Split finance-board.tsx                           | ⏳ next |
-| 3  | Transfers: reconciliation & auto-detection        | not started |
+| 2  | Split finance-board.tsx                           | ✅ done |
+| 3  | Transfers: reconciliation & auto-detection        | ⏳ next |
 | 4  | Credit card depth + recurring + insights          | not started |
 | 5  | Money as integer cents                            | not started |
 | 6  | Task ↔ Planner linking                            | not started |
@@ -5182,3 +5182,54 @@ still wins, the loser is reported as ignored).
   as always).
 * Typecheck, lint, unit, integration, production build: all green.
 * README's CSV-import section updated to describe the new behaviour.
+
+### Phase 1 follow-up fix (found by the new E2E under load)
+
+The import dialog's reset effect was keyed on `[open, accounts]` — and
+`router.refresh()` after a commit hands the open dialog a fresh `accounts`
+array identity, which wiped the just-shown report and the chosen file out
+from under the user. Reset now runs only on open (current accounts read via
+a ref). The E2E's ledger assertions were also made strict-mode-safe and the
+spec self-heals a previously failed run's leftovers (accounts + mapping)
+through the app's own flows.
+
+### Known interim limitation (handed to Phase 3)
+
+An imported one-sided `transfer`-category row cannot be edited while
+KEEPING that category: the transaction dialog deliberately never offers
+"transfer" and `saveTransaction` refuses it (the pair-writing Transfer flow
+owns it). Recategorising such a row away works. Phase 3's mark-as-transfer /
+unlink flows are the real resolution — do not loosen the invariant ahead of
+them.
+
+## Phase 2 — finance-board.tsx split into section components
+
+Pure refactor, zero behaviour change, ahead of Phases 3–6 landing on this
+page. `finance-board.tsx` (1,024 lines) is now a 274-line orchestrator that
+owns exactly what spans sections — which dialog is open over which record,
+and the mutate-toast-refresh cycle (`run`, `markPaid`) — composing seven
+focused components in `src/components/finance/`:
+
+| Component | Contents |
+|---|---|
+| `transactions-section.tsx` | ledger list + `TransactionRow` |
+| `bills-section.tsx` | bills list + `BillRow` + due-urgency classes |
+| `accounts-section.tsx` | accounts + archived fold-away (state moved in — nothing else read it) + `AccountRow` |
+| `savings-goals-section.tsx` | goals + `GoalRow` |
+| `budgets-section.tsx` | budgets + `BudgetRow` |
+| `import-batches-section.tsx` | CSV import history + `ImportBatchRow`; owns `ImportBatchView` |
+| `category-spend-section.tsx` | month-by-category bars; owns `CategoryTotalView` |
+| `row-menu.tsx` | the shared two-step-delete overflow menu |
+
+Sections take data + callbacks (`onEdit(bill)`, `onDelete(account)` …);
+`finance-board` re-exports the two view types so `finance/page.tsx` is
+untouched, and `undo-import-dialog` now imports `ImportBatchView` from the
+section that owns it (removing a type-only import cycle). All row markup,
+class names, texts and aria labels are copied verbatim.
+
+Verification: typecheck, lint, unit 1,210, production build green; full E2E
+suite run unmodified against the build — 122 passed / 2 skipped, twice
+consecutively. (One `planner-recurrence` and one `assistant` spec failure
+appeared in single earlier runs under 2-worker load and passed on every
+re-run — pre-existing load flakiness, not the refactor: the finance specs
+were green in those same runs.)
