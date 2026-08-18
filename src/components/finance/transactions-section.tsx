@@ -11,7 +11,7 @@ import { RowMenu } from "@/components/finance/row-menu";
 import type { TransactionView } from "@/components/finance/transaction-dialog";
 import { formatDay } from "@/lib/date";
 import { FINANCE_CATEGORY_META, type FinanceCategory } from "@/lib/enums";
-import { formatMoney } from "@/lib/logic/finance";
+import { formatCents } from "@/lib/logic/money";
 import { cn } from "@/lib/utils";
 
 /** The ledger list — newest first, every balance derives from it. */
@@ -147,7 +147,7 @@ function TransactionRow({
         )}
       >
         {received ? "+" : ""}
-        {formatMoney(transaction.amount, transaction.currency)}
+        {formatCents(transaction.amount, transaction.currency)}
       </span>
       <RowMenu
         label="Transaction actions"

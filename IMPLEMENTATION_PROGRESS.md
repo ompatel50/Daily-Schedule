@@ -5073,8 +5073,8 @@ those cells lean.
 | 2  | Split finance-board.tsx                           | ✅ done |
 | 3  | Transfers: reconciliation & auto-detection        | ✅ done |
 | 4  | Credit card depth + recurring + insights          | ✅ done |
-| 5  | Money as integer cents                            | ⏳ next |
-| 6  | Task ↔ Planner linking                            | not started |
+| 5  | Money as integer cents                            | ✅ done |
+| 6  | Task ↔ Planner linking                            | ⏳ next |
 | 7  | Global undo: soft-delete + Trash                  | not started |
 | 8  | Planner & habit quality features                  | not started |
 | 9  | Weekly review + data transparency                 | not started |
@@ -5426,3 +5426,100 @@ window) — it can only warn early for a rollover budget, never late.
   → pre-filled bill dialog → created bill suppresses the suggestion,
   rollover budget row, report section; self-healing cleanup. Full suite
   **124 passed / 2 skipped**. Typecheck, lint, build green.
+
+## Phase 5 — money as integer cents
+
+Monetary storage migrated Float → integer cents, staged exactly as asked.
+
+### The unit and its one module
+
+`src/lib/logic/money.ts` owns the unit: `toCents` (Math.round(×100) — the
+same half-up rounding `moneyRound` applied on every write, asserted
+property-wise in tests), `centsToAmount`, `centsOrLegacy` /
+`centsOrLegacyNullable` (the transition read fallback), and `formatCents`
+(the ONLY place cents become a displayed dollar string; the pinned-locale
+behaviour of the old `formatMoney`, which was **deleted** so the compiler
+enumerated all 58 call sites — no formatter can be handed the wrong unit
+silently). Everywhere else money is an integer: sums, balances, budget/
+utilisation ratios, matching, detection.
+
+### The staged migration
+
+* **Columns** (`20260818052025_money_integer_cents`, additive): `amountCents`
+  on transactions; `openingBalanceCents` / `lowBalanceThresholdCents` /
+  `creditLimitCents` on accounts; `amountCents` on bills and budgets;
+  `targetAmountCents` / `currentAmountCents` on savings goals. The audit
+  found no other money Float — everything else (health, nutrition, workouts)
+  is measurements, not money.
+* **Backfill**: in the SAME migration as SQL
+  (`ROUND(CAST(float AS numeric) × 100)` — the float was moneyRound-ed on
+  every write, so its numeric form is its exact 2-decimal value and ties
+  cannot occur; `WHERE cents IS NULL` keeps it idempotent), so `migrate
+  deploy` covers every deployment. Belt-and-braces:
+  `prisma/migrations-data/004-money-cents.ts` re-fills anything that arrived
+  outside the migration AND **verifies every account's computed balance is
+  identical to the cent, float-computed vs cents-computed, failing loudly on
+  mismatch** — the verification step the task demanded, also exercised as an
+  integration test.
+* **Reversibility**: the float columns are the snapshot. Every write path
+  dual-writes (`amount: centsToAmount(cents), amountCents: cents` — mirrored
+  exactly), so dropping the cents columns restores the pre-migration world.
+* **Switched reads**: every server fetch converts at the boundary
+  (`centsOrLegacy`) — `server/finance.ts` (balances, ledger windows, bills,
+  budgets, goals), `server/reminders.ts`, `server/transfers.ts`,
+  `server/queries.ts` (search), import undo candidates. SQL AGGREGATES
+  (`_sum`, `groupBy`) still read the dual-written float column — a sum of
+  2-decimal values is exact to the cent at any personal scale — converting
+  once at the boundary; they move to the cents column when the floats retire.
+* **Retirement**: deliberately a LATER cleanup migration, exactly per the
+  plan — not in this PR.
+
+### Boundaries
+
+* **Dialogs** type dollars: form initial values convert `centsToAmount`,
+  submissions stay dollars on the wire (zod `money` unchanged), actions
+  convert once with `toCents`.
+* **CSV import**: `parseMoneyValue` still parses dollar text; one conversion
+  point makes `FinanceImportRow.amount` integer cents. `buildImportKey`
+  spells the amount segment in the HISTORICAL dollar form via
+  `centsToAmount` — every stored key keeps deduplicating its own re-imports,
+  asserted (`v1|…|-19.99|streaming|0` byte-identical).
+* **Assistant tools** read and write dollars (its `create_transaction`
+  proposal always was dollars) — outputs convert `centsToAmount` at the tool
+  boundary only.
+* **Backup v12? No — v11**: exports carry both columns; restore derives
+  cents for any money row missing them, so a **v10-or-older, floats-only
+  file restores byte-correctly** (the required integration test builds a
+  literal pre-migration file and proves cents, balances and overview after
+  restore). An older app refuses a v11 file, as ever.
+* **Unit-dependent logic** re-based: transfer-match round-amounts (multiples
+  of 1,000 cents), exact equal-and-opposite integer check, recurring-detect
+  tolerance floor 200 cents.
+
+### Verification
+
+* Unit **1,249 → 1,253**, all green: new cents-boundary suite (toCents ≡
+  moneyRound property over awkward floats incl. 0.1+0.2, fallbacks,
+  formatCents rendering incl. unknown-currency fallback); finance-import /
+  transfer-match / recurring-detect / search fixtures converted to cents
+  with import-key spellings asserted unchanged.
+* Integration **422 → 428**: new `money-cents.test.ts` — dual-write
+  mirroring on every write path (manual, CSV import, adjustment), exact
+  cents arithmetic where float sums drift (10+20+30−40 = 20 cents, integer),
+  legacy float-only rows reading identically through the fallback, the 004
+  backfill filling + verifying + idempotent, **the pre-migration v10 backup
+  restoring correctly after the migration**, and a post-switch v11 export
+  round-tripping into another account. Existing money assertions updated to
+  cents (the float-column assertions deliberately kept, proving the mirror).
+* E2E: the full suite passes **unmodified — 124 passed / 2 skipped** against
+  the production build: every "$300", "−$42.50", "$300 of $1,000" the specs
+  assert renders identically from cents, the strongest proof no double or
+  half conversion slipped into any surface. Typecheck, lint, build green.
+
+### Deliberately deferred (documented, not forgotten)
+
+* The cleanup migration retiring the float columns (and moving SQL
+  aggregates to `amountCents`) — a later, separate migration per the plan.
+* The reminder threshold path measures against the base budget target (see
+  Phase 4's note) — unchanged by this phase; it converts to cents at its own
+  boundary.

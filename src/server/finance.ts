@@ -4,6 +4,7 @@ import { cache } from "react";
 
 import { getCurrentUser, prisma } from "@/lib/db";
 import { monthRange, shiftDay, type DayKey } from "@/lib/date";
+import { centsOrLegacy, centsOrLegacyNullable, toCents } from "@/lib/logic/money";
 import { computeTransferSuggestions } from "@/server/transfers";
 import {
   accountBalances,
@@ -45,6 +46,9 @@ async function accountBalancesImpl(userId: string) {
       where: { userId },
       orderBy: [{ sortOrder: "asc" }, { name: "asc" }],
     }),
+    // The aggregate reads the dual-written FLOAT column (exact for 2-decimal
+    // values at any personal scale) until the cleanup migration retires it;
+    // the sum converts to integer cents right here, once.
     prisma.financeTransaction.groupBy({
       by: ["accountId"],
       where: { userId },
@@ -52,9 +56,22 @@ async function accountBalancesImpl(userId: string) {
     }),
   ]);
   const totalByAccount = new Map(
-    totals.map((row) => [row.accountId, row._sum.amount ?? 0]),
+    totals.map((row) => [row.accountId, toCents(row._sum.amount ?? 0)]),
   );
-  return accountBalances(accounts, totalByAccount);
+  // Every money field leaves this module as integer cents — the fetch is the
+  // one boundary where legacy float columns are still consulted.
+  return accountBalances(
+    accounts.map((account) => ({
+      ...account,
+      openingBalance: centsOrLegacy(account.openingBalanceCents, account.openingBalance),
+      lowBalanceThreshold: centsOrLegacyNullable(
+        account.lowBalanceThresholdCents,
+        account.lowBalanceThreshold,
+      ),
+      creditLimit: centsOrLegacyNullable(account.creditLimitCents, account.creditLimit),
+    })),
+    totalByAccount,
+  );
 }
 
 const accountBalancesMemo = cache(accountBalancesImpl);
@@ -97,7 +114,11 @@ async function billViewsImpl(userId: string, today: DayKey) {
     orderBy: { nextDueDate: "asc" },
     take: 200,
   });
-  return billsByUrgency(bills, today, BILL_SOON_DAYS);
+  return billsByUrgency(
+    bills.map((bill) => ({ ...bill, amount: centsOrLegacy(bill.amountCents, bill.amount) })),
+    today,
+    BILL_SOON_DAYS,
+  );
 }
 
 const billViewsMemo = cache(billViewsImpl);
@@ -115,16 +136,17 @@ export async function getBillViews(): Promise<BillView[]> {
 
 export async function getTransactionsBetween(from: DayKey, to: DayKey) {
   const user = await getCurrentUser();
-  return prisma.financeTransaction.findMany({
+  const rows = await prisma.financeTransaction.findMany({
     where: { userId: user.id, date: { gte: from, lte: to } },
     orderBy: [{ date: "desc" }, { createdAt: "desc" }],
     take: TRANSACTION_WINDOW_CAP,
   });
+  return rows.map((row) => ({ ...row, amount: centsOrLegacy(row.amountCents, row.amount) }));
 }
 
 export async function getRecentTransactions(limit = 50) {
   const user = await getCurrentUser();
-  return prisma.financeTransaction.findMany({
+  const rows = await prisma.financeTransaction.findMany({
     where: { userId: user.id },
     include: {
       account: { select: { id: true, name: true, currency: true } },
@@ -133,6 +155,7 @@ export async function getRecentTransactions(limit = 50) {
     orderBy: [{ date: "desc" }, { createdAt: "desc" }],
     take: limit,
   });
+  return rows.map((row) => ({ ...row, amount: centsOrLegacy(row.amountCents, row.amount) }));
 }
 
 export type TransactionWithRefs = Awaited<ReturnType<typeof getRecentTransactions>>[number];
@@ -140,11 +163,12 @@ export type TransactionWithRefs = Awaited<ReturnType<typeof getRecentTransaction
 // --- budgets -----------------------------------------------------------------
 
 async function budgetsImpl(userId: string) {
-  return prisma.budget.findMany({
+  const rows = await prisma.budget.findMany({
     where: { userId },
     orderBy: { category: "asc" },
     take: 100,
   });
+  return rows.map((row) => ({ ...row, amount: centsOrLegacy(row.amountCents, row.amount) }));
 }
 
 const budgetsMemo = cache(budgetsImpl);
@@ -193,7 +217,13 @@ export async function getSavingsGoals(includeArchived = false) {
     orderBy: [{ sortOrder: "asc" }, { createdAt: "asc" }],
     take: 100,
   });
-  return goals.map((goal) => ({ ...goal, progress: savingsProgress(goal) }));
+  return goals
+    .map((goal) => ({
+      ...goal,
+      targetAmount: centsOrLegacy(goal.targetAmountCents, goal.targetAmount),
+      currentAmount: centsOrLegacy(goal.currentAmountCents, goal.currentAmount),
+    }))
+    .map((goal) => ({ ...goal, progress: savingsProgress(goal) }));
 }
 
 export type SavingsGoalWithProgress = Awaited<ReturnType<typeof getSavingsGoals>>[number];
@@ -255,6 +285,7 @@ async function computeBillSuggestions(userId: string, today: DayKey) {
         accountId: true,
         date: true,
         amount: true,
+        amountCents: true,
         payee: true,
         category: true,
         billId: true,
@@ -268,7 +299,10 @@ async function computeBillSuggestions(userId: string, today: DayKey) {
   ]);
   const dismissed = new Set(dismissals.map((row) => row.payeeKey));
   const covered = new Set(activeBills.map((bill) => bill.name.trim().toLowerCase()));
-  return detectRecurringCosts(rows, today)
+  return detectRecurringCosts(
+    rows.map((row) => ({ ...row, amount: centsOrLegacy(row.amountCents, row.amount) })),
+    today,
+  )
     .filter(
       (suggestion) => !dismissed.has(suggestion.payeeKey) && !covered.has(suggestion.payeeKey),
     )

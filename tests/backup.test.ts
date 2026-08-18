@@ -134,7 +134,6 @@ describe("backup validation", () => {
   });
 
   it("v10 carries both dismissal ledgers, transfer pairs after their rows", () => {
-    expect(BACKUP_VERSION).toBe(10);
     expect(BACKUP_TABLES).toContain("transferDismissals");
     expect(BACKUP_TABLES).toContain("billSuggestionDismissals");
     // A transfer dismissal references two ledger rows — they restore first.
@@ -154,6 +153,12 @@ describe("backup validation", () => {
     expect(result.counts.transferDismissals).toBe(1);
     expect(result.counts.billSuggestionDismissals).toBe(1);
     expect(result.warnings.join(" ")).not.toContain("unrecognised");
+  });
+
+  it("v11 is the integer-cents format — columns only, no new tables", () => {
+    // The bump exists so an older app refuses a v11 file rather than
+    // restoring it without the cents columns the newer app relies on.
+    expect(BACKUP_VERSION).toBe(11);
   });
 
   it("a v7 file (no smart-merge accounting) still inspects cleanly", () => {

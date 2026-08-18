@@ -1,5 +1,5 @@
 import { daysBetween, type DayKey } from "@/lib/date";
-import { moneyRound } from "@/lib/logic/finance";
+import { round } from "@/lib/utils";
 
 /**
  * Transfer reconciliation — pure. Imported bank rows arrive one-sided: the
@@ -30,7 +30,7 @@ export interface TransferMatchRow {
   id: string;
   accountId: string;
   date: DayKey;
-  /** Signed, rounded to cents. */
+  /** Signed integer cents — like every amount in the app. */
   amount: number;
   payee: string | null;
   category: string;
@@ -68,9 +68,10 @@ function hasTransferKeyword(payee: string | null): boolean {
 }
 
 /** "$1,500" reads as a standing order; "$1,483.62" reads like a real bill. */
-function isRoundAmount(amount: number): boolean {
-  const magnitude = Math.abs(amount);
-  return Number.isInteger(magnitude) && magnitude % 10 === 0;
+function isRoundAmount(cents: number): boolean {
+  const magnitude = Math.abs(cents);
+  // A multiple of ten whole dollars (1,000 cents).
+  return magnitude % 1000 === 0;
 }
 
 /**
@@ -86,7 +87,7 @@ export function isCounterpartPair(
   if (a.id === b.id) return false;
   if (a.accountId === b.accountId) return false;
   if (a.transferGroupId !== null || b.transferGroupId !== null) return false;
-  if (moneyRound(a.amount + b.amount) !== 0) return false; // equal magnitude, opposite sign
+  if (a.amount + b.amount !== 0) return false; // equal magnitude, opposite sign — exact, integers
   if (a.amount === 0) return false;
   const accountA = accountById.get(a.accountId);
   const accountB = accountById.get(b.accountId);
@@ -166,7 +167,7 @@ export function scoreTransferPair(
     reasons.push("several possible matches");
   }
 
-  score = Math.min(1, Math.max(0, moneyRound(score)));
+  score = Math.min(1, Math.max(0, round(score, 2)));
   return {
     out,
     into,

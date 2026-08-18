@@ -54,8 +54,13 @@
  *      column on transactions (what unlinking a linked transfer restores),
  *      `creditLimit`/`statementDueDay` on accounts, and `rollover` on
  *      budgets.
+ * v11 — money as integer cents: every money field gains a `*Cents` sibling
+ *      column (`amountCents`, `openingBalanceCents`, …) that the app reads;
+ *      the float columns stay dual-written until a later cleanup migration.
+ *      A v10-or-older file (floats only) restores by deriving the cents on
+ *      import; a v11 file carries both.
  *
- * A v1–v9 file restores into a v10 app unchanged: the missing tables simply
+ * A v1–v10 file restores into a v11 app unchanged: the missing tables simply
  * have no rows, the new columns take their defaults (a v7 health batch arrives
  * with `protectedRows = 0` and `formatVersion = 1` — which is exactly true of
  * it, because the importer that wrote it protected nothing and was version 1),
@@ -64,11 +69,11 @@
  * one from the same migration — which is how those records behaved when the
  * older backup was taken.
  *
- * A v10 file restored by an older app loses only the new parts, which is
+ * A v11 file restored by an older app loses only the new parts, which is
  * why the version was bumped rather than left alone: `inspectBackup` refuses a
  * file newer than the app reading it, and that refusal is the honest answer.
  */
-export const BACKUP_VERSION = 10;
+export const BACKUP_VERSION = 11;
 
 export interface BackupMetadata {
   /** Schema version of the backup format itself. */

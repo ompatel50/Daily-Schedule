@@ -345,7 +345,7 @@ describe("setAccountBalance", () => {
     const result = await setAccountBalance({ accountId: account.id, balance: 220.75, date: DAY });
     expect(result.ok).toBe(true);
     if (!result.ok) return;
-    expect(result.data.adjustment).toBe(70.75);
+    expect(result.data.adjustment).toBe(7075); // integer cents
 
     // openingBalance + sum(transactions) now equals exactly what was asked for.
     const total = await prisma.financeTransaction.aggregate({
@@ -357,7 +357,7 @@ describe("setAccountBalance", () => {
     const adjustment = await prisma.financeTransaction.findFirstOrThrow({
       where: { accountId: account.id, category: "adjustment" },
     });
-    expect(adjustment.amount).toBe(70.75);
+    expect(adjustment.amount).toBe(70.75); // the float column mirrors the cents
 
     // Asking for the same balance again records nothing.
     const second = await setAccountBalance({ accountId: account.id, balance: 220.75, date: DAY });
@@ -516,14 +516,14 @@ describe("command center summary", () => {
     // bob's 1499 never appears anywhere.
     const usd = summary.finance.net.find((entry) => entry.currency === "USD");
     const eur = summary.finance.net.find((entry) => entry.currency === "EUR");
-    expect(usd).toMatchObject({ net: 165.5, accounts: 2 });
-    expect(eur).toMatchObject({ net: 20, accounts: 1 });
+    expect(usd).toMatchObject({ net: 16550, accounts: 2 });
+    expect(eur).toMatchObject({ net: 2000, accounts: 1 });
     expect(summary.finance.net[0]?.currency).toBe("USD");
 
     // Month card: income and spending from this month's transactions
     // (both dated today, so the month window always contains them).
-    expect(summary.finance.month.income).toBe(25.5);
-    expect(summary.finance.month.spending).toBe(10);
+    expect(summary.finance.month.income).toBe(2550);
+    expect(summary.finance.month.spending).toBe(1000);
 
     // Inbox: open queue only.
     expect(summary.inbox.openCount).toBe(2);

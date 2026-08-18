@@ -3,6 +3,7 @@
 import * as React from "react";
 import { useRouter } from "next/navigation";
 import { Loader2 } from "lucide-react";
+import { centsToAmount } from "@/lib/logic/money";
 import { toast } from "sonner";
 
 import { Button } from "@/components/ui/button";
@@ -98,7 +99,8 @@ function blankBill(today: string): BillForm {
 function formFrom(bill: BillRowView): BillForm {
   return {
     name: bill.name,
-    amount: String(bill.amount),
+    // Views carry integer cents; the input is typed in dollars.
+    amount: String(centsToAmount(bill.amount)),
     kind: bill.kind,
     category: bill.category,
     recurrence: bill.recurrence,
@@ -154,7 +156,7 @@ export function BillDialog({
           ? {
               ...blank,
               name: initial.name,
-              amount: String(initial.amount),
+              amount: String(centsToAmount(initial.amount)),
               category: initial.category,
               recurrence: initial.recurrence,
               dueDate: initial.dueDate,

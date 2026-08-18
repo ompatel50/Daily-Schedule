@@ -1,5 +1,7 @@
 import "server-only";
 
+import { centsOrLegacy } from "@/lib/logic/money";
+
 import { getCurrentUser, prisma } from "@/lib/db";
 import {
   type DayKey,
@@ -839,13 +841,25 @@ export async function searchEverything(query: string, limit = 8): Promise<Search
       ...account,
       archived: account.archivedAt !== null,
     })),
+    // Money leaves the server as integer cents, search hits included.
     transactions: transactionRows.map((transaction) => ({
       ...transaction,
+      amount: centsOrLegacy(transaction.amountCents, transaction.amount),
       currency: transaction.account.currency,
     })),
-    bills,
-    budgets,
-    savingsGoals,
+    bills: bills.map((bill) => ({
+      ...bill,
+      amount: centsOrLegacy(bill.amountCents, bill.amount),
+    })),
+    budgets: budgets.map((budget) => ({
+      ...budget,
+      amount: centsOrLegacy(budget.amountCents, budget.amount),
+    })),
+    savingsGoals: savingsGoals.map((goal) => ({
+      ...goal,
+      targetAmount: centsOrLegacy(goal.targetAmountCents, goal.targetAmount),
+      currentAmount: centsOrLegacy(goal.currentAmountCents, goal.currentAmount),
+    })),
     documents,
     healthMetrics,
     healthRecords: healthRecords.map((record) => ({ ...record, date: record.date as DayKey })),

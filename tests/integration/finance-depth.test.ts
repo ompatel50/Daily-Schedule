@@ -111,9 +111,9 @@ describe("budget rollover through the overview", () => {
 
     const overview = await getFinanceOverview();
     const [view] = overview.budgets;
-    expect(view.carry).toBe(250);
-    expect(view.effectiveAmount).toBe(650);
-    expect(view.spent).toBe(500);
+    expect(view.carry).toBe(25000);
+    expect(view.effectiveAmount).toBe(65000);
+    expect(view.spent).toBe(50000);
     expect(view.over).toBe(false);
     expect(view.budget.rollover).toBe(true);
   });
@@ -147,7 +147,7 @@ describe("recurring-cost bill suggestions", () => {
     ]);
     expect(overview.billSuggestions[0]).toMatchObject({
       cadence: "monthly",
-      amount: 15.49,
+      amount: 1549, // integer cents
       count: 3,
       category: "subscriptions",
     });
@@ -215,14 +215,14 @@ describe("month over month report data", () => {
     });
 
     const overview = await getFinanceOverview();
-    expect(overview.month).toMatchObject({ spending: 300, income: 2000 });
-    expect(overview.previousMonth).toMatchObject({ spending: 260, income: 0 });
+    expect(overview.month).toMatchObject({ spending: 30000, income: 200000 });
+    expect(overview.previousMonth).toMatchObject({ spending: 26000, income: 0 });
     expect(overview.previousMonth.window).toEqual(lastMonth);
     expect(overview.monthOverMonth.map((delta) => delta.category)).toEqual([
       "groceries",
       "transport",
     ]);
-    expect(overview.monthOverMonth[0]).toMatchObject({ current: 300, previous: 200, delta: 100 });
+    expect(overview.monthOverMonth[0]).toMatchObject({ current: 30000, previous: 20000, delta: 10000 });
   });
 });
 

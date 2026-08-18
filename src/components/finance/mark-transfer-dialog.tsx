@@ -25,7 +25,7 @@ import {
 } from "@/components/ui/select";
 import type { TransactionView } from "@/components/finance/transaction-dialog";
 import { formatDay } from "@/lib/date";
-import { formatMoney } from "@/lib/logic/finance";
+import { formatCents } from "@/lib/logic/money";
 import { TRANSFER_MATCH_WINDOW_CHOICES } from "@/lib/logic/transfer-match";
 import { cn } from "@/lib/utils";
 import {
@@ -147,7 +147,7 @@ export function MarkTransferDialog({
                 </span>
                 <span className="tabular shrink-0 font-semibold">
                   {transaction.amount > 0 ? "+" : ""}
-                  {formatMoney(transaction.amount, transaction.currency)}
+                  {formatCents(transaction.amount, transaction.currency)}
                 </span>
               </div>
               <p className="mt-0.5 text-xs text-muted-foreground">
@@ -213,7 +213,7 @@ export function MarkTransferDialog({
                       </span>
                       <span className="tabular shrink-0 font-semibold">
                         {candidate.amount > 0 ? "+" : ""}
-                        {formatMoney(candidate.amount, transaction.currency)}
+                        {formatCents(candidate.amount, transaction.currency)}
                       </span>
                     </div>
                     <p className="mt-0.5 flex flex-wrap items-center gap-1.5 text-xs text-muted-foreground">

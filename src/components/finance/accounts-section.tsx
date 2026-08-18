@@ -13,7 +13,8 @@ import type { AccountView } from "@/components/finance/account-dialog";
 import { formatDay } from "@/lib/date";
 import { ACCOUNT_TYPE_META, type AccountType } from "@/lib/enums";
 import { describeDueDistance, dueBucketOf } from "@/lib/logic/due";
-import { creditUtilization, formatMoney, nextStatementDueDate } from "@/lib/logic/finance";
+import { creditUtilization, nextStatementDueDate } from "@/lib/logic/finance";
+import { formatCents } from "@/lib/logic/money";
 import { cn } from "@/lib/utils";
 
 /** Same urgency colouring the bills list uses — one language for "due". */
@@ -114,7 +115,7 @@ export function AccountsSection({
                   {account.name}
                 </p>
                 <span className="tabular shrink-0 text-sm text-muted-foreground">
-                  {formatMoney(account.balance, account.currency)}
+                  {formatCents(account.balance, account.currency)}
                 </span>
                 <RowMenu
                   label={`Actions for ${account.name}`}
@@ -165,7 +166,7 @@ function AccountRow({
               <Badge
                 variant="outline"
                 className="gap-1 border-amber-500/30 text-[10px] text-amber-800 dark:text-amber-400"
-                title={`Below your ${formatMoney(account.lowBalanceThreshold ?? 0, account.currency)} alert level`}
+                title={`Below your ${formatCents(account.lowBalanceThreshold ?? 0, account.currency)} alert level`}
               >
                 <TriangleAlert className="h-2.5 w-2.5" aria-hidden="true" /> Low
               </Badge>
@@ -178,7 +179,7 @@ function AccountRow({
             account.debt && account.balance < 0 && "text-red-700 dark:text-red-400",
           )}
         >
-          {formatMoney(account.balance, account.currency)}
+          {formatCents(account.balance, account.currency)}
         </span>
         <RowMenu
           label={`Actions for ${account.name}`}
@@ -211,8 +212,8 @@ function AccountRow({
             >
               {utilization.percent}% used
             </span>{" "}
-            · {formatMoney(utilization.owed, account.currency)} of{" "}
-            {formatMoney(utilization.limit, account.currency)}
+            · {formatCents(utilization.owed, account.currency)} of{" "}
+            {formatCents(utilization.limit, account.currency)}
           </p>
         </div>
       )}

@@ -1,6 +1,5 @@
 import { daysBetween, shiftDay, shiftMonth, type DayKey } from "@/lib/date";
 import { isBookkeepingCategory } from "@/lib/enums";
-import { moneyRound } from "@/lib/logic/finance";
 
 /**
  * Recurring-cost detection — pure. Scans a user's spending history for
@@ -10,8 +9,9 @@ import { moneyRound } from "@/lib/logic/finance";
  * The bar to clear, per payee:
  *   · money out only; never bookkeeping rows, transfer legs, or rows already
  *     settling a bill (those ARE tracked);
- *   · amounts within a tolerance of the payee's median (±15%, floor $2) —
- *     "Netflix went up a dollar" still matches, "the same store twice" not;
+ *   · amounts (integer cents, like all money in the app) within a tolerance
+ *     of the payee's median (±15%, floor 200 cents) — "Netflix went up a
+ *     dollar" still matches, "the same store twice" not;
  *   · one occurrence per day (a double charge is one event);
  *   · every gap between occurrences inside ONE cadence's tolerance:
  *     weekly 7±2, monthly 28–33±drift (26–36), yearly 365±15;
@@ -27,7 +27,7 @@ export type RecurringCadence = "weekly" | "monthly" | "yearly";
 export interface RecurringCandidateRow {
   accountId: string;
   date: DayKey;
-  /** Signed; only negative rows are considered. */
+  /** Signed integer cents; only negative rows are considered. */
   amount: number;
   payee: string | null;
   category: string;
@@ -41,7 +41,7 @@ export interface RecurringSuggestion {
   /** The payee as most recently written — what the bill gets named. */
   payee: string;
   cadence: RecurringCadence;
-  /** The typical charge (median magnitude), positive. */
+  /** The typical charge (median magnitude), positive integer cents. */
   amount: number;
   /** Occurrences that matched. */
   count: number;
@@ -105,10 +105,10 @@ export function detectRecurringCosts(
   for (const [payeeKey, bucket] of byPayee) {
     if (bucket.length < 2) continue;
 
-    // Similar amounts: keep rows near the payee's median magnitude.
+    // Similar amounts: keep rows near the payee's median magnitude (cents).
     const magnitudes = bucket.map((row) => Math.abs(row.amount));
     const typical = median(magnitudes);
-    const tolerance = Math.max(2, typical * 0.15);
+    const tolerance = Math.max(200, typical * 0.15);
     const similar = bucket.filter((row) => Math.abs(Math.abs(row.amount) - typical) <= tolerance);
 
     // One occurrence per day, oldest first.
@@ -151,7 +151,8 @@ export function detectRecurringCosts(
       payeeKey,
       payee: last.payee?.trim() ?? payeeKey,
       cadence: fit.cadence,
-      amount: moneyRound(typical),
+      // The median of integer cents can land on a half cent — round it.
+      amount: Math.round(typical),
       count: occurrences.length,
       lastDate: last.date,
       nextDueDate,

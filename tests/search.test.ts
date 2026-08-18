@@ -53,11 +53,11 @@ describe("global search hits", () => {
         ],
         accounts: [{ id: "acc", name: "Everyday checking", type: "checking", archived: false, currency: "USD" }],
         transactions: [
-          { id: "tx", payee: "Grocer", category: "groceries", date: "2026-07-29", amount: -42.5, currency: "USD" },
+          { id: "tx", payee: "Grocer", category: "groceries", date: "2026-07-29", amount: -4250, currency: "USD" },
         ],
-        bills: [{ id: "bl", name: "Rent", kind: "bill", amount: 1800, nextDueDate: "2026-08-01" }],
-        budgets: [{ id: "bu", category: "dining", amount: 250, period: "monthly" }],
-        savingsGoals: [{ id: "sg", name: "Emergency fund", targetAmount: 10000, currentAmount: 2500 }],
+        bills: [{ id: "bl", name: "Rent", kind: "bill", amount: 180000, nextDueDate: "2026-08-01" }],
+        budgets: [{ id: "bu", category: "dining", amount: 25000, period: "monthly" }],
+        savingsGoals: [{ id: "sg", name: "Emergency fund", targetAmount: 1000000, currentAmount: 250000 }],
         healthMetrics: [
           {
             type: "body_weight",
@@ -119,11 +119,11 @@ describe("global search hits", () => {
           { id: "t1", title: "Overdue thing", status: "open", dueDate: "2026-07-28" },
           { id: "t2", title: "Finished thing", status: "done", dueDate: null },
         ],
-        bills: [{ id: "b1", name: "Rent", kind: "bill", amount: 1800, nextDueDate: "2026-07-30" }],
+        bills: [{ id: "b1", name: "Rent", kind: "bill", amount: 180000, nextDueDate: "2026-07-30" }],
         transactions: [
-          { id: "tx", payee: null, category: "groceries", date: "2026-07-30", amount: -42.5, currency: "USD" },
+          { id: "tx", payee: null, category: "groceries", date: "2026-07-30", amount: -4250, currency: "USD" },
         ],
-        savingsGoals: [{ id: "sg", name: "Fund", targetAmount: 10000, currentAmount: 2500 }],
+        savingsGoals: [{ id: "sg", name: "Fund", targetAmount: 1000000, currentAmount: 250000 }],
         accounts: [{ id: "a", name: "Old card", type: "credit_card", archived: true, currency: "USD" }],
       }),
       REF,
@@ -177,7 +177,7 @@ describe("global search hits", () => {
 
   it("labels a weekly budget as weekly", () => {
     const [hit] = buildSearchHits(
-      rows({ budgets: [{ id: "bu", category: "dining", amount: 60, period: "weekly" }] }),
+      rows({ budgets: [{ id: "bu", category: "dining", amount: 6000, period: "weekly" }] }),
       REF,
     );
     expect(hit.subtitle).toBe("$60 weekly");

@@ -17,7 +17,7 @@ import {
 import { Skeleton } from "@/components/ui/skeleton";
 import type { ImportBatchView } from "@/components/finance/import-batches-section";
 import { formatDay } from "@/lib/date";
-import { formatMoney } from "@/lib/logic/finance";
+import { formatCents } from "@/lib/logic/money";
 import { pluralize } from "@/lib/utils";
 import {
   previewFinanceImportUndo,
@@ -148,7 +148,7 @@ export function UndoImportDialog({
                           </td>
                           <td className="max-w-[16rem] truncate px-2 py-1.5">{row.payee ?? "—"}</td>
                           <td className="tabular px-2 py-1.5 text-right">
-                            {formatMoney(row.amount)}
+                            {formatCents(row.amount)}
                           </td>
                         </tr>
                       ))}

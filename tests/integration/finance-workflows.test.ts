@@ -296,7 +296,7 @@ describe("CSV category mappings", () => {
       {
         line: 3,
         date: "2026-07-03",
-        amount: 300,
+        amount: 30000, // integer cents
         payee: "Payment Thank You-Mobile",
         category: "transfer",
       },
@@ -454,9 +454,9 @@ describe("account transfers", () => {
 
     const summary = await getFinanceSummary();
     expect(summary.month.income).toBe(0);
-    expect(summary.month.spending).toBe(50);
+    expect(summary.month.spending).toBe(5000);
     // The net across accounts is unchanged by the transfer.
-    expect(summary.net[0].net).toBe(950);
+    expect(summary.net[0].net).toBe(95000);
   });
 
   it("deleting either leg removes the pair", async () => {
@@ -633,7 +633,7 @@ describe("budgets", () => {
       ],
     });
     const overview = await getFinanceOverview();
-    expect(overview.week.spending).toBe(20);
+    expect(overview.week.spending).toBe(2000);
   });
 
   it("the dashboard summary reports over-budget state from this month's spending", async () => {
@@ -924,7 +924,7 @@ describe("search coverage for the new records", () => {
     actAs(alice);
     const rows = await searchEverything("din");
     expect(rows.budgets).toHaveLength(1);
-    expect(rows.budgets[0].amount).toBe(200);
+    expect(rows.budgets[0].amount).toBe(20000);
   });
 
   it("finds transfer legs by their payee text", async () => {

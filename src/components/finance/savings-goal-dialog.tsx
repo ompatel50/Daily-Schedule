@@ -3,6 +3,7 @@
 import * as React from "react";
 import { useRouter } from "next/navigation";
 import { Loader2 } from "lucide-react";
+import { centsToAmount } from "@/lib/logic/money";
 import { toast } from "sonner";
 
 import { Button } from "@/components/ui/button";
@@ -48,8 +49,9 @@ function blankGoal(): GoalForm {
 function formFrom(goal: SavingsGoalView): GoalForm {
   return {
     name: goal.name,
-    targetAmount: String(goal.targetAmount),
-    currentAmount: String(goal.currentAmount),
+    // Views carry integer cents; the inputs are typed in dollars.
+    targetAmount: String(centsToAmount(goal.targetAmount)),
+    currentAmount: String(centsToAmount(goal.currentAmount)),
     targetDate: goal.targetDate ?? "",
     notes: goal.notes ?? "",
   };

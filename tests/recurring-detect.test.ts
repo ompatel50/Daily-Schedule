@@ -24,9 +24,9 @@ describe("detectRecurringCosts", () => {
   it("finds a monthly pattern and pre-fills the bill", () => {
     const suggestions = detectRecurringCosts(
       [
-        row({ date: "2026-05-15", amount: -15.49 }),
-        row({ date: "2026-06-15", amount: -15.49 }),
-        row({ date: "2026-07-15", amount: -15.49 }),
+        row({ date: "2026-05-15", amount: -1549 }),
+        row({ date: "2026-06-15", amount: -1549 }),
+        row({ date: "2026-07-15", amount: -1549 }),
       ],
       TODAY,
     );
@@ -35,7 +35,7 @@ describe("detectRecurringCosts", () => {
       payeeKey: "netflix",
       payee: "Netflix",
       cadence: "monthly",
-      amount: 15.49,
+      amount: 1549,
       count: 3,
       lastDate: "2026-07-15",
       // Aug 15 already passed (today is Aug 18) — the suggested first due
@@ -49,9 +49,9 @@ describe("detectRecurringCosts", () => {
   it("a stale history still suggests a future first due date", () => {
     const suggestions = detectRecurringCosts(
       [
-        row({ date: "2026-01-10", amount: -12 }),
-        row({ date: "2026-02-10", amount: -12 }),
-        row({ date: "2026-03-10", amount: -12 }),
+        row({ date: "2026-01-10", amount: -1200 }),
+        row({ date: "2026-02-10", amount: -1200 }),
+        row({ date: "2026-03-10", amount: -1200 }),
       ],
       TODAY,
     );
@@ -62,9 +62,9 @@ describe("detectRecurringCosts", () => {
   it("tolerates a few days of drift and small amount variance", () => {
     const suggestions = detectRecurringCosts(
       [
-        row({ date: "2026-05-14", amount: -14.99 }),
-        row({ date: "2026-06-16", amount: -15.49 }), // price bump, 33-day gap
-        row({ date: "2026-07-15", amount: -15.49 }),
+        row({ date: "2026-05-14", amount: -1499 }),
+        row({ date: "2026-06-16", amount: -1549 }), // price bump, 33-day gap
+        row({ date: "2026-07-15", amount: -1549 }),
       ],
       TODAY,
     );
@@ -75,25 +75,25 @@ describe("detectRecurringCosts", () => {
   it("weekly needs three occurrences; yearly settles for two", () => {
     const weekly = detectRecurringCosts(
       [
-        row({ payee: "Gym", date: "2026-07-06", amount: -20 }),
-        row({ payee: "Gym", date: "2026-07-13", amount: -20 }),
-        row({ payee: "Gym", date: "2026-07-20", amount: -20 }),
+        row({ payee: "Gym", date: "2026-07-06", amount: -2000 }),
+        row({ payee: "Gym", date: "2026-07-13", amount: -2000 }),
+        row({ payee: "Gym", date: "2026-07-20", amount: -2000 }),
       ],
       TODAY,
     );
     expect(weekly[0]).toMatchObject({ cadence: "weekly", nextDueDate: "2026-08-24" });
 
     const yearlyTooFew = detectRecurringCosts(
-      [row({ payee: "Gym", date: "2026-07-06", amount: -20 }),
-       row({ payee: "Gym", date: "2026-07-13", amount: -20 })],
+      [row({ payee: "Gym", date: "2026-07-06", amount: -2000 }),
+       row({ payee: "Gym", date: "2026-07-13", amount: -2000 })],
       TODAY,
     );
     expect(yearlyTooFew).toEqual([]); // two weekly-looking rows are not enough
 
     const yearly = detectRecurringCosts(
       [
-        row({ payee: "Insurance Co", date: "2025-03-01", amount: -820, category: "insurance" }),
-        row({ payee: "Insurance Co", date: "2026-03-02", amount: -845, category: "insurance" }),
+        row({ payee: "Insurance Co", date: "2025-03-01", amount: -82000, category: "insurance" }),
+        row({ payee: "Insurance Co", date: "2026-03-02", amount: -84500, category: "insurance" }),
       ],
       TODAY,
     );
@@ -104,23 +104,23 @@ describe("detectRecurringCosts", () => {
     expect(
       detectRecurringCosts(
         [
-          row({ date: "2026-05-01", amount: -30 }),
-          row({ date: "2026-05-20", amount: -30 }),
-          row({ date: "2026-07-15", amount: -30 }),
+          row({ date: "2026-05-01", amount: -3000 }),
+          row({ date: "2026-05-20", amount: -3000 }),
+          row({ date: "2026-07-15", amount: -3000 }),
         ],
         TODAY,
       ),
     ).toEqual([]);
-    expect(detectRecurringCosts([row({ date: "2026-07-15", amount: -30 })], TODAY)).toEqual([]);
+    expect(detectRecurringCosts([row({ date: "2026-07-15", amount: -3000 })], TODAY)).toEqual([]);
   });
 
   it("dissimilar amounts under one payee break the pattern", () => {
     expect(
       detectRecurringCosts(
         [
-          row({ payee: "Amazon", date: "2026-05-15", amount: -12 }),
+          row({ payee: "Amazon", date: "2026-05-15", amount: -1200 }),
           row({ payee: "Amazon", date: "2026-06-15", amount: -180 }),
-          row({ payee: "Amazon", date: "2026-07-15", amount: -47 }),
+          row({ payee: "Amazon", date: "2026-07-15", amount: -4700 }),
         ],
         TODAY,
       ),
@@ -131,9 +131,9 @@ describe("detectRecurringCosts", () => {
     expect(
       detectRecurringCosts(
         [
-          row({ date: "2026-05-15", amount: -15.49, billId: "bill1" }),
-          row({ date: "2026-06-15", amount: -15.49, billId: "bill1" }),
-          row({ date: "2026-07-15", amount: -15.49, billId: "bill1" }),
+          row({ date: "2026-05-15", amount: -1549, billId: "bill1" }),
+          row({ date: "2026-06-15", amount: -1549, billId: "bill1" }),
+          row({ date: "2026-07-15", amount: -1549, billId: "bill1" }),
         ],
         TODAY,
       ),
@@ -141,9 +141,9 @@ describe("detectRecurringCosts", () => {
     expect(
       detectRecurringCosts(
         [
-          row({ date: "2026-05-15", amount: -500, transferGroupId: "grp", category: "transfer" }),
-          row({ date: "2026-06-15", amount: -500, transferGroupId: "grp", category: "transfer" }),
-          row({ date: "2026-07-15", amount: -500, transferGroupId: "grp", category: "transfer" }),
+          row({ date: "2026-05-15", amount: -50000, transferGroupId: "grp", category: "transfer" }),
+          row({ date: "2026-06-15", amount: -50000, transferGroupId: "grp", category: "transfer" }),
+          row({ date: "2026-07-15", amount: -50000, transferGroupId: "grp", category: "transfer" }),
         ],
         TODAY,
       ),
@@ -152,9 +152,9 @@ describe("detectRecurringCosts", () => {
     expect(
       detectRecurringCosts(
         [
-          row({ date: "2026-05-15", amount: 15 }),
-          row({ date: "2026-06-15", amount: 15 }),
-          row({ date: "2026-07-15", amount: 15 }),
+          row({ date: "2026-05-15", amount: 1500 }),
+          row({ date: "2026-06-15", amount: 1500 }),
+          row({ date: "2026-07-15", amount: 1500 }),
         ],
         TODAY,
       ),
@@ -164,10 +164,10 @@ describe("detectRecurringCosts", () => {
   it("a same-day double charge counts once", () => {
     const suggestions = detectRecurringCosts(
       [
-        row({ date: "2026-05-15", amount: -15.49 }),
-        row({ date: "2026-06-15", amount: -15.49 }),
-        row({ date: "2026-06-15", amount: -15.49 }),
-        row({ date: "2026-07-15", amount: -15.49 }),
+        row({ date: "2026-05-15", amount: -1549 }),
+        row({ date: "2026-06-15", amount: -1549 }),
+        row({ date: "2026-06-15", amount: -1549 }),
+        row({ date: "2026-07-15", amount: -1549 }),
       ],
       TODAY,
     );
@@ -177,9 +177,9 @@ describe("detectRecurringCosts", () => {
   it("payee matching is case-insensitive; the display name is the latest", () => {
     const suggestions = detectRecurringCosts(
       [
-        row({ payee: "NETFLIX.COM", date: "2026-05-15", amount: -15.49 }),
-        row({ payee: "netflix.com", date: "2026-06-15", amount: -15.49 }),
-        row({ payee: "Netflix.com", date: "2026-07-15", amount: -15.49 }),
+        row({ payee: "NETFLIX.COM", date: "2026-05-15", amount: -1549 }),
+        row({ payee: "netflix.com", date: "2026-06-15", amount: -1549 }),
+        row({ payee: "Netflix.com", date: "2026-07-15", amount: -1549 }),
       ],
       TODAY,
     );
@@ -190,13 +190,13 @@ describe("detectRecurringCosts", () => {
   it("stronger patterns sort first", () => {
     const suggestions = detectRecurringCosts(
       [
-        row({ payee: "Gym", date: "2026-07-06", amount: -20 }),
-        row({ payee: "Gym", date: "2026-07-13", amount: -20 }),
-        row({ payee: "Gym", date: "2026-07-20", amount: -20 }),
-        row({ payee: "Gym", date: "2026-07-27", amount: -20 }),
-        row({ date: "2026-05-15", amount: -15.49 }),
-        row({ date: "2026-06-15", amount: -15.49 }),
-        row({ date: "2026-07-15", amount: -15.49 }),
+        row({ payee: "Gym", date: "2026-07-06", amount: -2000 }),
+        row({ payee: "Gym", date: "2026-07-13", amount: -2000 }),
+        row({ payee: "Gym", date: "2026-07-20", amount: -2000 }),
+        row({ payee: "Gym", date: "2026-07-27", amount: -2000 }),
+        row({ date: "2026-05-15", amount: -1549 }),
+        row({ date: "2026-06-15", amount: -1549 }),
+        row({ date: "2026-07-15", amount: -1549 }),
       ],
       TODAY,
     );

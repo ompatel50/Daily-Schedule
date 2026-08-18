@@ -1592,16 +1592,23 @@ model FinanceAccount {
   /// it cannot drift from the ledger. "Set balance" writes an adjustment
   /// transaction rather than editing this.
   openingBalance Float @default(0)
+  /// Integer-cents replacement for openingBalance (see src/lib/logic/money.ts).
+  /// Dual-written with the float until the cleanup migration retires it.
+  openingBalanceCents Int?
 
   /// Remind when the computed balance sits below this amount (in the
   /// account's own currency). Null = no low-balance reminder. Delivery rides
   /// the reminder ledger, at most once per week per account — see
   /// resolveLowBalanceReminder in src/lib/logic/reminders.ts.
   lowBalanceThreshold Float?
+  /// Integer-cents replacement for lowBalanceThreshold.
+  lowBalanceThresholdCents Int?
 
   /// Credit limit, for debt accounts (credit cards): what utilisation is
   /// measured against. Null = not tracked.
   creditLimit Float?
+  /// Integer-cents replacement for creditLimit.
+  creditLimitCents Int?
 
   /// Day of month (1–31) the statement payment is due, for credit cards.
   /// Clamped to the month's length when shorter (31 → Feb 28). Surfaced with
@@ -1640,6 +1647,9 @@ model FinanceTransaction {
 
   date   String // YYYY-MM-DD
   amount Float // signed; never zero (validated in the action layer)
+  /// Integer-cents replacement for amount — the value the app reads. Signed.
+  /// Dual-written with the float until the cleanup migration retires it.
+  amountCents Int?
 
   /// Merchant / counterparty, free text. What a future CSV import maps its
   /// description column onto.
@@ -1700,6 +1710,8 @@ model Bill {
   /// The expected amount per occurrence; the actual paid amount lives on the
   /// linked transaction.
   amount Float
+  /// Integer-cents replacement for amount.
+  amountCents Int?
 
   /// bill | subscription
   kind     String @default("bill")
@@ -1751,6 +1763,9 @@ model SavingsGoal {
   name          String
   targetAmount  Float
   currentAmount Float   @default(0)
+  /// Integer-cents replacements (see src/lib/logic/money.ts).
+  targetAmountCents  Int?
+  currentAmountCents Int?
   targetDate    String? // YYYY-MM-DD
   notes         String?
 
@@ -1778,6 +1793,8 @@ model Budget {
   category String
   /// Target spend per period, in the user's primary currency.
   amount   Float
+  /// Integer-cents replacement for amount.
+  amountCents Int?
   /// monthly | weekly — the window spending is measured over. Weekly windows
   /// follow the user's own weekStartsOn convention.
   period   String @default("monthly")

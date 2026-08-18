@@ -12,6 +12,7 @@ import {
   type FinanceCsvMapping,
   type FinanceImportRow,
 } from "@/lib/logic/finance-import";
+import { centsOrLegacy, centsToAmount } from "@/lib/logic/money";
 import { runTransferDetection } from "@/server/transfers";
 import {
   fail,
@@ -308,7 +309,10 @@ export async function commitFinanceCsvImport(
             userId: user.id,
             accountId: parsed.data.accountId,
             date: row.date,
-            amount: row.amount,
+            // Parser rows are integer cents; the float column mirrors them
+            // until the cleanup migration retires it.
+            amount: centsToAmount(row.amount),
+            amountCents: row.amount,
             payee: row.payee,
             category: row.category,
             notes: row.notes,
@@ -399,13 +403,14 @@ const UNDO_SAMPLE_SIZE = 6;
 const UNDO_ROW_CAP = 5000;
 
 async function loadUndoCandidates(userId: string, batchId: string) {
-  return prisma.financeTransaction.findMany({
+  const rows = await prisma.financeTransaction.findMany({
     where: { userId, importBatchId: batchId },
     select: {
       id: true,
       accountId: true,
       date: true,
       amount: true,
+      amountCents: true,
       payee: true,
       importKey: true,
       billId: true,
@@ -414,6 +419,8 @@ async function loadUndoCandidates(userId: string, batchId: string) {
     orderBy: [{ date: "asc" }, { createdAt: "asc" }],
     take: UNDO_ROW_CAP,
   });
+  // The identity check rebuilds keys from integer cents.
+  return rows.map((row) => ({ ...row, amount: centsOrLegacy(row.amountCents, row.amount) }));
 }
 
 /** What an undo would do — reads only, writes nothing. */
@@ -473,13 +480,14 @@ export async function undoFinanceImport(batchId: string): Promise<ActionResult<I
   const report = await prisma.$transaction(async (db) => {
     // Re-read inside the transaction: the preview the user saw may be seconds
     // stale, and the delete must be planned from what is true now.
-    const rows = await db.financeTransaction.findMany({
+    const raw = await db.financeTransaction.findMany({
       where: { userId: user.id, importBatchId: batch.id },
       select: {
         id: true,
         accountId: true,
         date: true,
         amount: true,
+        amountCents: true,
         payee: true,
         importKey: true,
         billId: true,
@@ -487,6 +495,7 @@ export async function undoFinanceImport(batchId: string): Promise<ActionResult<I
       },
       take: UNDO_ROW_CAP,
     });
+    const rows = raw.map((row) => ({ ...row, amount: centsOrLegacy(row.amountCents, row.amount) }));
     const plan = planImportUndo(rows);
 
     let removed = 0;

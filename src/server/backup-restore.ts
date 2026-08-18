@@ -47,6 +47,21 @@ export function remapId(userId: string, oldId: string): string {
   return "i" + createHash("sha256").update(`personal-os-import|${userId}|${oldId}`).digest("hex").slice(0, 24);
 }
 
+/**
+ * Money restore: a v10-or-older file carries only the legacy float columns —
+ * derive the integer cents the app reads (same rounding `toCents` uses). A
+ * v11+ file carries both and keeps its own cents.
+ */
+function ensureCents(
+  row: Record<string, unknown>,
+  centsKey: string,
+  floatKey: string,
+): void {
+  if (typeof row[centsKey] === "number") return;
+  const legacy = row[floatKey];
+  row[centsKey] = typeof legacy === "number" ? Math.round(legacy * 100) : null;
+}
+
 // --- schema-driven row sanitising ------------------------------------------
 
 const MODEL_BY_TABLE: Record<BackupTable, string> = {
@@ -631,7 +646,11 @@ export async function restoreBackupForUser(
 
   prepare("financeAccounts", (row) => {
     const mapped = withId(row);
-    return mapped ? own(mapped) : null;
+    if (!mapped) return null;
+    ensureCents(mapped, "openingBalanceCents", "openingBalance");
+    ensureCents(mapped, "lowBalanceThresholdCents", "lowBalanceThreshold");
+    ensureCents(mapped, "creditLimitCents", "creditLimit");
+    return own(mapped);
   });
 
   prepare("financeImportBatches", (row) => {
@@ -646,6 +665,7 @@ export async function restoreBackupForUser(
     const mapped = withId(row);
     if (!mapped) return null;
     mapped.accountId = inFile("financeAccounts", row.accountId) ? map(row.accountId) : null;
+    ensureCents(mapped, "amountCents", "amount");
     return own(mapped);
   });
 
@@ -678,6 +698,7 @@ export async function restoreBackupForUser(
       typeof row.transferGroupId === "string" && row.transferGroupId.length > 0
         ? remapId(userId, row.transferGroupId)
         : null;
+    ensureCents(mapped, "amountCents", "amount");
     return own(mapped);
   });
 
@@ -700,12 +721,17 @@ export async function restoreBackupForUser(
 
   prepare("savingsGoals", (row) => {
     const mapped = withId(row);
-    return mapped ? own(mapped) : null;
+    if (!mapped) return null;
+    ensureCents(mapped, "targetAmountCents", "targetAmount");
+    ensureCents(mapped, "currentAmountCents", "currentAmount");
+    return own(mapped);
   });
 
   prepare("budgets", (row) => {
     const mapped = withId(row);
-    return mapped ? own(mapped) : null;
+    if (!mapped) return null;
+    ensureCents(mapped, "amountCents", "amount");
+    return own(mapped);
   });
 
   prepare("financeCategoryRules", (row) => {

@@ -3,6 +3,7 @@
 import * as React from "react";
 import { useRouter } from "next/navigation";
 import { Loader2 } from "lucide-react";
+import { centsToAmount } from "@/lib/logic/money";
 import { toast } from "sonner";
 
 import { Button } from "@/components/ui/button";
@@ -79,10 +80,11 @@ function formFrom(account: AccountView): AccountForm {
     name: account.name,
     type: account.type,
     currency: account.currency,
-    openingBalance: String(account.openingBalance),
+    // Views carry integer cents; the inputs are typed in dollars.
+    openingBalance: String(centsToAmount(account.openingBalance)),
     lowBalanceThreshold:
-      account.lowBalanceThreshold === null ? "" : String(account.lowBalanceThreshold),
-    creditLimit: account.creditLimit === null ? "" : String(account.creditLimit),
+      account.lowBalanceThreshold === null ? "" : String(centsToAmount(account.lowBalanceThreshold)),
+    creditLimit: account.creditLimit === null ? "" : String(centsToAmount(account.creditLimit)),
     statementDueDay: account.statementDueDay === null ? "" : String(account.statementDueDay),
     notes: account.notes ?? "",
   };

@@ -31,7 +31,7 @@ import {
   FINANCE_CATEGORY_META,
   type FinanceCategory,
 } from "@/lib/enums";
-import { formatMoney } from "@/lib/logic/finance";
+import { formatCents } from "@/lib/logic/money";
 import { FINANCE_CSV_FIELDS, type FinanceCsvField } from "@/lib/logic/finance-import";
 import { cn, pluralize } from "@/lib/utils";
 import {
@@ -473,7 +473,7 @@ export function ImportCsvDialog({
                             )}
                           >
                             {row.amount > 0 ? "+" : ""}
-                            {formatMoney(row.amount, preview.accountCurrency)}
+                            {formatCents(row.amount, preview.accountCurrency)}
                           </td>
                           <td className="px-3 py-1.5">
                             {row.status === "duplicate" && (
@@ -512,7 +512,7 @@ export function ImportCsvDialog({
                       <li key={row.line}>
                         Row {row.line}: {formatDay(row.date, "MMM d")} ·{" "}
                         {row.payee ?? "(no description)"} · {row.amount > 0 ? "+" : ""}
-                        {formatMoney(row.amount, preview.accountCurrency)} ·{" "}
+                        {formatCents(row.amount, preview.accountCurrency)} ·{" "}
                         {FINANCE_CATEGORY_META[row.category as FinanceCategory]?.label ??
                           row.category}
                       </li>
@@ -542,7 +542,7 @@ export function ImportCsvDialog({
                       <li key={row.line}>
                         Row {row.line}: type &quot;{row.type}&quot; against{" "}
                         {row.amount > 0 ? "+" : ""}
-                        {formatMoney(row.amount, preview.accountCurrency)}
+                        {formatCents(row.amount, preview.accountCurrency)}
                       </li>
                     ))}
                     {preview.signConflictCount > preview.signConflictShown.length && (

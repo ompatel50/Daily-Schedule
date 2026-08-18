@@ -1,12 +1,8 @@
 import { getCurrentUser, prisma } from "@/lib/db";
 import { shiftDay, weekRange } from "@/lib/date";
 import { FINANCE_CATEGORY_META, type FinanceCategory } from "@/lib/enums";
-import {
-  budgetPeriodOf,
-  budgetPeriodWindow,
-  formatMoney,
-  moneyRound,
-} from "@/lib/logic/finance";
+import { budgetPeriodOf, budgetPeriodWindow } from "@/lib/logic/finance";
+import { centsOrLegacy, centsOrLegacyNullable, formatCents, toCents } from "@/lib/logic/money";
 import {
   budgetThresholdReminderKey,
   dueReminderKey,
@@ -105,7 +101,15 @@ export async function getReminderFeedFor(user: {
     // sum — fetched only for these accounts, and only when any exist.
     prisma.financeAccount.findMany({
       where: { userId: user.id, archivedAt: null, lowBalanceThreshold: { not: null } },
-      select: { id: true, name: true, currency: true, openingBalance: true, lowBalanceThreshold: true },
+      select: {
+        id: true,
+        name: true,
+        currency: true,
+        openingBalance: true,
+        openingBalanceCents: true,
+        lowBalanceThreshold: true,
+        lowBalanceThresholdCents: true,
+      },
       take: 100,
     }),
     // Documents whose expiry is inside the widest run-up any of them can ask
@@ -128,6 +132,10 @@ export async function getReminderFeedFor(user: {
     }),
   ]);
 
+  // Aggregates still read the dual-written FLOAT column (a sum of 2-decimal
+  // values is exact to the cent at any personal scale) and convert once at
+  // this boundary; they switch to the cents column when the cleanup
+  // migration retires the floats. All arithmetic below is integer cents.
   const balanceByAccount = new Map<string, number>();
   if (watchedAccounts.length > 0) {
     const totals = await prisma.financeTransaction.groupBy({
@@ -135,7 +143,7 @@ export async function getReminderFeedFor(user: {
       where: { userId: user.id, accountId: { in: watchedAccounts.map((account) => account.id) } },
       _sum: { amount: true },
     });
-    for (const row of totals) balanceByAccount.set(row.accountId, row._sum.amount ?? 0);
+    for (const row of totals) balanceByAccount.set(row.accountId, toCents(row._sum.amount ?? 0));
   }
 
   // Budget spending: at most ONE grouped query per period actually in use
@@ -172,7 +180,7 @@ export async function getReminderFeedFor(user: {
       });
       budgetSpentByPeriod.set(
         period,
-        new Map(totals.map((row) => [row.category, -(row._sum.amount ?? 0)])),
+        new Map(totals.map((row) => [row.category, toCents(-(row._sum.amount ?? 0))])),
       );
     }
   }
@@ -280,7 +288,7 @@ export async function getReminderFeedFor(user: {
       completed: bill.settledAt !== null,
       inactive: bill.archivedAt !== null,
       daysBefore: bill.reminderDaysBefore,
-      detail: formatMoney(bill.amount),
+      detail: formatCents(centsOrLegacy(bill.amountCents, bill.amount)),
       deliveredKeys,
     });
     if (resolved.ok) occurrences.push(resolved.occurrence);
@@ -330,7 +338,8 @@ export async function getReminderFeedFor(user: {
     const period = budgetPeriodOf(budget.period);
     const window = budgetWindowByPeriod.get(period);
     if (!window) continue;
-    const spent = moneyRound(budgetSpentByPeriod.get(period)?.get(budget.category) ?? 0);
+    const spent = budgetSpentByPeriod.get(period)?.get(budget.category) ?? 0;
+    const target = centsOrLegacy(budget.amountCents, budget.amount);
     const label =
       FINANCE_CATEGORY_META[budget.category as FinanceCategory]?.label ?? budget.category;
     const resolved = resolveBudgetThresholdReminder({
@@ -338,10 +347,10 @@ export async function getReminderFeedFor(user: {
       label,
       periodStart: window.start,
       spent,
-      target: budget.amount,
+      target,
       threshold: budget.alertThresholdPercent,
       today: date,
-      detail: `${formatMoney(spent)} of ${formatMoney(budget.amount)} ${
+      detail: `${formatCents(spent)} of ${formatCents(target)} ${
         period === "weekly" ? "this week" : "this month"
       }`,
       deliveredKeys,
@@ -353,10 +362,13 @@ export async function getReminderFeedFor(user: {
   // per week per account (the key embeds the week), so a lingering low
   // balance never turns into a daily nag.
   for (const account of watchedAccounts) {
-    const balance = moneyRound(
-      account.openingBalance + (balanceByAccount.get(account.id) ?? 0),
+    const balance =
+      centsOrLegacy(account.openingBalanceCents, account.openingBalance) +
+      (balanceByAccount.get(account.id) ?? 0);
+    const threshold = centsOrLegacyNullable(
+      account.lowBalanceThresholdCents,
+      account.lowBalanceThreshold,
     );
-    const threshold = account.lowBalanceThreshold;
     const resolved = resolveLowBalanceReminder({
       accountId: account.id,
       accountName: account.name,
@@ -368,7 +380,7 @@ export async function getReminderFeedFor(user: {
       detail:
         threshold === null
           ? null
-          : `Balance ${formatMoney(balance, account.currency)} is below your ${formatMoney(threshold, account.currency)} alert level`,
+          : `Balance ${formatCents(balance, account.currency)} is below your ${formatCents(threshold, account.currency)} alert level`,
       deliveredKeys,
     });
     if (resolved.ok) occurrences.push(resolved.occurrence);

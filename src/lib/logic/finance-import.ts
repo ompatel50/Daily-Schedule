@@ -4,7 +4,7 @@ import {
   FINANCE_CATEGORY_META,
   type FinanceCategory,
 } from "@/lib/enums";
-import { moneyRound } from "@/lib/logic/finance";
+import { centsToAmount, toCents } from "@/lib/logic/money";
 import { parseCsvRows } from "@/lib/logic/health-import/csv";
 
 /**
@@ -357,7 +357,7 @@ export interface FinanceImportRow {
   /** 1-based line number in the file, for error messages and preview. */
   line: number;
   date: DayKey;
-  /** Signed, rounded to cents. */
+  /** Signed INTEGER CENTS — like every amount in the app. */
   amount: number;
   payee: string | null;
   category: FinanceCategory;
@@ -601,7 +601,9 @@ export function parseFinanceCsv(
       continue;
     }
 
-    amount = moneyRound(amount);
+    // The single dollars→cents conversion point: the CSV text carries dollar
+    // values; everything downstream of this line is integer cents.
+    amount = toCents(amount);
     if (amount === 0) {
       rowError(line, "an amount of zero records nothing.");
       continue;
@@ -664,10 +666,11 @@ export function parseFinanceCsv(
 
 // --- import identity & undo --------------------------------------------------
 
-/** The row fields the import identity is built from. */
+/** The row fields the import identity is built from. `amount` is integer cents. */
 export interface ImportIdentityFields {
   accountId: string;
   date: DayKey;
+  /** Signed integer cents. */
   amount: number;
   payee: string | null;
 }
@@ -675,9 +678,14 @@ export interface ImportIdentityFields {
 /**
  * The one place the dedup key is spelled. `occurrence` distinguishes rows that
  * are identical within a single file (n = 0, 1, …).
+ *
+ * The amount segment keeps the HISTORICAL dollar spelling ("-4.5", "2500") —
+ * every stored key was written that way, and changing the spelling would stop
+ * every existing ledger from deduplicating its own re-imports. `centsToAmount`
+ * of an integer produces exactly the number `moneyRound` used to produce.
  */
 export function buildImportKey(fields: ImportIdentityFields, occurrence: number): string {
-  return `v1|${fields.accountId}|${fields.date}|${fields.amount}|${(fields.payee ?? "").toLowerCase()}|${occurrence}`;
+  return `v1|${fields.accountId}|${fields.date}|${centsToAmount(fields.amount)}|${(fields.payee ?? "").toLowerCase()}|${occurrence}`;
 }
 
 /**

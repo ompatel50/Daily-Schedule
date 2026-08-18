@@ -9,7 +9,7 @@ import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { SectionCard } from "@/components/shared/section-card";
 import { formatDay } from "@/lib/date";
-import { formatMoney } from "@/lib/logic/finance";
+import { formatCents } from "@/lib/logic/money";
 import { pluralize } from "@/lib/utils";
 import {
   acceptTransferSuggestion,
@@ -104,7 +104,7 @@ export function TransferSuggestionsSection({
                 </span>
               </span>
               <span className="tabular ml-auto shrink-0 font-semibold">
-                {formatMoney(suggestion.amount, suggestion.currency)}
+                {formatCents(suggestion.amount, suggestion.currency)}
               </span>
             </div>
             <div className="mt-1.5 flex flex-wrap items-center justify-between gap-2">
@@ -137,7 +137,7 @@ export function TransferSuggestionsSection({
                   size="sm"
                   variant="ghost"
                   disabled={pending}
-                  aria-label={`Dismiss the suggestion for ${formatMoney(suggestion.amount, suggestion.currency)}`}
+                  aria-label={`Dismiss the suggestion for ${formatCents(suggestion.amount, suggestion.currency)}`}
                   onClick={() =>
                     run(
                       () =>

@@ -5,7 +5,7 @@ import { randomUUID } from "node:crypto";
 import { revalidatePath } from "next/cache";
 
 import { getCurrentUser, prisma } from "@/lib/db";
-import { moneyRound } from "@/lib/logic/finance";
+import { centsOrLegacy, centsToAmount } from "@/lib/logic/money";
 import {
   findCounterpartCandidates,
   TRANSFER_MATCH_DEFAULT_WINDOW_DAYS,
@@ -94,7 +94,8 @@ export async function getTransferLinkCandidates(
     id: row.id,
     accountId: row.accountId,
     date: row.date,
-    amount: row.amount,
+    // Integer cents, like every row in the match pool.
+    amount: centsOrLegacy(row.amountCents, row.amount),
     payee: row.payee,
     category: row.category,
     transferGroupId: row.transferGroupId,
@@ -121,7 +122,7 @@ export async function getTransferLinkCandidates(
       accountName: row.account.name,
       currency: row.account.currency,
       date: row.date,
-      amount: row.amount,
+      amount: centsOrLegacy(row.amountCents, row.amount),
       payee: row.payee,
     },
     accounts,
@@ -170,7 +171,9 @@ async function linkPair(
   if (a.account.currency !== b.account.currency) {
     return { ok: false, error: "These accounts use different currencies" };
   }
-  if (a.amount === 0 || moneyRound(a.amount + b.amount) !== 0) {
+  const aCents = centsOrLegacy(a.amountCents, a.amount);
+  const bCents = centsOrLegacy(b.amountCents, b.amount);
+  if (aCents === 0 || aCents + bCents !== 0) {
     return { ok: false, error: "The two rows must carry the same amount in opposite directions" };
   }
 
@@ -227,7 +230,8 @@ export async function createTransferCounterpart(
   });
   if (!row) return fail("Transaction not found");
   if (row.transferGroupId) return fail("This row is already part of a transfer");
-  if (row.amount === 0) return fail("A zero row cannot be a transfer leg");
+  const rowCents = centsOrLegacy(row.amountCents, row.amount);
+  if (rowCents === 0) return fail("A zero row cannot be a transfer leg");
   if (row.account.archivedAt) return fail("Restore the archived account first");
 
   const counterpartAccount = await prisma.financeAccount.findFirst({
@@ -250,11 +254,12 @@ export async function createTransferCounterpart(
           userId: user.id,
           accountId: counterpartAccount.id,
           date: row.date,
-          amount: moneyRound(-row.amount),
+          amount: centsToAmount(-rowCents),
+          amountCents: -rowCents,
           category: "transfer",
           // Same convention transferLegs uses — named from the leg's view.
           payee:
-            row.amount < 0
+            rowCents < 0
               ? `Transfer from ${row.account.name}`
               : `Transfer to ${row.account.name}`,
           notes: null,

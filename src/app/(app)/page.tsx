@@ -35,7 +35,7 @@ import {
   shiftDay,
 } from "@/lib/date";
 import { describeDueDistance } from "@/lib/logic/due";
-import { formatMoney } from "@/lib/logic/finance";
+import { formatCents } from "@/lib/logic/money";
 import { parseOnboardingState } from "@/lib/logic/onboarding";
 import { trendDelta } from "@/lib/logic/scoring";
 import { nowMinuteIn } from "@/lib/logic/schedule";
@@ -536,7 +536,7 @@ export default async function DashboardPage() {
                   <div className="flex items-baseline justify-between text-sm">
                     <span className="text-muted-foreground">Net balance</span>
                     <span className="tabular font-semibold">
-                      {formatMoney(lifeAdmin.finance.net[0]?.net ?? 0, lifeAdmin.finance.net[0]?.currency)}
+                      {formatCents(lifeAdmin.finance.net[0]?.net ?? 0, lifeAdmin.finance.net[0]?.currency)}
                     </span>
                   </div>
                   {lifeAdmin.finance.net.length > 1 && (
@@ -549,11 +549,11 @@ export default async function DashboardPage() {
                 <div className="grid grid-cols-2 gap-2 text-center">
                   <MiniStat
                     label="In · month"
-                    value={formatMoney(lifeAdmin.finance.month.income)}
+                    value={formatCents(lifeAdmin.finance.month.income)}
                   />
                   <MiniStat
                     label="Out · month"
-                    value={formatMoney(lifeAdmin.finance.month.spending)}
+                    value={formatCents(lifeAdmin.finance.month.spending)}
                   />
                 </div>
                 {lifeAdmin.finance.budgets.overCount > 0 ? (
@@ -596,7 +596,7 @@ export default async function DashboardPage() {
                           {describeDueDistance(bill.nextDueDate, date)}
                         </span>
                         <span className="tabular shrink-0 text-xs font-medium">
-                          {formatMoney(bill.amount)}
+                          {formatCents(bill.amount)}
                         </span>
                       </div>
                     ))}
@@ -604,7 +604,7 @@ export default async function DashboardPage() {
                       <p className="text-xs text-muted-foreground">
                         {lifeAdmin.finance.billsDueSoonCount - lifeAdmin.finance.billsDueSoon.length}{" "}
                         more due within two weeks ·{" "}
-                        {formatMoney(lifeAdmin.finance.billsDueSoonTotal)} in total.
+                        {formatCents(lifeAdmin.finance.billsDueSoonTotal)} in total.
                       </p>
                     )}
                   </div>

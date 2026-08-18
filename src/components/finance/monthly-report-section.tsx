@@ -6,7 +6,7 @@ import { BarChart3, MoveDownRight, MoveUpRight } from "lucide-react";
 import { EmptyState } from "@/components/shared/empty-state";
 import { SectionCard } from "@/components/shared/section-card";
 import type { CategoryDelta } from "@/lib/logic/finance";
-import { formatMoney } from "@/lib/logic/finance";
+import { formatCents } from "@/lib/logic/money";
 import { cn } from "@/lib/utils";
 
 /** The month card's summary numbers, serialised flat for the client. */
@@ -91,8 +91,8 @@ export function MonthlyReportSection({
                     <span className="min-w-0 truncate">{mover.label}</span>
                     <span className="flex shrink-0 items-center gap-2">
                       <span className="tabular text-muted-foreground">
-                        {formatMoney(mover.previous, currency)} →{" "}
-                        {formatMoney(mover.current, currency)}
+                        {formatCents(mover.previous, currency)} →{" "}
+                        {formatCents(mover.current, currency)}
                       </span>
                       <DeltaChip delta={mover.delta} currency={currency} />
                     </span>
@@ -125,9 +125,9 @@ function TotalsTile({
   return (
     <div className="rounded-lg border px-3 py-2">
       <p className="text-xs text-muted-foreground">{label}</p>
-      <p className="tabular mt-0.5 text-lg font-semibold">{formatMoney(current, currency)}</p>
+      <p className="tabular mt-0.5 text-lg font-semibold">{formatCents(current, currency)}</p>
       <p className="mt-0.5 text-xs text-muted-foreground">
-        <span className="tabular">{formatMoney(previous, currency)}</span> last month
+        <span className="tabular">{formatCents(previous, currency)}</span> last month
         {delta !== 0 && (
           <>
             {" · "}
@@ -139,7 +139,7 @@ function TotalsTile({
               )}
             >
               {delta > 0 ? "+" : "−"}
-              {formatMoney(Math.abs(delta), currency)}
+              {formatCents(Math.abs(delta), currency)}
             </span>
           </>
         )}
@@ -166,7 +166,7 @@ function DeltaChip({ delta, currency }: { delta: number; currency: string }) {
         <MoveDownRight className="h-3 w-3" aria-hidden="true" />
       )}
       {up ? "+" : "−"}
-      {formatMoney(Math.abs(delta), currency)}
+      {formatCents(Math.abs(delta), currency)}
     </span>
   );
 }

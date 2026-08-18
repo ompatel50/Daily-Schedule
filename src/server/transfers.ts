@@ -4,6 +4,7 @@ import { randomUUID } from "node:crypto";
 
 import { prisma } from "@/lib/db";
 import { ACCOUNT_TYPE_META, type AccountType } from "@/lib/enums";
+import { centsOrLegacy } from "@/lib/logic/money";
 import {
   detectTransferPairs,
   transferPairKey,
@@ -53,6 +54,7 @@ export async function loadTransferMatchData(userId: string): Promise<TransferMat
         accountId: true,
         date: true,
         amount: true,
+        amountCents: true,
         payee: true,
         category: true,
         transferGroupId: true,
@@ -69,8 +71,10 @@ export async function loadTransferMatchData(userId: string): Promise<TransferMat
   const accountIds = new Set(accounts.map((account) => account.id));
   return {
     // Rows of archived accounts stay out — detection mirrors what the
-    // Transfer flow itself allows.
-    rows: rows.filter((row) => accountIds.has(row.accountId)),
+    // Transfer flow itself allows. Amounts leave as integer cents.
+    rows: rows
+      .filter((row) => accountIds.has(row.accountId))
+      .map((row) => ({ ...row, amount: centsOrLegacy(row.amountCents, row.amount) })),
     accounts: accounts.map((account) => ({
       id: account.id,
       currency: account.currency,

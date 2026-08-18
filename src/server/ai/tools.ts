@@ -11,6 +11,7 @@ import {
   truncateText,
   type AssistantMode,
 } from "@/lib/logic/assistant";
+import { centsToAmount } from "@/lib/logic/money";
 import { buildSearchHits } from "@/lib/logic/search";
 import { crossesMidnight } from "@/lib/logic/schedule-span";
 import { BACKUP_VERSION } from "@/lib/backup-format";
@@ -372,31 +373,48 @@ const financeOverviewTool: AssistantTool = {
   validate: z.object({}),
   async run() {
     const overview = await getFinanceOverview();
+    // The app computes in integer cents; the assistant reads and writes
+    // dollars (its create_transaction proposal is dollars too) — convert at
+    // this boundary only.
     return toolOk({
-      net: overview.net,
+      net: overview.net.map((row) => ({ ...row, net: centsToAmount(row.net) })),
       balances: overview.balances.map((row) => ({
         id: row.account.id,
         name: row.account.name,
         type: row.account.type,
         currency: row.account.currency,
-        balance: row.balance,
+        balance: centsToAmount(row.balance),
         archived: row.account.archivedAt !== null,
       })),
-      month: overview.month,
-      week: overview.week,
-      billsDueSoonTotal: overview.billsDueSoonTotal,
+      month: {
+        income: centsToAmount(overview.month.income),
+        spending: centsToAmount(overview.month.spending),
+        net: centsToAmount(overview.month.net),
+        count: overview.month.count,
+        byCategory: overview.month.byCategory.map((entry) => ({
+          ...entry,
+          total: centsToAmount(entry.total),
+        })),
+      },
+      week: {
+        income: centsToAmount(overview.week.income),
+        spending: centsToAmount(overview.week.spending),
+        net: centsToAmount(overview.week.net),
+        count: overview.week.count,
+      },
+      billsDueSoonTotal: centsToAmount(overview.billsDueSoonTotal),
       budgets: overview.budgets.map((view) => ({
         category: view.label,
         period: view.period,
-        limit: view.budget.amount,
-        spent: view.spent,
+        limit: centsToAmount(view.effectiveAmount),
+        spent: centsToAmount(view.spent),
         percent: view.percent,
         over: view.over,
       })),
       savingsGoals: overview.savingsGoals.map((goal) => ({
         name: goal.name,
-        targetAmount: goal.targetAmount,
-        currentAmount: goal.currentAmount,
+        targetAmount: centsToAmount(goal.targetAmount),
+        currentAmount: centsToAmount(goal.currentAmount),
       })),
     });
   },
@@ -436,7 +454,7 @@ const listTransactionsTool: AssistantTool = {
       truncated: rows.length > limited.length,
       transactions: limited.map((tx) => ({
         date: tx.date,
-        amount: tx.amount,
+        amount: centsToAmount(tx.amount),
         payee: tx.payee,
         category: tx.category,
         account: accountById.get(tx.accountId)?.name ?? null,
@@ -459,7 +477,7 @@ const listBillsTool: AssistantTool = {
         id: view.bill.id,
         name: view.bill.name,
         kind: view.bill.kind,
-        amount: view.bill.amount,
+        amount: centsToAmount(view.bill.amount),
         currency: view.bill.account?.currency ?? null,
         nextDueDate: view.bill.nextDueDate,
         recurrence: view.bill.recurrence,

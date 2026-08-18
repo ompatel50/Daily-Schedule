@@ -13,7 +13,6 @@ import {
   budgetWindows,
   compareSpendingByCategory,
   creditUtilization,
-  formatMoney,
   moneyRound,
   netBalance,
   nextStatementDueDate,
@@ -27,6 +26,13 @@ import {
   type BillLike,
   type TransactionLike,
 } from "@/lib/logic/finance";
+import {
+  centsOrLegacy,
+  centsOrLegacyNullable,
+  centsToAmount,
+  formatCents,
+  toCents,
+} from "@/lib/logic/money";
 
 const TODAY = "2026-07-31";
 
@@ -65,23 +71,46 @@ describe("moneyRound", () => {
   });
 });
 
-describe("formatMoney", () => {
+describe("formatCents", () => {
   it("renders cents with a thousands separator", () => {
-    expect(formatMoney(1240.5)).toBe("$1,240.50");
+    expect(formatCents(124050)).toBe("$1,240.50");
   });
 
   it("renders negatives with a leading sign", () => {
-    expect(formatMoney(-86.2)).toBe("-$86.20");
+    expect(formatCents(-8620)).toBe("-$86.20");
   });
 
   it("drops the cents on whole amounts", () => {
-    expect(formatMoney(1200)).toBe("$1,200");
-    expect(formatMoney(0)).toBe("$0");
+    expect(formatCents(120000)).toBe("$1,200");
+    expect(formatCents(0)).toBe("$0");
   });
 
   it("falls back instead of crashing on an unknown currency code", () => {
-    expect(formatMoney(12.5, "BOGUS")).toBe("BOGUS 12.50");
-    expect(formatMoney(-3, "BOGUS")).toBe("-BOGUS 3.00");
+    expect(formatCents(1250, "BOGUS")).toBe("BOGUS 12.50");
+    expect(formatCents(-300, "BOGUS")).toBe("-BOGUS 3.00");
+  });
+});
+
+describe("the cents boundary (money.ts)", () => {
+  it("toCents rounds exactly the way moneyRound rounded", () => {
+    const samples = [0, 4.5, -4.5, 42.505, -42.505, 0.1 + 0.2, 1234.56, -0.004, 19.99];
+    for (const value of samples) {
+      expect(centsToAmount(toCents(value))).toBe(moneyRound(value));
+    }
+  });
+
+  it("centsToAmount round-trips integers and matches display expectations", () => {
+    expect(centsToAmount(-450)).toBe(-4.5);
+    expect(toCents(centsToAmount(123456))).toBe(123456);
+  });
+
+  it("centsOrLegacy prefers the cents column and falls back exactly", () => {
+    expect(centsOrLegacy(1234, 99)).toBe(1234);
+    expect(centsOrLegacy(null, 12.34)).toBe(1234);
+    expect(centsOrLegacy(undefined, -42.5)).toBe(-4250);
+    expect(centsOrLegacyNullable(null, null)).toBeNull();
+    expect(centsOrLegacyNullable(null, 5)).toBe(500);
+    expect(centsOrLegacyNullable(700, null)).toBe(700);
   });
 });
 

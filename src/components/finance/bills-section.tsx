@@ -12,7 +12,7 @@ import type { BillRowView } from "@/components/finance/bill-dialog";
 import { formatDay } from "@/lib/date";
 import { BILL_RECURRENCE_META, type BillRecurrence } from "@/lib/enums";
 import { describeDueDistance } from "@/lib/logic/due";
-import { formatMoney } from "@/lib/logic/finance";
+import { formatCents } from "@/lib/logic/money";
 import type { RecurringSuggestion } from "@/lib/logic/recurring-detect";
 import { pluralize } from "@/lib/utils";
 
@@ -105,7 +105,7 @@ export function BillsSection({
               <div className="min-w-0 flex-[1_1_10rem]">
                 <p className="truncate text-sm font-medium">{suggestion.payee}</p>
                 <p className="mt-0.5 text-xs text-muted-foreground">
-                  {formatMoney(suggestion.amount, currency)}{" "}
+                  {formatCents(suggestion.amount, currency)}{" "}
                   {suggestion.cadence === "weekly"
                     ? "every week"
                     : suggestion.cadence === "monthly"
@@ -185,7 +185,7 @@ function BillRow({
       </div>
       <div className="ml-auto flex items-center gap-3">
         <span className="tabular text-sm font-semibold">
-          {formatMoney(bill.amount, bill.currency)}
+          {formatCents(bill.amount, bill.currency)}
         </span>
         <Button size="sm" variant="outline" className="shrink-0" onClick={onMarkPaid}>
           Mark paid

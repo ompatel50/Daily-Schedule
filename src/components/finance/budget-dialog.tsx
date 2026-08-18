@@ -3,6 +3,7 @@
 import * as React from "react";
 import { useRouter } from "next/navigation";
 import { Loader2 } from "lucide-react";
+import { centsToAmount } from "@/lib/logic/money";
 import { toast } from "sonner";
 
 import { Button } from "@/components/ui/button";
@@ -92,7 +93,8 @@ export function BudgetDialog({
   React.useEffect(() => {
     if (!open) return;
     setCategory(budget?.category ?? "");
-    setAmount(budget ? String(budget.amount) : "");
+    // Views carry integer cents; the input is typed in dollars.
+    setAmount(budget ? String(centsToAmount(budget.amount)) : "");
     setPeriod(budget?.period === "weekly" ? "weekly" : "monthly");
     setThreshold(budget?.threshold ? String(budget.threshold) : NO_ALERT);
     setRollover(budget?.rollover ?? false);

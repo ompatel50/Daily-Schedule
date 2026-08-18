@@ -33,41 +33,41 @@ function row(partial: Partial<TransferMatchRow> & Pick<TransferMatchRow, "accoun
 }
 
 describe("isCounterpartPair", () => {
-  const out = row({ accountId: "checking", amount: -300 });
+  const out = row({ accountId: "checking", amount: -30000 });
 
   it("requires equal magnitude, opposite sign, different same-currency accounts", () => {
-    expect(isCounterpartPair(out, row({ accountId: "card", amount: 300 }), BY_ID, 5)).toBe(true);
-    expect(isCounterpartPair(out, row({ accountId: "card", amount: 300.01 }), BY_ID, 5)).toBe(false);
-    expect(isCounterpartPair(out, row({ accountId: "card", amount: -300 }), BY_ID, 5)).toBe(false);
-    expect(isCounterpartPair(out, row({ accountId: "checking", amount: 300 }), BY_ID, 5)).toBe(false);
-    expect(isCounterpartPair(out, row({ accountId: "euro", amount: 300 }), BY_ID, 5)).toBe(false);
+    expect(isCounterpartPair(out, row({ accountId: "card", amount: 30000 }), BY_ID, 5)).toBe(true);
+    expect(isCounterpartPair(out, row({ accountId: "card", amount: 30001 }), BY_ID, 5)).toBe(false);
+    expect(isCounterpartPair(out, row({ accountId: "card", amount: -30000 }), BY_ID, 5)).toBe(false);
+    expect(isCounterpartPair(out, row({ accountId: "checking", amount: 30000 }), BY_ID, 5)).toBe(false);
+    expect(isCounterpartPair(out, row({ accountId: "euro", amount: 30000 }), BY_ID, 5)).toBe(false);
   });
 
   it("respects the date window in both directions", () => {
     expect(
-      isCounterpartPair(out, row({ accountId: "card", amount: 300, date: "2026-07-15" }), BY_ID, 5),
+      isCounterpartPair(out, row({ accountId: "card", amount: 30000, date: "2026-07-15" }), BY_ID, 5),
     ).toBe(true);
     expect(
-      isCounterpartPair(out, row({ accountId: "card", amount: 300, date: "2026-07-16" }), BY_ID, 5),
+      isCounterpartPair(out, row({ accountId: "card", amount: 30000, date: "2026-07-16" }), BY_ID, 5),
     ).toBe(false);
     expect(
-      isCounterpartPair(out, row({ accountId: "card", amount: 300, date: "2026-07-05" }), BY_ID, 5),
+      isCounterpartPair(out, row({ accountId: "card", amount: 30000, date: "2026-07-05" }), BY_ID, 5),
     ).toBe(true);
   });
 
   it("never pairs a row that is already a transfer leg", () => {
-    const linked = row({ accountId: "card", amount: 300, transferGroupId: "grp" });
+    const linked = row({ accountId: "card", amount: 30000, transferGroupId: "grp" });
     expect(isCounterpartPair(out, linked, BY_ID, 5)).toBe(false);
     expect(
-      isCounterpartPair({ ...out, transferGroupId: "grp" }, row({ accountId: "card", amount: 300 }), BY_ID, 5),
+      isCounterpartPair({ ...out, transferGroupId: "grp" }, row({ accountId: "card", amount: 30000 }), BY_ID, 5),
     ).toBe(false);
   });
 });
 
 describe("scoreTransferPair", () => {
   it("a same-day keyword card payment scores as confident", () => {
-    const out = row({ accountId: "checking", amount: -300, payee: "PAYMENT TO CHASE CARD" });
-    const into = row({ accountId: "card", amount: 300, payee: "Payment Thank You-Mobile" });
+    const out = row({ accountId: "checking", amount: -30000, payee: "PAYMENT TO CHASE CARD" });
+    const into = row({ accountId: "card", amount: 30000, payee: "Payment Thank You-Mobile" });
     const score = scoreTransferPair(out, into, { accountById: BY_ID });
     expect(score.out.id).toBe(out.id);
     expect(score.into.id).toBe(into.id);
@@ -79,8 +79,8 @@ describe("scoreTransferPair", () => {
   });
 
   it("orientation comes from the signs, whichever order the legs arrive", () => {
-    const out = row({ accountId: "checking", amount: -50 });
-    const into = row({ accountId: "savings", amount: 50 });
+    const out = row({ accountId: "checking", amount: -5000 });
+    const into = row({ accountId: "savings", amount: 5000 });
     const forward = scoreTransferPair(out, into, { accountById: BY_ID });
     const backward = scoreTransferPair(into, out, { accountById: BY_ID });
     expect(forward.out.id).toBe(out.id);
@@ -89,16 +89,16 @@ describe("scoreTransferPair", () => {
   });
 
   it("a bare same-amount coincidence is a suggestion, not a confident match", () => {
-    const out = row({ accountId: "checking", amount: -42.17, payee: "GROCERY" });
-    const into = row({ accountId: "savings", amount: 42.17, payee: "REFUND", date: "2026-07-13" });
+    const out = row({ accountId: "checking", amount: -4217, payee: "GROCERY" });
+    const into = row({ accountId: "savings", amount: 4217, payee: "REFUND", date: "2026-07-13" });
     const score = scoreTransferPair(out, into, { accountById: BY_ID });
     expect(score.confident).toBe(false);
     expect(score.score).toBeLessThan(TRANSFER_AUTO_LINK_THRESHOLD);
   });
 
   it("recurring round amounts lower confidence", () => {
-    const out = row({ accountId: "checking", amount: -1500, payee: "TRANSFER" });
-    const into = row({ accountId: "savings", amount: 1500 });
+    const out = row({ accountId: "checking", amount: -150000, payee: "TRANSFER" });
+    const into = row({ accountId: "savings", amount: 150000 });
     const oneOff = scoreTransferPair(out, into, { accountById: BY_ID, sameAmountRowCount: 2 });
     const recurring = scoreTransferPair(out, into, { accountById: BY_ID, sameAmountRowCount: 6 });
     expect(recurring.score).toBeLessThan(oneOff.score);
@@ -106,8 +106,8 @@ describe("scoreTransferPair", () => {
   });
 
   it("multiple plausible candidates lower confidence and forbid auto-linking", () => {
-    const out = row({ accountId: "checking", amount: -300, payee: "PAYMENT" });
-    const into = row({ accountId: "card", amount: 300, payee: "Payment" });
+    const out = row({ accountId: "checking", amount: -30000, payee: "PAYMENT" });
+    const into = row({ accountId: "card", amount: 30000, payee: "Payment" });
     const unique = scoreTransferPair(out, into, { accountById: BY_ID });
     const contested = scoreTransferPair(out, into, {
       accountById: BY_ID,
@@ -123,10 +123,10 @@ describe("scoreTransferPair", () => {
 
 describe("findCounterpartCandidates", () => {
   it("lists scored candidates, best first, optionally narrowed to one account", () => {
-    const payment = row({ accountId: "card", amount: 300, payee: "Payment Thank You" });
-    const sameDay = row({ accountId: "checking", amount: -300, payee: "PAYMENT TO CARD" });
-    const farDay = row({ accountId: "savings", amount: -300, date: "2026-07-14" });
-    const wrongAmount = row({ accountId: "checking", amount: -299 });
+    const payment = row({ accountId: "card", amount: 30000, payee: "Payment Thank You" });
+    const sameDay = row({ accountId: "checking", amount: -30000, payee: "PAYMENT TO CARD" });
+    const farDay = row({ accountId: "savings", amount: -30000, date: "2026-07-14" });
+    const wrongAmount = row({ accountId: "checking", amount: -29900 });
     const rows = [payment, sameDay, farDay, wrongAmount];
 
     const all = findCounterpartCandidates(payment, rows, BY_ID);
@@ -137,19 +137,19 @@ describe("findCounterpartCandidates", () => {
   });
 
   it("an already-linked row has no candidates", () => {
-    const linked = row({ accountId: "card", amount: 300, transferGroupId: "grp" });
-    const other = row({ accountId: "checking", amount: -300 });
+    const linked = row({ accountId: "card", amount: 30000, transferGroupId: "grp" });
+    const other = row({ accountId: "checking", amount: -30000 });
     expect(findCounterpartCandidates(linked, [linked, other], BY_ID)).toEqual([]);
   });
 });
 
 describe("detectTransferPairs", () => {
   it("auto-links only the single unambiguous high-confidence match", () => {
-    const cardPayment = row({ accountId: "card", amount: 300, payee: "Payment Thank You" });
-    const checkingOut = row({ accountId: "checking", amount: -300, payee: "CHASE AUTOPAY" });
+    const cardPayment = row({ accountId: "card", amount: 30000, payee: "Payment Thank You" });
+    const checkingOut = row({ accountId: "checking", amount: -30000, payee: "CHASE AUTOPAY" });
     // A same-amount coincidence with no signals — plausible, never automatic.
-    const groceriesA = row({ accountId: "checking", amount: -42.17, date: "2026-07-11" });
-    const groceriesB = row({ accountId: "savings", amount: 42.17, date: "2026-07-12" });
+    const groceriesA = row({ accountId: "checking", amount: -4217, date: "2026-07-11" });
+    const groceriesB = row({ accountId: "savings", amount: 4217, date: "2026-07-12" });
 
     const result = detectTransferPairs(
       [cardPayment, checkingOut, groceriesA, groceriesB],
@@ -163,9 +163,9 @@ describe("detectTransferPairs", () => {
   });
 
   it("two plausible counterparts make every pairing a suggestion", () => {
-    const payment = row({ accountId: "card", amount: 300, payee: "Payment" });
-    const fromChecking = row({ accountId: "checking", amount: -300, payee: "PAYMENT" });
-    const fromSavings = row({ accountId: "savings", amount: -300, payee: "PAYMENT" });
+    const payment = row({ accountId: "card", amount: 30000, payee: "Payment" });
+    const fromChecking = row({ accountId: "checking", amount: -30000, payee: "PAYMENT" });
+    const fromSavings = row({ accountId: "savings", amount: -30000, payee: "PAYMENT" });
 
     const result = detectTransferPairs([payment, fromChecking, fromSavings], ACCOUNTS);
     expect(result.autoLinks).toEqual([]);
@@ -176,8 +176,8 @@ describe("detectTransferPairs", () => {
   });
 
   it("dismissed pairs never resurface — not even as auto-links", () => {
-    const payment = row({ accountId: "card", amount: 300, payee: "Payment Thank You" });
-    const checkingOut = row({ accountId: "checking", amount: -300, payee: "AUTOPAY" });
+    const payment = row({ accountId: "card", amount: 30000, payee: "Payment Thank You" });
+    const checkingOut = row({ accountId: "checking", amount: -30000, payee: "AUTOPAY" });
     const dismissed = new Set([transferPairKey(payment.id, checkingOut.id)]);
 
     const result = detectTransferPairs([payment, checkingOut], ACCOUNTS, {
@@ -188,8 +188,8 @@ describe("detectTransferPairs", () => {
   });
 
   it("is idempotent: rows linked by a pass produce nothing on the next", () => {
-    const payment = row({ accountId: "card", amount: 300, payee: "Payment Thank You" });
-    const checkingOut = row({ accountId: "checking", amount: -300, payee: "AUTOPAY" });
+    const payment = row({ accountId: "card", amount: 30000, payee: "Payment Thank You" });
+    const checkingOut = row({ accountId: "checking", amount: -30000, payee: "AUTOPAY" });
     const first = detectTransferPairs([payment, checkingOut], ACCOUNTS);
     expect(first.autoLinks).toHaveLength(1);
 
@@ -203,8 +203,8 @@ describe("detectTransferPairs", () => {
   });
 
   it("never pairs across currencies and ignores zero amounts", () => {
-    const usdOut = row({ accountId: "checking", amount: -100 });
-    const eurIn = row({ accountId: "euro", amount: 100 });
+    const usdOut = row({ accountId: "checking", amount: -10000 });
+    const eurIn = row({ accountId: "euro", amount: 10000 });
     const result = detectTransferPairs([usdOut, eurIn], ACCOUNTS);
     expect(result.autoLinks).toEqual([]);
     expect(result.suggestions).toEqual([]);
@@ -213,10 +213,10 @@ describe("detectTransferPairs", () => {
   it("a row auto-links at most once even among several confident pairs", () => {
     // Two card payments a week apart, two checking outflows a week apart —
     // each payment has exactly one counterpart within the window.
-    const paymentA = row({ accountId: "card", amount: 250, payee: "Payment", date: "2026-07-01" });
-    const outA = row({ accountId: "checking", amount: -250, payee: "AUTOPAY", date: "2026-07-01" });
-    const paymentB = row({ accountId: "card", amount: 250, payee: "Payment", date: "2026-07-20" });
-    const outB = row({ accountId: "checking", amount: -250, payee: "AUTOPAY", date: "2026-07-20" });
+    const paymentA = row({ accountId: "card", amount: 25000, payee: "Payment", date: "2026-07-01" });
+    const outA = row({ accountId: "checking", amount: -25000, payee: "AUTOPAY", date: "2026-07-01" });
+    const paymentB = row({ accountId: "card", amount: 25000, payee: "Payment", date: "2026-07-20" });
+    const outB = row({ accountId: "checking", amount: -25000, payee: "AUTOPAY", date: "2026-07-20" });
 
     const result = detectTransferPairs([paymentA, outA, paymentB, outB], ACCOUNTS);
     expect(result.autoLinks).toHaveLength(2);

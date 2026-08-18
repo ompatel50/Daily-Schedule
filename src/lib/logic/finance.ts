@@ -15,34 +15,21 @@ import { round, sum } from "@/lib/utils";
  * them into balances, summaries and due states lives here so the finance page,
  * the dashboard and the tests all read the same arithmetic.
  *
- * Money is stored as floats and normalised to cents by `moneyRound` at every
- * boundary that produces a number a user will see. Amounts are SIGNED:
- * positive is money in, negative is money out.
+ * Money flows through this module as INTEGER CENTS (see
+ * src/lib/logic/money.ts — the storage unit and the display boundary).
+ * Everything here is sums, differences and ratios, which work identically on
+ * any fixed unit; the remaining `moneyRound` calls are no-ops on integers and
+ * survive only so the module still behaves for legacy float inputs until the
+ * cleanup migration retires those columns. Amounts are SIGNED: positive is
+ * money in, negative is money out.
  */
 
 export function moneyRound(value: number): number {
   return round(value, 2);
 }
 
-/**
- * "$1,240.50" / "−$86.20". Locale is pinned so tests are deterministic and the
- * app renders identically everywhere; `currency` is display-only — nothing in
- * the app ever converts between currencies.
- */
-export function formatMoney(value: number, currency = "USD"): string {
-  const rounded = moneyRound(value);
-  try {
-    return new Intl.NumberFormat("en-US", {
-      style: "currency",
-      currency,
-      minimumFractionDigits: Number.isInteger(rounded) ? 0 : 2,
-      maximumFractionDigits: 2,
-    }).format(rounded);
-  } catch {
-    // An unknown currency code must never crash a page over a display detail.
-    return `${rounded < 0 ? "-" : ""}${currency} ${Math.abs(rounded).toFixed(2)}`;
-  }
-}
+// Display formatting lives in src/lib/logic/money.ts (`formatCents`) — the
+// old dollar-float `formatMoney` was retired with the integer-cents switch.
 
 // --- accounts ----------------------------------------------------------------
 

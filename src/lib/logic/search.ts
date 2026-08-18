@@ -9,7 +9,7 @@ import {
   type HealthRecordKind,
 } from "@/lib/enums";
 import { describeExpiryDistance, documentKindLabel } from "@/lib/logic/documents";
-import { formatMoney } from "@/lib/logic/finance";
+import { formatCents } from "@/lib/logic/money";
 import { describeDueDistance } from "@/lib/logic/due";
 
 /**
@@ -253,7 +253,7 @@ export function buildSearchHits(rows: SearchRows, referenceDay: DayKey): SearchH
       id: `bill-${bill.id}`,
       group: "Bills",
       title: bill.name,
-      subtitle: `${kindLabel} · ${formatMoney(bill.amount)} · ${describeDueDistance(bill.nextDueDate, referenceDay)}`,
+      subtitle: `${kindLabel} · ${formatCents(bill.amount)} · ${describeDueDistance(bill.nextDueDate, referenceDay)}`,
       href: "/finance",
     });
   }
@@ -276,7 +276,7 @@ export function buildSearchHits(rows: SearchRows, referenceDay: DayKey): SearchH
       id: `txn-${transaction.id}`,
       group: "Transactions",
       title: transaction.payee || categoryLabel,
-      subtitle: `${relativeDayLabel(transaction.date, referenceDay)} · ${formatMoney(transaction.amount, transaction.currency)}`,
+      subtitle: `${relativeDayLabel(transaction.date, referenceDay)} · ${formatCents(transaction.amount, transaction.currency)}`,
       href: "/finance",
     });
   }
@@ -288,7 +288,7 @@ export function buildSearchHits(rows: SearchRows, referenceDay: DayKey): SearchH
       id: `budget-${budget.id}`,
       group: "Budgets",
       title: `${label} budget`,
-      subtitle: `${formatMoney(budget.amount)} ${budget.period === "weekly" ? "weekly" : "monthly"}`,
+      subtitle: `${formatCents(budget.amount)} ${budget.period === "weekly" ? "weekly" : "monthly"}`,
       href: "/finance",
     });
   }
@@ -298,7 +298,7 @@ export function buildSearchHits(rows: SearchRows, referenceDay: DayKey): SearchH
       id: `sg-${goal.id}`,
       group: "Savings goals",
       title: goal.name,
-      subtitle: `${formatMoney(goal.currentAmount)} of ${formatMoney(goal.targetAmount)} saved`,
+      subtitle: `${formatCents(goal.currentAmount)} of ${formatCents(goal.targetAmount)} saved`,
       href: "/finance",
     });
   }
