@@ -255,7 +255,7 @@ const needsAttentionTool: AssistantTool = {
 const listTasksTool: AssistantTool = {
   name: "list_tasks",
   description:
-    "Open tasks bucketed by due date (overdue, today, upcoming, someday), with ids, priorities, projects and tags. Also lists projects and recently completed tasks.",
+    "Open tasks bucketed by due date (overdue, today, upcoming, someday), with ids, priorities, projects and tags. `scheduled` lists a task's upcoming planner blocks (\"add to planner\" links, up to 3, soonest first) with their date and start time — read-only; completing the task marks those blocks done. Also lists projects and recently completed tasks.",
   parameters: { type: "object", properties: {} },
   validate: z.object({}),
   async run() {
@@ -269,6 +269,16 @@ const listTasksTool: AssistantTool = {
       project: project(task),
       tags: task.tags.map((row) => row.tag.name),
       subtasks: task.subtasks.length,
+      ...(task.scheduleItems.length > 0
+        ? {
+            scheduled: task.scheduleItems.map((block) => ({
+              id: block.id,
+              date: block.date,
+              startMinute: block.allDay ? null : block.startMinute,
+              allDay: block.allDay,
+            })),
+          }
+        : {}),
     });
     return toolOk({
       openCount: board.openCount,
@@ -595,7 +605,7 @@ const listDocumentsTool: AssistantTool = {
 const scheduleTool: AssistantTool = {
   name: "get_schedule",
   description:
-    "Planner/calendar blocks in a date range of operational days (up to 31, defaults to the next 7 starting today). Times are minutes from midnight. `day` is the day a block belongs to under the user's daily reset; `date` is its real calendar date — they differ only for after-midnight blocks, which group with the previous day. `endsNextDay: true` marks a cross-midnight block: its endMinute is a clock time on the calendar day AFTER `date` (an endMinute lower than startMinute always means that). `recurring: true` marks a block that belongs to a repeating series — editing or deleting it via propose_action then requires an explicit scope; `recurrence` summarizes the series' pattern, start and end.",
+    "Planner/calendar blocks in a date range of operational days (up to 31, defaults to the next 7 starting today). Times are minutes from midnight. `day` is the day a block belongs to under the user's daily reset; `date` is its real calendar date — they differ only for after-midnight blocks, which group with the previous day. `endsNextDay: true` marks a cross-midnight block: its endMinute is a clock time on the calendar day AFTER `date` (an endMinute lower than startMinute always means that). `recurring: true` marks a block that belongs to a repeating series — editing or deleting it via propose_action then requires an explicit scope; `recurrence` summarizes the series' pattern, start and end. `task` names the task a block was scheduled from (\"add to planner\"), read-only — completing that task marks its planned blocks done.",
   parameters: {
     type: "object",
     properties: {
@@ -667,6 +677,9 @@ const scheduleTool: AssistantTool = {
         priority: item.priority,
         recurring: Boolean(item.seriesId) || Boolean(item.recurrenceRule),
         recurrence: summarize(item),
+        ...(item.task
+          ? { task: { id: item.task.id, title: item.task.title, status: item.task.status } }
+          : {}),
       })),
     });
   },

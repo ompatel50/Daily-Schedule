@@ -441,10 +441,18 @@ model ScheduleItem {
   templateId String?
   template   ScheduleTemplate? @relation(fields: [templateId], references: [id], onDelete: SetNull)
 
-  /// Set when this block was created from a task ("add to planner"). The item
-  /// stays an ordinary planner block — no scheduling logic rides this link;
-  /// it only records where the block came from. Deleting the task keeps the
-  /// block (SetNull); completing either side never touches the other.
+  /// Set when this block was created from a task ("add to planner"). A plain
+  /// column, deliberately not a join model: the FK direction (many blocks →
+  /// one task) already covers time-blocking one task across several days, and
+  /// recurrence materialises every occurrence as a real row, so a series
+  /// link is the parent's `taskId` copied at materialisation — exactly how
+  /// `habitId` propagates. A join model would need one row per materialised
+  /// occurrence anyway, and the one/future/all scope mechanics (exception
+  /// detach, series split, parent promotion) preserve a column for free.
+  ///
+  /// The link is live but never destructive: marking the block done offers to
+  /// complete the task, completing the task marks its planned blocks done
+  /// (see completeTask), and deletes on either side only detach (SetNull).
   taskId String?
   task   Task?   @relation(fields: [taskId], references: [id], onDelete: SetNull)
 
@@ -1551,9 +1559,10 @@ model Task {
 
   sortOrder Int @default(0)
 
-  /// Planner blocks created from this task ("add to planner") and inbox
-  /// captures this task was converted from. Both links are informational —
-  /// deleting the task merely unlinks them.
+  /// Planner blocks created from this task ("add to planner") — completion
+  /// reflects both ways (the block offers, the task marks planned blocks
+  /// done) but deleting the task merely unlinks them. Inbox captures this
+  /// task was converted from stay purely informational.
   scheduleItems ScheduleItem[]
   inboxItems    InboxItem[]
 

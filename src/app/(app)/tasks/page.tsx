@@ -51,6 +51,8 @@ export default async function TasksPage() {
       id: item.id,
       date: item.date,
       status: item.status,
+      startMinute: item.startMinute,
+      allDay: item.allDay,
     })),
     tags: task.tags.map((row) => row.tag.name),
   });

@@ -72,6 +72,9 @@ const SCHEDULE_ITEM_INCLUDE = {
   tags: { include: { tag: true } },
   workout: { select: { id: true, type: true, durationMin: true } },
   habit: { select: { id: true, name: true, color: true } },
+  // The linked task ("add to planner"): the block shows what it schedules,
+  // and the done-checkbox offer needs to know the task is still open.
+  task: { select: { id: true, title: true, status: true } },
   // An occurrence's own recurrenceRule is null; the SERIES' rule lives on the
   // parent. The edit dialog pre-fills its recurrence controls from it, which
   // is what makes a "this and future" edit inherit the pattern and end date

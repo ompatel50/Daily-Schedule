@@ -4,8 +4,11 @@ import { revalidatePath } from "next/cache";
 
 import { getCurrentUser, prisma } from "@/lib/db";
 import { PROJECT_STATUSES, type ProjectStatus } from "@/lib/enums";
+import { operationalDayOfRecord } from "@/lib/logic/operational-day";
+import { resetMinuteOf } from "@/lib/logic/schedule";
 import { scheduleSettingsFor } from "@/server/schedule";
-import { nextDueAfterCompletion } from "@/lib/logic/tasks";
+import { recomputeDay } from "@/server/summaries";
+import { linkedBlocksToComplete, nextDueAfterCompletion } from "@/lib/logic/tasks";
 import {
   fail,
   fromZod,
@@ -176,11 +179,49 @@ export interface CompleteTaskOutcome {
   /** `completed` closed the task; `advanced` moved a repeating task's due date. */
   status: "completed" | "advanced";
   nextDue: string | null;
+  /** Linked planner blocks this completion also marked done. */
+  blocksCompleted: number;
+}
+
+/**
+ * Mark a task's still-planned linked planner blocks done alongside the
+ * completion. Which blocks reflect is the pure rule in
+ * `linkedBlocksToComplete`; this only writes it and keeps the affected days'
+ * summaries current. Runs inside the completion's transaction so the task and
+ * its blocks can never disagree.
+ */
+async function reflectCompletionOnBlocks(
+  db: Pick<typeof prisma, "scheduleItem">,
+  userId: string,
+  taskId: string,
+  outcome: "completed" | "advanced",
+  today: string,
+  resetMinute: number,
+): Promise<{ count: number; days: string[] }> {
+  const blocks = await db.scheduleItem.findMany({
+    where: { userId, taskId, status: "planned" },
+    select: { id: true, status: true, date: true, startMinute: true },
+  });
+  const completing = linkedBlocksToComplete(blocks, outcome, today, resetMinute);
+  if (completing.length === 0) return { count: 0, days: [] };
+  await db.scheduleItem.updateMany({
+    where: { id: { in: completing.map((block) => block.id) }, userId },
+    data: { status: "done", completedAt: new Date() },
+  });
+  return {
+    count: completing.length,
+    days: [...new Set(completing.map((block) => operationalDayOfRecord(block, resetMinute)))],
+  };
 }
 
 /**
  * Completing a repeating task advances its due date instead of closing it —
  * the repeat IS the task. Everything else closes with a completion stamp.
+ *
+ * Either way the completion reflects on planner blocks scheduled from this
+ * task: closing marks every still-planned block done, advancing marks only
+ * blocks up to today (future blocks are time set aside for the next
+ * occurrence). See `linkedBlocksToComplete` for the rule and its reasoning.
  */
 export async function completeTask(id: string): Promise<ActionResult<CompleteTaskOutcome>> {
   const user = await getCurrentUser();
@@ -188,19 +229,25 @@ export async function completeTask(id: string): Promise<ActionResult<CompleteTas
   if (!task) return fail("Task not found");
   if (task.status !== "open") return fail("This task is not open");
 
-  const nextDue = nextDueAfterCompletion(task, scheduleSettingsFor(user).today);
-  if (nextDue) {
-    await prisma.task.update({ where: { id }, data: { dueDate: nextDue } });
-    revalidateAll();
-    return succeed({ status: "advanced", nextDue });
-  }
+  const settings = scheduleSettingsFor(user);
+  const reset = resetMinuteOf(settings);
 
-  await prisma.task.update({
-    where: { id },
-    data: { status: "done", completedAt: new Date() },
+  const nextDue = nextDueAfterCompletion(task, settings.today);
+  const outcome: CompleteTaskOutcome["status"] = nextDue ? "advanced" : "completed";
+
+  const reflected = await prisma.$transaction(async (db) => {
+    await db.task.update({
+      where: { id },
+      data: nextDue ? { dueDate: nextDue } : { status: "done", completedAt: new Date() },
+    });
+    return reflectCompletionOnBlocks(db, user.id, id, outcome, settings.today, reset);
   });
+
+  for (const day of reflected.days) {
+    await recomputeDay(user.id, day);
+  }
   revalidateAll();
-  return succeed({ status: "completed", nextDue: null });
+  return succeed({ status: outcome, nextDue: nextDue ?? null, blocksCompleted: reflected.count });
 }
 
 export async function reopenTask(id: string): Promise<ActionResult<null>> {
@@ -241,11 +288,16 @@ export interface ScheduleTaskOutcome {
 
 /**
  * Put a task on the planner: an ordinary planner block on the chosen day,
- * carrying the task's title and priority and a link back to the task. No
- * scheduling logic rides the link — the block behaves exactly like one typed
- * into the planner, completing it never completes the task, and deleting the
- * task merely unlinks the block. One task can be scheduled onto several days;
- * that is time-blocking, not duplication.
+ * carrying the task's title and priority and a link back to the task. One
+ * task can be scheduled onto several days; that is time-blocking, not
+ * duplication.
+ *
+ * The link is live in both directions but never destructive: marking the
+ * block done OFFERS to complete the task (`ScheduleStatusOutcome.taskOffer`),
+ * completing the task from anywhere marks its planned blocks done
+ * (`completeTask`), and deleting either side merely detaches — the task's
+ * deletion nulls the block's `taskId` (schema `SetNull`), the block's
+ * deletion never touches the task.
  */
 export async function scheduleTaskOnPlanner(
   input: unknown,

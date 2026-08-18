@@ -84,6 +84,8 @@ interface SeriesParentRow {
   category: string;
   priority: string;
   habitId: string | null;
+  /** A series scheduled from a task carries the link on every occurrence. */
+  taskId: string | null;
   recurrenceRule: string | null;
   skipDates: string | null;
   originalDate?: string | null;
@@ -145,6 +147,7 @@ export async function materializeSeriesWindow(
       priority: parent.priority,
       status: "planned",
       habitId: parent.habitId,
+      taskId: parent.taskId,
       seriesId: parent.id,
       sortOrder: 0,
     })),

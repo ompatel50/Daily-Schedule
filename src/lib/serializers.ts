@@ -32,6 +32,7 @@ export function toScheduleRowItem(
     seriesId: item.seriesId,
     seriesRule: item.series?.recurrenceRule ?? null,
     workoutId: item.workoutId,
+    task: item.task ? { id: item.task.id, title: item.task.title, status: item.task.status } : null,
     tags: item.tags.map(({ tag }) => ({ tag: { id: tag.id, name: tag.name } })),
   };
 }

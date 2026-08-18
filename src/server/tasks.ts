@@ -26,13 +26,20 @@ async function openTasksImpl(userId: string, today: DayKey) {
         orderBy: [{ sortOrder: "asc" }, { createdAt: "asc" }],
       },
       // Upcoming planner blocks created from this task ("add to planner") —
-      // enough to show a "scheduled" chip. Filtered here, not client-side:
-      // an unfiltered take-3 would fill up with past blocks and hide a real
-      // upcoming one.
+      // enough to show "scheduled" chips with their day and time. Filtered
+      // here, not client-side: an unfiltered take-3 would fill up with past
+      // blocks and hide a real upcoming one.
       scheduleItems: {
         where: { status: "planned", date: { gte: today } },
-        select: { id: true, date: true, status: true },
-        orderBy: { date: "asc" },
+        select: {
+          id: true,
+          date: true,
+          status: true,
+          startMinute: true,
+          endMinute: true,
+          allDay: true,
+        },
+        orderBy: [{ date: "asc" }, { startMinute: { sort: "asc", nulls: "first" } }],
         take: 3,
       },
       // Tags are capped per task in the action layer, so this include can

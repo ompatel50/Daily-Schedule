@@ -564,7 +564,34 @@ export async function updateScheduleItem(
   return succeed({ id: existing.id, updated });
 }
 
-export async function toggleScheduleItem(id: string): Promise<ActionResult<{ status: string }>> {
+export interface ScheduleStatusOutcome {
+  status: string;
+  /**
+   * Present when the block just became done and links a still-open task: the
+   * caller OFFERS to complete the task too (a toast action). Nothing is
+   * completed automatically — a block can be one of several work sessions,
+   * and only the user knows whether this one finished the task.
+   */
+  taskOffer: { id: string; title: string } | null;
+}
+
+/** The linked still-open task, when marking `done` should offer completing it. */
+async function taskOfferFor(
+  userId: string,
+  item: { taskId: string | null },
+  status: string,
+): Promise<ScheduleStatusOutcome["taskOffer"]> {
+  if (status !== "done" || !item.taskId) return null;
+  const task = await prisma.task.findFirst({
+    where: { id: item.taskId, userId, status: "open" },
+    select: { id: true, title: true },
+  });
+  return task ? { id: task.id, title: task.title } : null;
+}
+
+export async function toggleScheduleItem(
+  id: string,
+): Promise<ActionResult<ScheduleStatusOutcome>> {
   const user = await getCurrentUser();
   const item = await prisma.scheduleItem.findFirst({ where: { id, userId: user.id } });
   if (!item) return fail("Item not found");
@@ -577,13 +604,13 @@ export async function toggleScheduleItem(id: string): Promise<ActionResult<{ sta
 
   await touchDays(user.id, [operationalDayOfRecord(item, resetFor(user))]);
   revalidateAll();
-  return succeed({ status });
+  return succeed({ status, taskOffer: await taskOfferFor(user.id, item, status) });
 }
 
 export async function setScheduleItemStatus(
   id: string,
   status: "planned" | "done" | "skipped",
-): Promise<ActionResult<{ status: string }>> {
+): Promise<ActionResult<ScheduleStatusOutcome>> {
   const user = await getCurrentUser();
   const item = await prisma.scheduleItem.findFirst({ where: { id, userId: user.id } });
   if (!item) return fail("Item not found");
@@ -595,7 +622,7 @@ export async function setScheduleItemStatus(
 
   await touchDays(user.id, [operationalDayOfRecord(item, resetFor(user))]);
   revalidateAll();
-  return succeed({ status });
+  return succeed({ status, taskOffer: await taskOfferFor(user.id, item, status) });
 }
 
 /** What `moveScheduleItem` reports back to the UI. */

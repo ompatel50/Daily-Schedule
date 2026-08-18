@@ -5074,8 +5074,8 @@ those cells lean.
 | 3  | Transfers: reconciliation & auto-detection        | ✅ done |
 | 4  | Credit card depth + recurring + insights          | ✅ done |
 | 5  | Money as integer cents                            | ✅ done |
-| 6  | Task ↔ Planner linking                            | ⏳ next |
-| 7  | Global undo: soft-delete + Trash                  | not started |
+| 6  | Task ↔ Planner linking                            | ✅ done |
+| 7  | Global undo: soft-delete + Trash                  | ⏳ next |
 | 8  | Planner & habit quality features                  | not started |
 | 9  | Weekly review + data transparency                 | not started |
 | 10 | Dependency & platform hygiene                     | not started |
@@ -5523,3 +5523,109 @@ utilisation ratios, matching, detection.
 * The reminder threshold path measures against the base budget target (see
   Phase 4's note) — unchanged by this phase; it converts to cents at its own
   boundary.
+
+## Phase 6 — Task ↔ Planner linking
+
+Tasks and planner blocks were already connected by a one-way informational
+link (`ScheduleItem.taskId` + `scheduleTaskOnPlanner`, from the earlier
+work); this phase made the link live in both directions without making it
+destructive, and exposed it read-only to the assistant. **No migration** —
+the column already existed; only its meaning grew.
+
+### The model decision: the additive `taskId` column, not a join model
+
+Documented on the schema field itself. The join model was considered and
+rejected against the recurrence architecture:
+
+* The FK direction (many blocks → one task) already covers "a task can have
+  several blocks" — that is time-blocking one task across days. A join model
+  is only needed if one BLOCK could serve several tasks, which has no UI
+  meaning here.
+* Recurrence MATERIALISES every occurrence as a real row
+  (`src/server/series.ts`). A series-level link is therefore the parent's
+  `taskId` copied at materialisation — exactly how `habitId` already
+  propagates. A join model would need one join row per materialised
+  occurrence anyway: same cardinality, extra indirection.
+* The one/future/all scope mechanics (exception detach, series split,
+  parent promotion) copy or preserve row columns; a column rides every scope
+  correctly by construction, and the new integration tests prove it.
+
+### Block → task: an OFFER, never automatic
+
+`toggleScheduleItem` / `setScheduleItemStatus` return a
+`ScheduleStatusOutcome` whose `taskOffer` names the linked, still-open task
+when the block just became done. The planner row shows a toast — "Also
+complete the task …?" with a **Complete task** action — because one block
+can be one of several work sessions and only the user knows whether this
+one finished the task. No offer on skip, on un-check, for a closed task, or
+for an unlinked block.
+
+### Task → blocks: completion reflects
+
+`completeTask` now reflects inside the same transaction
+(`reflectCompletionOnBlocks`), with the rule pure and unit-tested in
+`src/lib/logic/tasks.ts` (`linkedBlocksToComplete`):
+
+* **Closing** the task marks EVERY still-planned linked block done — a block
+  is a reservation to work on the task, and a finished task has nothing left
+  to reserve time for.
+* **Advancing** a repeating task marks only blocks up to today (operational
+  days, the planner's own boundary) — future blocks are time set aside for
+  the next occurrence, which is still coming.
+* `done` keeps its own stamp; `skipped` records a deliberate "didn't happen"
+  and is never rewritten. Reopening a task does NOT un-complete blocks (the
+  sessions happened). Affected day summaries are recomputed; the outcome's
+  `blocksCompleted` count surfaces in the board toast and the assistant's
+  `complete_task` execution summary — "from anywhere" is literal, since the
+  assistant executor routes through the same action.
+
+### Deletes detach, never cascade
+
+Already structural (`onDelete: SetNull` task→block; block deletion never
+touches the task) — now asserted by integration tests in both directions,
+including that a detached block stops offering.
+
+### Recurring blocks respect the scope model
+
+`materializeSeriesWindow` copies `taskId` to generated occurrences (the one
+real change); everything else holds by construction and is tested: a linked
+block made recurring links the whole series, a scope-`one` exception keeps
+its link, a raw-deleted slot regenerates WITH the link, and closing the task
+sweeps every planned occurrence.
+
+### Surfaces
+
+* Planner rows (`schedule-row.tsx`) show a task chip (name, struck through
+  once the task is done) via the central `SCHEDULE_ITEM_INCLUDE` +
+  serializer, so Planner, Today and every other consumer agree.
+* Task cards list their upcoming planned blocks ("Planned · Aug 20 9:00 AM",
+  up to 3, soonest first) — date AND time, from the widened
+  `openTasksImpl` select.
+* `schedule-task-dialog` copy rewritten (it promised the old decoupling).
+* Assistant read tools, read-only per the plan: `get_schedule` items carry
+  `task {id,title,status}` when linked; `list_tasks` tasks carry
+  `scheduled` blocks with date/time. No new write tools.
+
+### Verification
+
+* Unit **1,253 → 1,257**: `linkedBlocksToComplete` — close-vs-advance,
+  done/skipped immunity, operational-day comparison at the reset boundary.
+* Integration **428 → 440**: new `task-planner-links.test.ts` (12) — the
+  offer (present, absent, withdrawn), reflection (close all / advance ≤
+  today / reopen keeps / cross-user guard on a corrupted foreign row),
+  detach both ways, series inheritance + regeneration re-stamping, and both
+  assistant tools through `runTool`.
+* E2E **124 → 126**: new `task-planner-links.spec.ts` — the full offer loop
+  through real toasts (schedule → check off → accept → task leaves the
+  board) and board-side completion reflecting on the planner block; full
+  suite green against the production build (126 passed / 2 skipped).
+  Typecheck, lint, build green.
+
+### Notes
+
+* The test derives "today" via `scheduleSettingsFor`, not the clock — the
+  operational day is yesterday's calendar date between midnight and the
+  daily reset, and the reflection rule compares operational days.
+* Linking an EXISTING block to a task has no UI (links are born from "Add to
+  planner"); if a later phase adds one, the scope semantics are already
+  consistent because the link is a row column.
