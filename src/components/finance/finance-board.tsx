@@ -20,6 +20,7 @@ import {
   ImportBatchesSection,
   type ImportBatchView,
 } from "@/components/finance/import-batches-section";
+import { MarkTransferDialog } from "@/components/finance/mark-transfer-dialog";
 import {
   SavingsGoalDialog,
   type SavingsGoalView,
@@ -32,8 +33,11 @@ import {
 } from "@/components/finance/transaction-dialog";
 import { TransactionsSection } from "@/components/finance/transactions-section";
 import { TransferDialog } from "@/components/finance/transfer-dialog";
+import { TransferSuggestionsSection } from "@/components/finance/transfer-suggestions-section";
 import { UndoImportDialog } from "@/components/finance/undo-import-dialog";
 import { formatDay } from "@/lib/date";
+import { unlinkTransfer } from "@/server/actions/transfers";
+import type { TransferSuggestionView } from "@/server/transfers";
 import {
   deleteBill,
   deleteBudget,
@@ -63,6 +67,7 @@ export function FinanceBoard({
   budgets,
   importBatches,
   byCategory,
+  transferSuggestions,
   today,
   primaryCurrency,
 }: {
@@ -73,6 +78,7 @@ export function FinanceBoard({
   budgets: BudgetView[];
   importBatches: ImportBatchView[];
   byCategory: CategoryTotalView[];
+  transferSuggestions: TransferSuggestionView[];
   today: string;
   /** Currency of the largest account group — used where no account is linked. */
   primaryCurrency: string;
@@ -95,6 +101,7 @@ export function FinanceBoard({
   const [importOpen, setImportOpen] = React.useState(false);
   const [balanceAccount, setBalanceAccount] = React.useState<AccountView | null>(null);
   const [adjustingGoal, setAdjustingGoal] = React.useState<SavingsGoalView | null>(null);
+  const [markingTransfer, setMarkingTransfer] = React.useState<TransactionView | null>(null);
 
   const activeAccounts = accounts.filter((account) => !account.archived);
 
@@ -152,7 +159,16 @@ export function FinanceBoard({
           onDelete={(transaction) =>
             run(() => deleteTransaction(transaction.id), "Transaction deleted")
           }
+          onMarkTransfer={setMarkingTransfer}
+          onUnlinkTransfer={(transaction) =>
+            run(
+              () => unlinkTransfer(transaction.id),
+              "Transfer unlinked — both rows are ordinary entries again",
+            )
+          }
         />
+
+        <TransferSuggestionsSection suggestions={transferSuggestions} />
 
         <BillsSection
           bills={bills}
@@ -262,6 +278,10 @@ export function FinanceBoard({
         takenCategories={budgets.map((budget) => budget.category)}
       />
       <UndoImportDialog batch={undoBatch} onClose={() => setUndoBatch(null)} />
+      <MarkTransferDialog
+        transaction={markingTransfer}
+        onClose={() => setMarkingTransfer(null)}
+      />
       <TransferDialog
         open={transferOpen}
         onOpenChange={setTransferOpen}

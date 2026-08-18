@@ -635,6 +635,40 @@ export const transferSchema = z
 
 export type TransferInput = z.infer<typeof transferSchema>;
 
+/** Candidate lookup for "Mark as transfer" — the window the UI can vary. */
+export const transferCandidatesSchema = z.object({
+  transactionId: z.string().min(1),
+  windowDays: z.number().int().min(1).max(31).optional(),
+});
+
+/** Link two existing rows as the two legs of one transfer. */
+export const transferLinkSchema = z
+  .object({
+    transactionId: z.string().min(1),
+    counterpartId: z.string().min(1),
+  })
+  .refine((value) => value.transactionId !== value.counterpartId, {
+    message: "Pick two different transactions",
+    path: ["counterpartId"],
+  });
+
+/** Create the missing leg of a one-sided row in a chosen account. */
+export const transferCounterpartSchema = z.object({
+  transactionId: z.string().min(1),
+  accountId: z.string().min(1, "Pick the counterpart account"),
+});
+
+/** Dismiss one suggested pair — it must never be offered again. */
+export const transferDismissSchema = z
+  .object({
+    aId: z.string().min(1),
+    bId: z.string().min(1),
+  })
+  .refine((value) => value.aId !== value.bId, {
+    message: "A pair needs two different transactions",
+    path: ["bId"],
+  });
+
 /** One budget per spending category, measured over a monthly or weekly window. */
 export const budgetSchema = z.object({
   id: z.string().optional(),

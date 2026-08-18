@@ -123,7 +123,6 @@ describe("backup validation", () => {
   });
 
   it("v9 carries the persisted CSV category mappings", () => {
-    expect(BACKUP_VERSION).toBe(9);
     expect(BACKUP_TABLES).toContain("financeCategoryRules");
 
     const result = inspectBackup(
@@ -131,6 +130,22 @@ describe("backup validation", () => {
     );
     expect(result.ok).toBe(true);
     expect(result.counts.financeCategoryRules).toBe(1);
+    expect(result.warnings.join(" ")).not.toContain("unrecognised");
+  });
+
+  it("v10 carries dismissed transfer suggestions, after the rows they cite", () => {
+    expect(BACKUP_VERSION).toBe(10);
+    expect(BACKUP_TABLES).toContain("transferDismissals");
+    // A dismissal references two ledger rows — they must restore first.
+    expect(BACKUP_TABLES.indexOf("financeTransactions")).toBeLessThan(
+      BACKUP_TABLES.indexOf("transferDismissals"),
+    );
+
+    const result = inspectBackup(
+      backup({ data: { transferDismissals: [{ id: "d1", aId: "t1", bId: "t2" }] } }),
+    );
+    expect(result.ok).toBe(true);
+    expect(result.counts.transferDismissals).toBe(1);
     expect(result.warnings.join(" ")).not.toContain("unrecognised");
   });
 

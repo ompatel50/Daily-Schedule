@@ -83,6 +83,7 @@ const MODEL_BY_TABLE: Record<BackupTable, string> = {
   financeImportBatches: "FinanceImportBatch",
   bills: "Bill",
   financeTransactions: "FinanceTransaction",
+  transferDismissals: "TransferDismissal",
   savingsGoals: "SavingsGoal",
   budgets: "Budget",
   financeCategoryRules: "FinanceCategoryRule",
@@ -679,6 +680,23 @@ export async function restoreBackupForUser(
     return own(mapped);
   });
 
+  prepare("transferDismissals", (row) => {
+    const mapped = withId(row);
+    if (!mapped) return null;
+    // A dismissal is meaningless without both of its rows in the file.
+    if (!inFile("financeTransactions", row.aId) || !inFile("financeTransactions", row.bId)) {
+      return null;
+    }
+    const first = map(row.aId as string);
+    const second = map(row.bId as string);
+    if (!first || !second) return null;
+    // Remapping can flip lexical order — re-canonicalise (aId < bId), the
+    // invariant the unique index and the pair key rely on.
+    mapped.aId = first < second ? first : second;
+    mapped.bId = first < second ? second : first;
+    return own(mapped);
+  });
+
   prepare("savingsGoals", (row) => {
     const mapped = withId(row);
     return mapped ? own(mapped) : null;
@@ -781,6 +799,7 @@ export async function restoreBackupForUser(
         await db.reminder.deleteMany({ where: { userId } });
         await db.reminderDelivery.deleteMany({ where: { userId } });
         await db.favoriteItem.deleteMany({ where: { userId } });
+        await db.transferDismissal.deleteMany({ where: { userId } });
         await db.financeTransaction.deleteMany({ where: { userId } });
         await db.bill.deleteMany({ where: { userId } });
         await db.financeImportBatch.deleteMany({ where: { userId } });
@@ -890,6 +909,7 @@ export async function restoreBackupForUser(
     financeImportBatches: await prisma.financeImportBatch.count({ where: { userId } }),
     bills: await prisma.bill.count({ where: { userId } }),
     financeTransactions: await prisma.financeTransaction.count({ where: { userId } }),
+    transferDismissals: await prisma.transferDismissal.count({ where: { userId } }),
     savingsGoals: await prisma.savingsGoal.count({ where: { userId } }),
     budgets: await prisma.budget.count({ where: { userId } }),
     financeCategoryRules: await prisma.financeCategoryRule.count({ where: { userId } }),

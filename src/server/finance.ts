@@ -4,6 +4,7 @@ import { cache } from "react";
 
 import { getCurrentUser, prisma } from "@/lib/db";
 import { monthRange, shiftDay, type DayKey } from "@/lib/date";
+import { computeTransferSuggestions } from "@/server/transfers";
 import {
   accountBalances,
   budgetFetchRange,
@@ -237,6 +238,7 @@ export async function getFinanceOverview() {
     savingsGoals,
     budgets,
     importBatches,
+    transferSuggestions,
   ] = await Promise.all([
     accountBalancesMemo(user.id),
     billViewsMemo(user.id, today),
@@ -245,6 +247,9 @@ export async function getFinanceOverview() {
     getSavingsGoals(),
     budgetsMemo(user.id),
     importBatchesMemo(user.id, IMPORT_BATCH_LIMIT),
+    // A read-only pass — would-be auto-links show as suggestions too; only
+    // an import or the explicit "run detection" action ever links unattended.
+    computeTransferSuggestions(user.id),
   ]);
 
   const monthTransactions = slice(ledger, month);
@@ -270,6 +275,7 @@ export async function getFinanceOverview() {
     budgets: budgetProgress(budgets, ledger, windows),
     budgetWindows: windows,
     importBatches,
+    transferSuggestions,
   };
 }
 

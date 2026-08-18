@@ -5071,8 +5071,8 @@ those cells lean.
 |----|---------------------------------------------------|--------|
 | 1  | Finance import correctness (1a–1d)                | ✅ done |
 | 2  | Split finance-board.tsx                           | ✅ done |
-| 3  | Transfers: reconciliation & auto-detection        | ⏳ next |
-| 4  | Credit card depth + recurring + insights          | not started |
+| 3  | Transfers: reconciliation & auto-detection        | ✅ done |
+| 4  | Credit card depth + recurring + insights          | ⏳ next |
 | 5  | Money as integer cents                            | not started |
 | 6  | Task ↔ Planner linking                            | not started |
 | 7  | Global undo: soft-delete + Trash                  | not started |
@@ -5233,3 +5233,107 @@ consecutively. (One `planner-recurrence` and one `assistant` spec failure
 appeared in single earlier runs under 2-worker load and passed on every
 re-run — pre-existing load flakiness, not the refactor: the finance specs
 were green in those same runs.)
+
+> **Branch note.** PR #24 (Phases 1–2) was merged into `main` by the user
+> mid-update. Per the session's branch rules the designated branch was
+> restarted from the merged `main` (same name, fresh history) and Phases 3+
+> continue on it as a new PR. Because v9 of the backup format shipped with
+> that merge, Phase 3's backup additions are **v10**, not folded into v9.
+
+## Phase 3 — transfers: reconciliation and auto-detection
+
+Imported rows arrive one-sided (a card export only sees the card). This
+phase links them.
+
+### The one matching authority: `src/lib/logic/transfer-match.ts`
+
+Pure. A candidate pair is always: same absolute amount to the cent, opposite
+signs, two different unarchived same-currency accounts, neither row already
+a leg, dates within a window (default 5 days; UI choices 3/5/7/14).
+`scoreTransferPair` grades on top: same/near day, transfer-ish payee wording
+(payment/transfer/autopay/deposit/…), asset→debt direction raise; recurring
+round amounts and — above all — multiple plausible counterparts lower.
+`detectTransferPairs` splits into `autoLinks` (single unambiguous
+counterpart on BOTH sides and score ≥ 0.75) and `suggestions`, honours a
+dismissed-pair set (canonical orderless `lowId|highId` keys via
+`transferPairKey`), and is idempotent — linked rows leave the pool.
+
+### 3a — mark as transfer / unlink
+
+* Schema (additive migration `20260818043721_transfer_reconciliation`):
+  `FinanceTransaction.preTransferCategory` — the category a LINKED leg had
+  before, what unlink restores — and the `TransferDismissal` table
+  (`userId`, canonical `aId` < `bId`, unique per user+pair, cascades with
+  either row).
+* Actions (`src/server/actions/transfers.ts`): `getTransferLinkCandidates`
+  (row + same-currency counterpart accounts + scored candidates),
+  `linkTransactionsAsTransfer` (validates ownership, different accounts,
+  same currency, equal-and-opposite amounts, neither already a leg; writes
+  groupId + category `transfer` + `preTransferCategory` in a guarded
+  transaction — a raced row rolls the pair back), `createTransferCounterpart`
+  (writes the missing leg — same date, opposite amount, `Transfer from/to X`
+  payee — and links), `unlinkTransfer` (both legs restored to their
+  pre-link category; legs born as transfers — the Transfer flow's or a
+  created missing leg — restore to `other`, documented in the action).
+  Linking never rewrites date/amount/payee/account, so import identities
+  survive.
+* UI: "Mark as transfer…" in the transaction row menu (non-legs, when a
+  second account exists) opens `mark-transfer-dialog.tsx` — counterpart
+  account + window selects, scored candidate radio list ("likely match"
+  badge), link selected, or create the missing leg. Transfer legs get an
+  "Unlink transfer" menu item (their menus previously had no items).
+
+### 3b — auto-detection
+
+`src/server/transfers.ts`: `loadTransferMatchData` (newest 5,000 unlinked
+rows of unarchived accounts + dismissals, all under one userId),
+`computeTransferSuggestions` (READ-ONLY — the finance page shows the capped
+top 8 on every load; would-be auto-links are listed too, because a page
+load must not write), `runTransferDetection` (the writing pass: links every
+single-unambiguous-confident pair in its own `transferGroupId: null`-guarded
+transaction — concurrency-safe and idempotent — and counts the rest).
+Runs after every `commitFinanceCsvImport` (best-effort, AFTER the import's
+transaction: a detection hiccup can never take the import down) with the
+outcome shown in the import report ("N transfers … linked automatically /
+M possible transfers waiting"), and on demand from the suggestions card's
+"Run detection". `transfer-suggestions-section.tsx` renders out → in with
+reason badges and Accept (= the same validated link action) / Dismiss.
+Dismissals persist per user, suppress the pair everywhere including
+auto-link, and an explicit manual link still overrides one.
+
+### 3c — import undo
+
+Verified by integration test: an auto-linked imported row classifies as
+`keep_linked` (the existing `classifyImportUndoRow` path — transferGroupId
+is set), undo removes only unlinked rows and reports the kept leg, and the
+linked row's imported source fields (date/amount/payee/importKey) are
+untouched by linking.
+
+### Backup format v10
+
+`transferDismissals` in `BACKUP_TABLES` (after the transactions it cites),
+export, restore (both row ids remapped, pair re-canonicalised — remapping
+can flip lexical order — dropped if either row is missing), replace-mode
+delete, verification counts; `preTransferCategory` rides the schema-driven
+row sanitiser automatically.
+
+### Verification
+
+* Unit **1,210 → 1,228**: `tests/transfer-match.test.ts` — pair predicate
+  (magnitude/sign/account/currency/window/linked), scoring (card payment
+  confident; bare coincidence not; recurring-round and ambiguity penalties;
+  orientation from signs), candidates (ordering, account narrowing),
+  detection (auto vs suggestion split, ambiguity forbids auto, dismissals
+  suppress auto-links, idempotency, cross-currency, greedy one-link-per-row).
+* Integration **405 → 415**: `tests/integration/transfer-reconciliation.test.ts`
+  — link with candidates + summary exclusion, refusal matrix (same account,
+  wrong amount, same direction, cross-currency, cross-user), missing-leg
+  creation, unlink restores (incl. classic Transfer legs → `other`),
+  post-import auto-link + report + **undo keeps both legs (3c)**, ambiguous
+  → suggestion only, cross-user isolation of detection, dismissal
+  persistence + explicit-link override, dismissal ownership refusal, backup
+  round trip of dismissals (canonical after remap, still suppressive).
+* E2E: new permanent `tests/e2e/transfers.spec.ts` — suggest → link →
+  unlink → mark-as-transfer round trip through the real UI, self-healing
+  cleanup. Full suite **123 passed / 2 skipped** against the production
+  build. Typecheck, lint, build green.

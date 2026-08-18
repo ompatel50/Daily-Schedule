@@ -200,6 +200,7 @@ export default async function FinancePage() {
           budgets={budgets}
           importBatches={importBatches}
           byCategory={byCategory}
+          transferSuggestions={overview.transferSuggestions}
           today={overview.today}
           primaryCurrency={primaryCurrency}
         />

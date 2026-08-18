@@ -1,7 +1,7 @@
 "use client";
 
 import * as React from "react";
-import { ArrowLeftRight, FileUp, Pencil, Plus, Receipt } from "lucide-react";
+import { ArrowLeftRight, FileUp, Pencil, Plus, Receipt, Unlink } from "lucide-react";
 
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -24,6 +24,8 @@ export function TransactionsSection({
   onAdd,
   onEdit,
   onDelete,
+  onMarkTransfer,
+  onUnlinkTransfer,
 }: {
   transactions: TransactionView[];
   hasActiveAccounts: boolean;
@@ -34,6 +36,10 @@ export function TransactionsSection({
   onAdd: () => void;
   onEdit: (transaction: TransactionView) => void;
   onDelete: (transaction: TransactionView) => void;
+  /** Link this row to a counterpart in another account (or create one). */
+  onMarkTransfer: (transaction: TransactionView) => void;
+  /** Restore both legs of this row's transfer to ordinary rows. */
+  onUnlinkTransfer: (transaction: TransactionView) => void;
 }) {
   return (
     <SectionCard
@@ -75,8 +81,11 @@ export function TransactionsSection({
             <TransactionRow
               key={transaction.id}
               transaction={transaction}
+              canTransfer={canTransfer}
               onEdit={() => onEdit(transaction)}
               onDelete={() => onDelete(transaction)}
+              onMarkTransfer={() => onMarkTransfer(transaction)}
+              onUnlinkTransfer={() => onUnlinkTransfer(transaction)}
             />
           ))}
         </div>
@@ -87,12 +96,18 @@ export function TransactionsSection({
 
 function TransactionRow({
   transaction,
+  canTransfer,
   onEdit,
   onDelete,
+  onMarkTransfer,
+  onUnlinkTransfer,
 }: {
   transaction: TransactionView;
+  canTransfer: boolean;
   onEdit: () => void;
   onDelete: () => void;
+  onMarkTransfer: () => void;
+  onUnlinkTransfer: () => void;
 }) {
   const categoryLabel =
     FINANCE_CATEGORY_META[transaction.category as FinanceCategory]?.label ?? transaction.category;
@@ -137,8 +152,18 @@ function TransactionRow({
       <RowMenu
         label="Transaction actions"
         // One leg cannot be edited alone — delete removes the pair, and the
-        // dialog would only half-change a transfer anyway.
-        items={transfer ? [] : [{ label: "Edit", icon: Pencil, onClick: onEdit }]}
+        // dialog would only half-change a transfer anyway. Unlinking restores
+        // both legs to ordinary rows first.
+        items={
+          transfer
+            ? [{ label: "Unlink transfer", icon: Unlink, onClick: onUnlinkTransfer }]
+            : [
+                { label: "Edit", icon: Pencil, onClick: onEdit },
+                ...(canTransfer
+                  ? [{ label: "Mark as transfer…", icon: ArrowLeftRight, onClick: onMarkTransfer }]
+                  : []),
+              ]
+        }
         confirmLabel={transfer ? "Delete both legs" : "Confirm delete"}
         onDelete={onDelete}
       />

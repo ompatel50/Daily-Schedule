@@ -12,6 +12,7 @@ import {
   type FinanceCsvMapping,
   type FinanceImportRow,
 } from "@/lib/logic/finance-import";
+import { runTransferDetection } from "@/server/transfers";
 import {
   fail,
   financeCategoryRuleSchema,
@@ -266,6 +267,10 @@ export interface FinanceImportReport {
   createdCount: number;
   skippedCount: number;
   rejectedCount: number;
+  /** Transfer pairs the post-import detection pass linked automatically … */
+  transfersLinked: number;
+  /** … and plausible pairs left as suggestions on the finance page. */
+  transferSuggestions: number;
 }
 
 /**
@@ -330,8 +335,24 @@ export async function commitFinanceCsvImport(
     };
   });
 
+  // The auto-detection pass runs AFTER the import committed: a detection
+  // hiccup must never take the import down with it. Best-effort by design.
+  let detection = { linked: 0, suggestions: 0 };
+  if (report.createdCount > 0) {
+    try {
+      detection = await runTransferDetection(user.id);
+    } catch {
+      // The rows are imported and safe; detection can always be re-run
+      // from the finance page.
+    }
+  }
+
   revalidateAll();
-  return succeed(report);
+  return succeed({
+    ...report,
+    transfersLinked: detection.linked,
+    transferSuggestions: detection.suggestions,
+  });
 }
 
 // --- undo --------------------------------------------------------------------

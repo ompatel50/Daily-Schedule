@@ -582,6 +582,14 @@ export function ImportCsvDialog({
                 {report.createdCount} created · {report.skippedCount} skipped as duplicates ·{" "}
                 {report.rejectedCount} rejected. Balances and summaries are up to date.
               </p>
+              {(report.transfersLinked > 0 || report.transferSuggestions > 0) && (
+                <p className="text-muted-foreground">
+                  {report.transfersLinked > 0 &&
+                    `${report.transfersLinked} ${pluralize(report.transfersLinked, "transfer")} matched to another account and linked automatically. `}
+                  {report.transferSuggestions > 0 &&
+                    `${report.transferSuggestions} possible ${pluralize(report.transferSuggestions, "transfer")} waiting under Transfer suggestions.`}
+                </p>
+              )}
               {report.createdCount > 0 && (
                 <p className="text-muted-foreground">
                   Changed your mind? Undo this import from{" "}

@@ -133,6 +133,7 @@ model User {
   budgets           Budget[]
   financeImportBatches FinanceImportBatch[]
   financeCategoryRules FinanceCategoryRule[]
+  transferDismissals TransferDismissal[]
   inboxItems        InboxItem[]
   documents         LifeDocument[]
   assistantProposals AssistantProposal[]
@@ -1650,6 +1651,15 @@ model FinanceTransaction {
   /// `transfer`, which every income/spending summary excludes.
   transferGroupId String?
 
+  /// When this row became a transfer leg by LINKING (mark-as-transfer or
+  /// auto-detection) rather than the Transfer flow, the category it carried
+  /// before — what unlinking restores. Null for rows the Transfer flow wrote
+  /// (they never were anything else) and for non-legs.
+  preTransferCategory String?
+
+  transferDismissalsA TransferDismissal[] @relation("dismissalRowA")
+  transferDismissalsB TransferDismissal[] @relation("dismissalRowB")
+
   /// The CSV import batch that created this row, for auditability. Optional —
   /// deleting the batch record keeps the transactions.
   importBatchId String?
@@ -1813,6 +1823,27 @@ model FinanceImportBatch {
 
   @@index([userId, createdAt])
   @@index([accountId])
+}
+
+/// A transfer suggestion the user said NO to: this exact pair of ledger rows
+/// must never be offered (or auto-linked) again. The pair is stored in
+/// canonical order (aId < bId), so leg order can never resurrect a dismissed
+/// suggestion. Rows cascade — a dismissal dies with either row.
+model TransferDismissal {
+  id     String @id @default(cuid())
+  userId String
+  user   User   @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  aId String
+  a   FinanceTransaction @relation("dismissalRowA", fields: [aId], references: [id], onDelete: Cascade)
+  bId String
+  b   FinanceTransaction @relation("dismissalRowB", fields: [bId], references: [id], onDelete: Cascade)
+
+  createdAt DateTime @default(now())
+
+  @@unique([userId, aId, bId])
+  @@index([aId])
+  @@index([bId])
 }
 
 /// A persisted CSV category mapping: when an import's category cell says
