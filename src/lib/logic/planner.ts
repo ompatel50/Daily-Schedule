@@ -13,6 +13,7 @@
  */
 
 import { daysBetween } from "@/lib/date";
+import { calendarDateForOperationalTime } from "./operational-day";
 import {
   comparePlannerSpans,
   resolvedEndMinute,
@@ -387,4 +388,113 @@ export function planMove({
     .map((other) => other.title);
 
   return { ...span, conflicts };
+}
+
+// ---------------------------------------------------------------------------
+// Copy day / copy week
+// ---------------------------------------------------------------------------
+
+/** The slice of a source row a copy needs — links included, identity not. */
+export interface CopySourceRow {
+  id: string;
+  title: string;
+  notes: string | null;
+  startMinute: number | null;
+  endMinute: number | null;
+  allDay: boolean;
+  category: string;
+  priority: string;
+  sortOrder: number;
+  seriesId: string | null;
+  recurrenceRule: string | null;
+  habitId: string | null;
+  taskId: string | null;
+  /** Tag ids to re-link on the copy. */
+  tagIds: string[];
+}
+
+/** One block the copy will create (dates and storage are the caller's job). */
+export type PlannedCopyRow = Omit<CopySourceRow, "id" | "seriesId" | "recurrenceRule">;
+
+export interface DayCopyPlan {
+  /** Blocks to create on the target day, source order preserved. */
+  copies: PlannedCopyRow[];
+  /** Recurring rows (parents and occurrences) left out — they already recur. */
+  skippedRecurring: number;
+  /** Titles on the target day the copied spans would overlap, earliest first. */
+  conflicts: string[];
+}
+
+/**
+ * Decide what copying one day's layout onto another creates, before anything
+ * is written.
+ *
+ *  * Only ONE-OFF blocks copy. A recurring series already covers the target
+ *    day by its own rule — re-copying an occurrence would double it — so
+ *    series parents and occurrences are counted in `skippedRecurring` for the
+ *    UI to say so plainly.
+ *  * A copy is a fresh planned block: `status` resets, completion stamps and
+ *    template identity do not travel. Links that describe the block's
+ *    MEANING (its task, its habit, its tags) travel; links that name another
+ *    day's RECORD (a logged workout, a logged meal) cannot — those rows
+ *    belong to the source day, and their planner mirrors are unique per row.
+ *  * Conflicts use the same `isSchedulingConflict` rule as every other
+ *    warning surface, against everything already on the target day. Like a
+ *    move, the answer is a warning to confirm, never a block.
+ */
+export function planDayCopy({
+  source,
+  targetItems,
+  targetDate,
+  resetMinute = 0,
+}: {
+  source: CopySourceRow[];
+  /** Everything already on the target day (its calendar dates ± 1). */
+  targetItems: ConflictCandidate[];
+  /** The target's calendar date for span alignment (the caller resolves
+   *  operational storage per row afterwards). */
+  targetDate: string;
+  /** The user's daily reset — a before-reset copy lands on the NEXT calendar
+   *  date, and its spans must be compared there. Default: midnight. */
+  resetMinute?: number;
+}): DayCopyPlan {
+  const oneOff = source.filter((row) => !row.seriesId && !row.recurrenceRule);
+  const copies = oneOff.map((row) => ({
+    title: row.title,
+    notes: row.notes,
+    startMinute: row.allDay ? null : row.startMinute,
+    endMinute: row.allDay ? null : row.endMinute,
+    allDay: row.allDay,
+    category: row.category,
+    priority: row.priority,
+    sortOrder: row.sortOrder,
+    habitId: row.habitId,
+    taskId: row.taskId,
+    tagIds: row.tagIds,
+  }));
+
+  const conflictTitles = new Set<string>();
+  const ordered: ConflictCandidate[] = [];
+  for (const copy of copies) {
+    const candidate: ConflictCandidate = {
+      id: "__copy__",
+      title: copy.title,
+      date: calendarDateForOperationalTime(targetDate, copy.startMinute, resetMinute),
+      startMinute: copy.startMinute,
+      endMinute: copy.endMinute,
+      allDay: copy.allDay,
+    };
+    for (const other of targetItems) {
+      if (!isSchedulingConflict(candidate, other)) continue;
+      if (conflictTitles.has(other.title)) continue;
+      conflictTitles.add(other.title);
+      ordered.push(other);
+    }
+  }
+
+  return {
+    copies,
+    skippedRecurring: source.length - oneOff.length,
+    conflicts: ordered.sort((a, b) => comparePlannerSpans(a, b)).map((other) => other.title),
+  };
 }

@@ -58,6 +58,9 @@ export async function listReminders(limit = 100) {
  * exact logic so push and in-tab reminders can never disagree about what is
  * allowed to fire.
  */
+/** How many days ahead a milestone's target date starts reminding. */
+const MILESTONE_REMINDER_DAYS_BEFORE = 7;
+
 export async function getReminderFeedFor(user: {
   id: string;
   timezone: string;
@@ -76,6 +79,7 @@ export async function getReminderFeedFor(user: {
     watchedAccounts,
     expiringDocuments,
     watchedBudgets,
+    dueMilestones,
   ] = await Promise.all([
     prisma.reminder.findMany({
       where: { userId: user.id, enabled: true },
@@ -129,6 +133,19 @@ export async function getReminderFeedFor(user: {
     prisma.budget.findMany({
       where: { userId: user.id, alertThresholdPercent: { not: null } },
       take: 100,
+    }),
+    // Goal milestones that opted into a reminder, still unreached, with a
+    // target date inside the run-up window. The goal relation rides along so
+    // an inactive or archived goal silences its milestones.
+    prisma.goalMilestone.findMany({
+      where: {
+        userId: user.id,
+        reminderEnabled: true,
+        reachedAt: null,
+        targetDate: { gte: date, lte: shiftDay(date, DOCUMENT_REMINDER_HORIZON_DAYS) },
+      },
+      include: { goal: { select: { label: true, active: true, archivedAt: true, unit: true } } },
+      take: 200,
     }),
   ]);
 
@@ -200,6 +217,10 @@ export async function getReminderFeedFor(user: {
     ...expiringDocuments.flatMap((document) => [
       dueReminderKey("document", document.id, document.expiryDate),
       dueReminderKey("document", document.id, document.expiryDate, true),
+    ]),
+    ...dueMilestones.flatMap((milestone) => [
+      dueReminderKey("milestone", milestone.id, milestone.targetDate!),
+      dueReminderKey("milestone", milestone.id, milestone.targetDate!, true),
     ]),
     ...watchedBudgets.map((budget) =>
       budgetThresholdReminderKey(
@@ -326,6 +347,29 @@ export async function getReminderFeedFor(user: {
       inactive: document.archivedAt !== null,
       daysBefore: document.reminderDaysBefore,
       detail: document.issuer,
+      deliveredKeys,
+    });
+    if (resolved.ok) occurrences.push(resolved.occurrence);
+  }
+
+  // Goal milestones — the same due-date resolver: an approaching target date
+  // on a still-unreached checkpoint. Reaching the milestone stamps it (see
+  // evaluateGoalsForDate), which silences the reminder by the `completed`
+  // flag rather than by deleting anything.
+  for (const milestone of dueMilestones) {
+    const resolved = resolveDueReminder({
+      kind: "milestone",
+      ownerId: milestone.id,
+      name: milestone.label
+        ? `${milestone.goal.label}: ${milestone.label}`
+        : `${milestone.goal.label} milestone`,
+      dueDate: milestone.targetDate!,
+      today: date,
+      enabled: milestone.reminderEnabled,
+      completed: milestone.reachedAt !== null,
+      inactive: !milestone.goal.active || milestone.goal.archivedAt !== null,
+      daysBefore: MILESTONE_REMINDER_DAYS_BEFORE,
+      detail: `Target ${milestone.targetValue}${milestone.goal.unit ? ` ${milestone.goal.unit}` : ""}`,
       deliveredKeys,
     });
     if (resolved.ok) occurrences.push(resolved.occurrence);

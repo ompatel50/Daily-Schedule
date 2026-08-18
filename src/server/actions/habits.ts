@@ -39,10 +39,17 @@ export async function saveHabit(input: unknown): Promise<ActionResult<{ id: stri
 
   const legacy = toLegacyRecurrence(schedule);
 
+  if (rest.pausedFrom && rest.pausedUntil && rest.pausedUntil < rest.pausedFrom) {
+    return fail("The pause must end on or after the day it starts");
+  }
+
   const data = {
     ...rest,
     description: rest.description ?? null,
     endDate: rest.endDate ?? null,
+    // Clearing either bound must write the column, not keep the old pause.
+    pausedFrom: rest.pausedFrom ?? null,
+    pausedUntil: rest.pausedUntil ?? null,
     timeOfDay: schedule.daypart,
     ...legacy,
     userId: user.id,

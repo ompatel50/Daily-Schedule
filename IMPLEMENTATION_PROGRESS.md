@@ -5076,8 +5076,8 @@ those cells lean.
 | 5  | Money as integer cents                            | ✅ done |
 | 6  | Task ↔ Planner linking                            | ✅ done |
 | 7  | Global undo: soft-delete + Trash                  | ✅ done |
-| 8  | Planner & habit quality features                  | ⏳ next |
-| 9  | Weekly review + data transparency                 | not started |
+| 8  | Planner & habit quality features                  | ✅ done |
+| 9  | Weekly review + data transparency                 | ⏳ next |
 | 10 | Dependency & platform hygiene                     | not started |
 | 11 | Reminders/cron improvements                       | not started |
 | 12 | UI/UX redesign pass                               | not started |
@@ -5731,3 +5731,85 @@ hard deletes.
   `trash.spec.ts` rounds a task and a finance transaction through delete →
   Settings → Trash → restore, then purges; every pre-existing delete flow in
   every spec now exercises soft delete unmodified.
+
+## Phase 8 — planner & habit quality features
+
+Four additive features; one migration (`habit_pause_goal_milestones`) adds
+`Habit.pausedFrom`/`pausedUntil` and the `GoalMilestone` model.
+
+### 8a — copy day / copy week
+
+`planDayCopy` (pure, `src/lib/logic/planner.ts`): only ONE-OFF blocks copy —
+series parents and occurrences are counted in `skippedRecurring` and the UI
+says so plainly ("they already repeat"). A copy is a fresh planned block:
+completion stamps and template identity never travel; links that describe
+the block's MEANING (task, habit, tags) do; links that name another day's
+RECORD (logged workout/meal — unique per row) cannot. Conflicts use the
+planner's one `isSchedulingConflict` rule (tolerance included, before-reset
+copies compared on their real calendar date) and warn-then-confirm exactly
+like a move. `copyPlannerDay` / `copyPlannerWeek` (weekday-for-weekday,
+weeks normalised to the user's week start, one merged confirm) +
+`CopyPlannerDialog` behind a "Copy day…/Copy week…" button by the view tabs.
+
+### 8b — utilisation view
+
+`weekUtilization` (pure, `src/lib/logic/utilization.ts`) over rows the week
+grid already renders — no new fetch. Honest bounds, stated in the UI: only
+timed blocks carry minutes (all-day/untimed counted, never summed), skipped
+blocks count nowhere, "available" is the user's own waking window × 7 so
+"free" means free waking time. Renders as a summary card under the Week
+grid (least-new-surface): planned vs free bar, per-category bars with done
+minutes, completion percentage.
+
+### 8c — habit pause
+
+Additive `pausedFrom`/`pausedUntil` (inclusive, either side open) flow to
+the ONE schedule engine: `SchedulableItem` carries the window and
+`getOccurrenceForDate` answers a new `paused` state with the same neutral
+flags as rest/excused — so streaks, completion rates, the day score
+(`paused` exclusion reason), insights and the calendar all skip paused days
+without any of them re-deriving the rule. The pause outranks per-date
+overrides and ends by itself when the range does. Habit dialog gets the
+range inputs (inverted range refused), the habit card a "Paused until"
+badge, the 28-day strip a violet dot.
+
+### 8d — goal milestones
+
+`GoalMilestone` (user-scoped + goal-cascade): label, target value, optional
+target date, per-milestone reminder opt-in, `reachedAt`. Pure helpers in
+`src/lib/logic/goals.ts` (`orderMilestones` walks the goal's own direction —
+a weight-loss goal's first checkpoint is the highest number; `nextMilestone`;
+`newlyReachedMilestones`). Reaching one records it: `evaluateGoalsForDate` —
+the one place every source's measured value flows through — stamps newly met
+milestones when evaluating TODAY (never when replaying history; best-effort
+so a failed write cannot cost a render). Editing a milestone's target clears
+its stamp — a moved checkpoint is a different checkpoint. The reminder rides
+the existing ledger through the generic due-date resolver (new `milestone`
+kind, 7-day run-up, silenced by reach, inactive/archived goals mute it).
+Editor lives in the goal dialog; the goals panel shows reached/total and the
+next checkpoint.
+
+### Backup v12
+
+`goalMilestones` exported and restored (remapped under their goal, foreign
+goals dropped — the `goalEntries` pattern); the pause fields ride the
+existing habits table. Older files simply have neither.
+
+### Verification
+
+* Unit **1,257 → 1,275**: planDayCopy (recurring skip, link travel,
+  tolerance conflicts, before-reset alignment), weekUtilization (per-category
+  sums, free-time floor, skipped/untimed handling, cross-midnight),
+  engine pause (window bounds, open ends, streak bridging, denominator
+  exit), milestone helpers (direction ordering, next, multi-stamp).
+* Integration **452 → 465**: new `phase8.test.ts` (13) — copy day/week
+  through the actions (fresh planned copies, series not duplicated,
+  conflict-then-confirm, same-week refusal), habit pause through
+  `getHabitViews` + the day score (excluded, never missed, auto-end,
+  inverted range refused), milestone actions (user-scoped, stamp-clearing
+  edit), automatic reach-stamping via evaluation, the milestone reminder in
+  the feed (cross-user clean), and the v12 backup round trip.
+* E2E **128 → 129**: new `planner-copy.spec.ts` — copy day through the real
+  dialog and the utilisation card summing the week; full suite green
+  against the production build (129 passed / 2 skipped). Typecheck, lint,
+  build clean.

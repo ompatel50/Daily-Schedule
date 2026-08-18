@@ -129,6 +129,23 @@ export const templateApplySchema = z.object({
 });
 
 /**
+ * Copying one operational day's (or week's) planner layout onto another.
+ * `confirm` repeats a call whose first run reported conflicts.
+ */
+export const plannerCopySchema = z
+  .object({
+    from: dayKey,
+    to: dayKey,
+    confirm: z.boolean().default(false),
+  })
+  .refine((value) => value.from !== value.to, {
+    message: "Pick a different day to copy to",
+    path: ["to"],
+  });
+
+export type PlannerCopyInput = z.infer<typeof plannerCopySchema>;
+
+/**
  * How far an edit or a delete reaches on a recurring item: just this
  * occurrence, this one and everything after it, or the whole series.
  */
@@ -155,7 +172,19 @@ export const habitSchema = z.object({
   icon: z.string().max(40).default("Check"),
   startDate: dayKey,
   endDate: dayKey.nullable().optional(),
+  // The pause window — either bound may be open; both set must be in order.
+  pausedFrom: dayKey.nullable().optional(),
+  pausedUntil: dayKey.nullable().optional(),
   archived: z.boolean().default(false),
+});
+
+export const goalMilestoneSchema = z.object({
+  id: z.string().optional(),
+  goalId: z.string().min(1),
+  label: z.string().trim().max(120).nullable().optional(),
+  targetValue: z.number().finite("Must be a number"),
+  targetDate: dayKey.nullable().optional(),
+  reminderEnabled: z.boolean().default(false),
 });
 
 export const habitLogSchema = z.object({

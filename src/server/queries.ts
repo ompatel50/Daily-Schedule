@@ -18,7 +18,7 @@ import {
   MEAL_TYPE_META,
   type MealType,
 } from "@/lib/enums";
-import { describeGoalTarget } from "@/lib/logic/goals";
+import { describeGoalTarget, orderMilestones } from "@/lib/logic/goals";
 import { aggregateDay, aggregateDayAll, toDisplay, type HealthRowLike } from "@/lib/logic/health";
 import { emptySearchRows, type SearchRows } from "@/lib/logic/search";
 import { operationalDayWhere } from "@/lib/logic/operational-day";
@@ -160,6 +160,9 @@ export interface HabitWithStats {
   icon: string;
   startDate: string;
   endDate: string | null;
+  /** Pause window — days inside are neither due nor missed. */
+  pausedFrom: string | null;
+  pausedUntil: string | null;
   archived: boolean;
   sortOrder: number;
 
@@ -229,6 +232,8 @@ export async function getHabitsWithStats(
     icon: view.icon,
     startDate: view.startDate,
     endDate: view.endDate,
+    pausedFrom: view.pausedFrom,
+    pausedUntil: view.pausedUntil,
     archived: view.archived,
     sortOrder: view.sortOrder,
 
@@ -485,6 +490,7 @@ export async function getGoalRows() {
   const goals = await prisma.goal.findMany({
     where: { userId: user.id },
     orderBy: [{ sortOrder: "asc" }, { createdAt: "asc" }],
+    include: { milestones: { orderBy: [{ ordinal: "asc" }, { targetValue: "asc" }] } },
   });
 
   const schedules = await loadSchedules(
@@ -522,6 +528,16 @@ export async function getGoalRows() {
       archived: goal.archivedAt !== null,
       scheduleSummary: describeSchedule(rule),
       targetSummary: describeGoalTarget(like),
+      // In progress order — the panel shows the next unreached one first.
+      milestones: orderMilestones(goal.milestones, goal.direction).map((milestone) => ({
+        id: milestone.id,
+        label: milestone.label,
+        targetValue: milestone.targetValue,
+        targetDate: milestone.targetDate,
+        ordinal: milestone.ordinal,
+        reminderEnabled: milestone.reminderEnabled,
+        reachedAt: milestone.reachedAt ? milestone.reachedAt.toISOString() : null,
+      })),
       schedule: {
         mode: (rule?.mode ?? "every_day") as ScheduleMode,
         weekdays: rule?.weekdays ?? [],

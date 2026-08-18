@@ -49,6 +49,7 @@ export async function exportBackup(): Promise<ActionResult<BackupFile>> {
     healthRecords,
     goals,
     goalEntries,
+    goalMilestones,
     scheduleRules,
     scheduleRuleDays,
     scheduleOverrides,
@@ -111,6 +112,7 @@ export async function exportBackup(): Promise<ActionResult<BackupFile>> {
     prisma.healthRecord.findMany({ where: { userId: user.id } }),
     prisma.goal.findMany({ where: { userId: user.id } }),
     prisma.goalEntry.findMany({ where: { userId: user.id } }),
+    prisma.goalMilestone.findMany({ where: { userId: user.id } }),
     // The scheduling tables are what make a goal or habit mean anything. A
     // backup without them would restore records that apply on no date at all.
     prisma.scheduleRule.findMany({ where: { userId: user.id } }),
@@ -191,6 +193,7 @@ export async function exportBackup(): Promise<ActionResult<BackupFile>> {
     healthRecords,
     goals,
     goalEntries,
+    goalMilestones,
     scheduleRules,
     scheduleRuleDays,
     scheduleOverrides,

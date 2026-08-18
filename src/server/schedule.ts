@@ -143,7 +143,15 @@ async function loadSchedulesImpl(
 
 /** Combine an owner record with its schedule into the engine's input shape. */
 export function toSchedulable(
-  owner: { id: string; startDate?: string | null; endDate?: string | null; enabled: boolean },
+  owner: {
+    id: string;
+    startDate?: string | null;
+    endDate?: string | null;
+    enabled: boolean;
+    /** Habit pause window — days inside are neither due nor missed. */
+    pausedFrom?: string | null;
+    pausedUntil?: string | null;
+  },
   bundle: ScheduleBundle | undefined,
 ): SchedulableItem {
   return {
@@ -151,6 +159,8 @@ export function toSchedulable(
     startDate: owner.startDate ?? null,
     endDate: owner.endDate ?? null,
     enabled: owner.enabled,
+    pausedFrom: owner.pausedFrom ?? null,
+    pausedUntil: owner.pausedUntil ?? null,
     rules: bundle?.rules ?? [],
     overrides: bundle?.overrides ?? [],
   };

@@ -3,13 +3,16 @@
 import * as React from "react";
 import { usePathname, useRouter, useSearchParams } from "next/navigation";
 
-import { TriangleAlert } from "lucide-react";
+import { CopyPlus, TriangleAlert } from "lucide-react";
 
+import { CopyPlannerDialog } from "@/components/planner/copy-planner-dialog";
+import { Button } from "@/components/ui/button";
 import { DaySchedule } from "@/components/planner/day-schedule";
 import { MonthGrid } from "@/components/planner/month-grid";
 import { ScheduleItemDialog, type ScheduleItemDraft } from "@/components/planner/schedule-item-dialog";
 import { Timeline } from "@/components/planner/timeline";
 import { WeekGrid } from "@/components/planner/week-grid";
+import { WeekUtilization } from "@/components/planner/week-utilization";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import type { ScheduleRowItem } from "@/components/planner/schedule-row";
 import { findConflicts } from "@/lib/logic/planner";
@@ -49,6 +52,7 @@ export function PlannerView({
 
   const [editing, setEditing] = React.useState<ScheduleItemDraft | null>(null);
   const [dialogOpen, setDialogOpen] = React.useState(false);
+  const [copyOpen, setCopyOpen] = React.useState(false);
 
   // The planner owns conflicts now that Today no longer shows them, so the
   // count belongs here rather than only as a badge you have to scroll to find.
@@ -87,19 +91,26 @@ export function PlannerView({
 
   return (
     <div className="space-y-4">
-      <Tabs value={view} onValueChange={setView}>
-        <TabsList>
-          <TabsTrigger value="day">Day</TabsTrigger>
-          <TabsTrigger value="week">Week</TabsTrigger>
-          <TabsTrigger value="month">Month</TabsTrigger>
-        </TabsList>
-        {/* The real panels render below, outside the Tabs tree. These mounted,
-            empty stubs keep every trigger's aria-controls pointing at a real
-            element, which assistive tech (and axe) require. */}
-        <TabsContent value="day" forceMount hidden />
-        <TabsContent value="week" forceMount hidden />
-        <TabsContent value="month" forceMount hidden />
-      </Tabs>
+      <div className="flex flex-wrap items-center justify-between gap-2">
+        <Tabs value={view} onValueChange={setView}>
+          <TabsList>
+            <TabsTrigger value="day">Day</TabsTrigger>
+            <TabsTrigger value="week">Week</TabsTrigger>
+            <TabsTrigger value="month">Month</TabsTrigger>
+          </TabsList>
+          {/* The real panels render below, outside the Tabs tree. These mounted,
+              empty stubs keep every trigger's aria-controls pointing at a real
+              element, which assistive tech (and axe) require. */}
+          <TabsContent value="day" forceMount hidden />
+          <TabsContent value="week" forceMount hidden />
+          <TabsContent value="month" forceMount hidden />
+        </Tabs>
+        {view !== "month" && (
+          <Button variant="outline" size="sm" onClick={() => setCopyOpen(true)}>
+            <CopyPlus /> {view === "day" ? "Copy day…" : "Copy week…"}
+          </Button>
+        )}
+      </div>
 
       {view === "day" && dayConflicts.length > 0 && (
         <p className="flex items-center gap-2 rounded-lg border border-amber-500/30 bg-amber-500/5 px-3 py-2 text-sm text-amber-700 dark:text-amber-400">
@@ -138,13 +149,20 @@ export function PlannerView({
       )}
 
       {view === "week" && (
-        <WeekGrid
-          anchor={date}
-          items={rangeItems}
-          weekStartsOn={weekStartsOn}
-          todayKey={todayKey}
-          onSelect={open}
-        />
+        <>
+          <WeekGrid
+            anchor={date}
+            items={rangeItems}
+            weekStartsOn={weekStartsOn}
+            todayKey={todayKey}
+            onSelect={open}
+          />
+          <WeekUtilization
+            items={rangeItems}
+            dayStartHour={dayStartHour}
+            dayEndHour={dayEndHour}
+          />
+        </>
       )}
 
       {view === "month" && (
@@ -158,6 +176,16 @@ export function PlannerView({
         defaultDate={date}
         dayResetMinute={dayResetMinute}
       />
+
+      {view !== "month" && (
+        <CopyPlannerDialog
+          mode={view}
+          from={date}
+          weekStartsOn={weekStartsOn}
+          open={copyOpen}
+          onOpenChange={setCopyOpen}
+        />
+      )}
     </div>
   );
 }

@@ -10,6 +10,7 @@ import {
   fail,
   fromZod,
   goalEntrySchema,
+  goalMilestoneSchema,
   goalWithScheduleSchema,
   succeed,
   type ActionResult,
@@ -156,6 +157,65 @@ export async function deleteGoalPermanently(id: string): Promise<ActionResult<nu
 }
 
 /** Record a manual outcome — for goals the app cannot prove on its own. */
+/**
+ * Create or edit one milestone on a goal the caller owns. Changing an
+ * unreached-into-reached transition is the read path's job
+ * (evaluateGoalsForDate stamps `reachedAt`); editing `targetValue` clears an
+ * existing stamp — a moved checkpoint is a different checkpoint.
+ */
+export async function saveGoalMilestone(input: unknown): Promise<ActionResult<{ id: string }>> {
+  const parsed = goalMilestoneSchema.safeParse(input);
+  if (!parsed.success) return fromZod(parsed.error);
+  const user = await getCurrentUser();
+  const { id, goalId, ...data } = parsed.data;
+
+  const goal = await prisma.goal.findFirst({ where: { id: goalId, userId: user.id } });
+  if (!goal) return fail("Goal not found");
+
+  const payload = {
+    label: data.label?.trim() ? data.label.trim() : null,
+    targetValue: data.targetValue,
+    targetDate: data.targetDate ?? null,
+    reminderEnabled: data.reminderEnabled,
+  };
+
+  if (id) {
+    const existing = await prisma.goalMilestone.findFirst({
+      where: { id, userId: user.id, goalId },
+    });
+    if (!existing) return fail("Milestone not found");
+    await prisma.goalMilestone.update({
+      where: { id },
+      data: {
+        ...payload,
+        reachedAt:
+          existing.targetValue === data.targetValue ? existing.reachedAt : null,
+      },
+    });
+    revalidateAll();
+    return succeed({ id });
+  }
+
+  const created = await prisma.goalMilestone.create({
+    data: {
+      ...payload,
+      userId: user.id,
+      goalId,
+      ordinal: await prisma.goalMilestone.count({ where: { goalId } }),
+    },
+  });
+  revalidateAll();
+  return succeed({ id: created.id });
+}
+
+/** Milestones are goal sub-records, like entries — their delete stays hard. */
+export async function deleteGoalMilestone(id: string): Promise<ActionResult<null>> {
+  const user = await getCurrentUser();
+  await prisma.goalMilestone.deleteMany({ where: { id, userId: user.id } });
+  revalidateAll();
+  return succeed(null);
+}
+
 export async function logGoalEntry(input: unknown): Promise<ActionResult<{ status: string }>> {
   const parsed = goalEntrySchema.safeParse(input);
   if (!parsed.success) return fromZod(parsed.error);

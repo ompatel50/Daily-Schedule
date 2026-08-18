@@ -8,6 +8,7 @@
 import { beforeAll, beforeEach, describe, expect, it } from "vitest";
 
 import { prisma, prismaIncludingTrashed } from "@/lib/prisma";
+import { BACKUP_VERSION } from "@/lib/backup-format";
 import { run as runMoneyCentsBackfill } from "../../prisma/migrations-data/004-money-cents";
 import { exportBackup, importBackup } from "@/server/actions/backup";
 import { saveTransaction, saveFinanceAccount } from "@/server/actions/finance";
@@ -276,7 +277,7 @@ describe("a pre-migration backup restores correctly after it", () => {
     const exported = await exportBackup();
     expect(exported.ok).toBe(true);
     if (!exported.ok) return;
-    expect(exported.data.version).toBe(11);
+    expect(exported.data.version).toBe(BACKUP_VERSION);
 
     actAs(bob);
     const restored = await importBackup(exported.data, "merge");

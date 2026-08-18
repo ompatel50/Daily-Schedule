@@ -539,6 +539,13 @@ model Habit {
   targetValue Float?
   unit        String?
 
+  /// Pause window, inclusive `YYYY-MM-DD` bounds. Days inside it are neither
+  /// due nor missed — streaks, day scores and insights skip them entirely —
+  /// and the pause ends by itself when the range does. Either bound may be
+  /// open (from-only = "until further notice", until-only = "until then").
+  pausedFrom  String?
+  pausedUntil String?
+
   archived  Boolean @default(false)
   sortOrder Int     @default(0)
 
@@ -1334,7 +1341,8 @@ model Goal {
 
   archivedAt DateTime?
 
-  entries GoalEntry[]
+  entries    GoalEntry[]
+  milestones GoalMilestone[]
 
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
@@ -1349,6 +1357,40 @@ model Goal {
   @@index([userId, domain, metric])
   @@index([userId, active])
   @@index([userId, deletedAt])
+}
+
+/// An ordered checkpoint on a goal's way to its target: "10,000 steps by
+/// March", "save the first $1,000". Progress displays surface the next
+/// unreached milestone; `reachedAt` records the moment the goal's value first
+/// met `targetValue` (stamped by the server when it computes progress, so a
+/// milestone reached while the app was closed is still recorded on the next
+/// look). `reminderEnabled` opts one milestone's target date into the
+/// reminder feed, deduplicated by the same delivery ledger as every other
+/// reminder. Both sides are user-scoped; the action layer verifies the goal
+/// belongs to the caller before writing a row.
+model GoalMilestone {
+  id     String @id @default(cuid())
+  userId String
+
+  goalId String
+  goal   Goal   @relation(fields: [goalId], references: [id], onDelete: Cascade)
+
+  label           String?
+  targetValue     Float
+  /// Optional deadline, `YYYY-MM-DD`.
+  targetDate      String?
+  /// Display and progress order (drag-free: ordered by target value ascending
+  /// unless the user sets explicit ordinals via edits).
+  ordinal         Int     @default(0)
+  reminderEnabled Boolean @default(false)
+
+  reachedAt DateTime?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([goalId, ordinal])
+  @@index([userId])
 }
 
 /// A user-recorded outcome for one goal on one date.

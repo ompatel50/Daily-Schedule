@@ -155,10 +155,15 @@ describe("backup validation", () => {
     expect(result.warnings.join(" ")).not.toContain("unrecognised");
   });
 
-  it("v11 is the integer-cents format — columns only, no new tables", () => {
-    // The bump exists so an older app refuses a v11 file rather than
-    // restoring it without the cents columns the newer app relies on.
-    expect(BACKUP_VERSION).toBe(11);
+  it("v12 adds goal milestones and the habit pause window", () => {
+    // The bump exists so an older app refuses a newer file rather than
+    // silently dropping the parts it does not know.
+    expect(BACKUP_VERSION).toBe(12);
+    expect(BACKUP_TABLES).toContain("goalMilestones");
+    // Milestones restore AFTER their goals — parents before children.
+    expect(BACKUP_TABLES.indexOf("goalMilestones")).toBeGreaterThan(
+      BACKUP_TABLES.indexOf("goals"),
+    );
   });
 
   it("a v7 file (no smart-merge accounting) still inspects cleanly", () => {

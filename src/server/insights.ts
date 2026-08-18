@@ -233,7 +233,14 @@ function resolveHabitDay(
   // The habit view already carries its resolved schedule; re-resolving one date
   // through the engine keeps this consistent with everything else.
   const item = toSchedulable(
-    { id: view.id, startDate: view.startDate, endDate: view.endDate, enabled: !view.archived },
+    {
+      id: view.id,
+      startDate: view.startDate,
+      endDate: view.endDate,
+      enabled: !view.archived,
+      pausedFrom: view.pausedFrom,
+      pausedUntil: view.pausedUntil,
+    },
     { rules: view.rule ? [view.rule] : [], overrides: view.occurrence.override ? [view.occurrence.override] : [] },
   );
   const resolved = getStatusForDate(item, date, log, settings);

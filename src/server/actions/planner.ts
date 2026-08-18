@@ -5,7 +5,7 @@ import { revalidatePath } from "next/cache";
 import { prisma } from "@/lib/db";
 import { getCurrentUser } from "@/lib/db";
 import { prismaIncludingTrashed, type Tx } from "@/lib/prisma";
-import { type DayKey, shiftDay } from "@/lib/date";
+import { type DayKey, shiftDay, weekRange } from "@/lib/date";
 import {
   calendarDateForOperationalTime,
   operationalDayOfRecord,
@@ -25,9 +25,12 @@ import {
 import { parseQuickAdd } from "@/lib/logic/quick-add";
 import {
   isSchedulingConflict,
+  planDayCopy,
   planMove,
   planTemplateApplication,
   type ConflictCandidate,
+  type CopySourceRow,
+  type PlannedCopyRow,
   type TemplateApplyMode,
   type TemplateRow,
 } from "@/lib/logic/planner";
@@ -37,6 +40,7 @@ import {
   conflictPreviewSchema,
   fail,
   fromZod,
+  plannerCopySchema,
   quickAddSchema,
   scheduleItemSchema,
   scheduleTemplateSchema,
@@ -1157,6 +1161,202 @@ export async function applyScheduleTemplate(
   await touchDays(user.id, [date]);
   revalidateAll();
   return succeed({ status: "applied", created, removed, ordinal: plan.ordinal });
+}
+
+
+// --- copy day / copy week ----------------------------------------------------
+
+export type CopyPlannerResult =
+  /** Written. `skippedRecurring` counts blocks left out because they repeat. */
+  | { status: "copied"; created: number; skippedRecurring: number }
+  /** The copied spans overlap these titles. Nothing was written; ask. */
+  | { status: "conflict"; conflicts: string[] }
+  /** The source day (or week) has nothing to copy at all. */
+  | { status: "empty" };
+
+/** One operational day's rows, shaped for `planDayCopy`. */
+async function loadCopySource(
+  userId: string,
+  day: DayKey,
+  reset: number,
+): Promise<CopySourceRow[]> {
+  const rows = await prisma.scheduleItem.findMany({
+    where: { userId, ...operationalDayWhere(day, reset) },
+    include: { tags: { select: { tagId: true } } },
+    orderBy: [{ date: "asc" }, { sortOrder: "asc" }],
+  });
+  return rows.map((row) => ({
+    id: row.id,
+    title: row.title,
+    notes: row.notes,
+    startMinute: row.startMinute,
+    endMinute: row.endMinute,
+    allDay: row.allDay,
+    category: row.category,
+    priority: row.priority,
+    sortOrder: row.sortOrder,
+    seriesId: row.seriesId,
+    recurrenceRule: row.recurrenceRule,
+    habitId: row.habitId,
+    taskId: row.taskId,
+    tagIds: row.tags.map((tag) => tag.tagId),
+  }));
+}
+
+/** Everything a copied span could land on around the target operational day. */
+async function copyTargetCandidates(userId: string, to: DayKey) {
+  return prisma.scheduleItem.findMany({
+    // The operational day covers two calendar dates, plus one each side for
+    // cross-midnight reach — the same wider-net reasoning as moveScheduleItem.
+    where: { userId, date: { in: [shiftDay(to, -1), to, shiftDay(to, 1), shiftDay(to, 2)] } },
+    select: {
+      id: true,
+      title: true,
+      date: true,
+      startMinute: true,
+      endMinute: true,
+      allDay: true,
+      status: true,
+    },
+  });
+}
+
+/** Write one day's planned copies. Returns how many rows were created. */
+async function writeCopies(
+  tx: Tx,
+  userId: string,
+  to: DayKey,
+  copies: PlannedCopyRow[],
+  reset: number,
+): Promise<number> {
+  if (copies.length === 0) return 0;
+  const maxOrder = await tx.scheduleItem.aggregate({
+    where: { userId, date: to },
+    _max: { sortOrder: true },
+  });
+  let order = (maxOrder._max.sortOrder ?? 0) + 1;
+  for (const copy of copies) {
+    await tx.scheduleItem.create({
+      data: {
+        userId,
+        title: copy.title,
+        notes: copy.notes,
+        date: calendarDateForOperationalTime(to, copy.allDay ? null : copy.startMinute, reset),
+        startMinute: copy.allDay ? null : copy.startMinute,
+        endMinute: copy.allDay ? null : copy.endMinute,
+        allDay: copy.allDay,
+        category: copy.category,
+        priority: copy.priority,
+        status: "planned",
+        sortOrder: order,
+        habitId: copy.habitId,
+        taskId: copy.taskId,
+        tags: copy.tagIds.length
+          ? { create: copy.tagIds.map((tagId) => ({ tagId })) }
+          : undefined,
+      },
+    });
+    order += 1;
+  }
+  return copies.length;
+}
+
+/**
+ * Duplicate one operational day's layout onto another. One-off blocks copy
+ * as fresh planned blocks (task/habit/tag links travel; logged-record links
+ * and template identity do not); recurring blocks are skipped and reported —
+ * they already recur. Overlaps warn first and write only on `confirm`, the
+ * planner's usual double-booking manners. See `planDayCopy`.
+ */
+export async function copyPlannerDay(input: unknown): Promise<ActionResult<CopyPlannerResult>> {
+  const parsed = plannerCopySchema.safeParse(input);
+  if (!parsed.success) return fromZod(parsed.error);
+  const { from, to, confirm } = parsed.data;
+
+  const user = await getCurrentUser();
+  const reset = resetFor(user);
+  const source = await loadCopySource(user.id, from, reset);
+  if (source.length === 0) return succeed({ status: "empty" });
+
+  const plan = planDayCopy({
+    source,
+    targetItems: await copyTargetCandidates(user.id, to),
+    targetDate: to,
+    resetMinute: reset,
+  });
+  if (plan.conflicts.length > 0 && !confirm) {
+    return succeed({ status: "conflict", conflicts: plan.conflicts });
+  }
+
+  await prisma.$transaction(async (tx) => {
+    await writeCopies(tx, user.id, to, plan.copies, reset);
+  });
+
+  await touchDays(user.id, [to]);
+  revalidateAll();
+  return succeed({
+    status: "copied",
+    created: plan.copies.length,
+    skippedRecurring: plan.skippedRecurring,
+  });
+}
+
+/**
+ * Copy a whole week's layout onto another week, weekday for weekday. `from`
+ * and `to` may be any day inside their weeks — both normalise to the user's
+ * week start. Conflicts across all seven days are gathered into ONE warning,
+ * confirmed once.
+ */
+export async function copyPlannerWeek(input: unknown): Promise<ActionResult<CopyPlannerResult>> {
+  const parsed = plannerCopySchema.safeParse(input);
+  if (!parsed.success) return fromZod(parsed.error);
+  const { confirm } = parsed.data;
+
+  const user = await getCurrentUser();
+  const weekStartsOn = user.weekStartsOn === 0 ? 0 : 1;
+  const fromStart = weekRange(parsed.data.from, weekStartsOn).start;
+  const toStart = weekRange(parsed.data.to, weekStartsOn).start;
+  if (fromStart === toStart) return fail("Pick a different week to copy to");
+
+  const reset = resetFor(user);
+  const days: Array<{ to: DayKey; plan: ReturnType<typeof planDayCopy> }> = [];
+  let sourceRows = 0;
+  for (let offset = 0; offset < 7; offset += 1) {
+    const source = await loadCopySource(user.id, shiftDay(fromStart, offset), reset);
+    sourceRows += source.length;
+    if (source.length === 0) continue;
+    const to = shiftDay(toStart, offset);
+    days.push({
+      to,
+      plan: planDayCopy({
+        source,
+        targetItems: await copyTargetCandidates(user.id, to),
+        targetDate: to,
+        resetMinute: reset,
+      }),
+    });
+  }
+  if (sourceRows === 0) return succeed({ status: "empty" });
+
+  const conflicts = [...new Set(days.flatMap(({ plan }) => plan.conflicts))];
+  if (conflicts.length > 0 && !confirm) {
+    return succeed({ status: "conflict", conflicts });
+  }
+
+  let created = 0;
+  await prisma.$transaction(async (tx) => {
+    for (const { to, plan } of days) {
+      created += await writeCopies(tx, user.id, to, plan.copies, reset);
+    }
+  });
+
+  await touchDays(user.id, days.map(({ to }) => to));
+  revalidateAll();
+  return succeed({
+    status: "copied",
+    created,
+    skippedRecurring: days.reduce((total, { plan }) => total + plan.skippedRecurring, 0),
+  });
 }
 
 export async function deleteScheduleTemplate(id: string): Promise<ActionResult<null>> {

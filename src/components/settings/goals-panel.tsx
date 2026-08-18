@@ -35,6 +35,18 @@ export interface GoalRow {
   scheduleSummary: string;
   targetSummary: string;
   schedule: ScheduleDraft;
+  /** Ordered checkpoints; progress order, reached ones stamped. */
+  milestones: GoalMilestoneRow[];
+}
+
+export interface GoalMilestoneRow {
+  id: string;
+  label: string | null;
+  targetValue: number;
+  targetDate: string | null;
+  ordinal: number;
+  reminderEnabled: boolean;
+  reachedAt: string | null;
 }
 
 /** One click for the goals almost everyone wants. */
@@ -136,6 +148,7 @@ export function GoalsPanel({
   const [dialogOpen, setDialogOpen] = React.useState(false);
   const [editing, setEditing] = React.useState<GoalDraft | null>(null);
   const [confirmingDelete, setConfirmingDelete] = React.useState<string | null>(null);
+  const [editingMilestones, setEditingMilestones] = React.useState<GoalMilestoneRow[]>([]);
   const [pendingId, setPendingId] = React.useState<string | null>(null);
   const [pending, startTransition] = React.useTransition();
 
@@ -144,10 +157,12 @@ export function GoalsPanel({
 
   function openNew(draft?: GoalDraft) {
     setEditing(draft ?? emptyGoalDraft(today));
+    setEditingMilestones([]);
     setDialogOpen(true);
   }
 
   function openEdit(goal: GoalRow) {
+    setEditingMilestones(goal.milestones);
     setEditing({
       id: goal.id,
       label: goal.label,
@@ -228,6 +243,19 @@ export function GoalsPanel({
                     {goal.period !== "daily" ? ` · per ${goal.period.replace("ly", "")}` : ""} ·{" "}
                     {GOAL_SOURCE_META[goal.source as GoalSource]?.label ?? "Manual"}
                   </p>
+                  {goal.milestones.length > 0 && (
+                    <p className="mt-0.5 truncate text-xs text-muted-foreground">
+                      {(() => {
+                        const reached = goal.milestones.filter((m) => m.reachedAt).length;
+                        const next = goal.milestones.find((m) => !m.reachedAt);
+                        return next
+                          ? `Milestones ${reached}/${goal.milestones.length} · next: ${
+                              next.label ?? next.targetValue
+                            }${next.targetDate ? ` by ${next.targetDate}` : ""}`
+                          : `All ${goal.milestones.length} milestones reached 🎉`;
+                      })()}
+                    </p>
+                  )}
                 </div>
 
                 <div className="flex items-center gap-1">
@@ -365,6 +393,7 @@ export function GoalsPanel({
         goal={editing}
         weekStartsOn={weekStartsOn}
         habits={habits}
+        milestones={editingMilestones}
       />
     </SectionCard>
   );

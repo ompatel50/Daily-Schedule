@@ -40,6 +40,8 @@ export interface HabitDraft {
   category: string;
   startDate: string;
   endDate: string | null;
+  pausedFrom: string | null;
+  pausedUntil: string | null;
   archived: boolean;
   schedule: ScheduleDraft;
 }
@@ -56,6 +58,8 @@ function blankHabit(startDate: string): HabitDraft {
     category: "health",
     startDate,
     endDate: null,
+    pausedFrom: null,
+    pausedUntil: null,
     archived: false,
     schedule: emptyScheduleDraft(),
   };
@@ -116,6 +120,8 @@ export function HabitDialog({
           category: form.category,
           startDate: form.startDate,
           endDate: form.endDate,
+          pausedFrom: form.pausedFrom,
+          pausedUntil: form.pausedUntil,
           archived: form.archived,
         },
         schedule: form.schedule,
@@ -232,6 +238,42 @@ export function HabitDialog({
                   value={form.endDate ?? ""}
                   onChange={(event) => set("endDate", event.target.value || null)}
                 />
+              </div>
+            </div>
+
+            <div className="space-y-1.5 rounded-lg border p-3">
+              <Label>Pause (optional)</Label>
+              <p className="text-xs text-muted-foreground">
+                Paused days are neither due nor missed — streaks and scores skip them. The pause
+                ends by itself when the range does.
+              </p>
+              <div className="grid gap-3 sm:grid-cols-2">
+                <div className="space-y-1.5">
+                  <Label htmlFor="habit-pause-from" className="text-xs font-normal">
+                    From
+                  </Label>
+                  <Input
+                    id="habit-pause-from"
+                    type="date"
+                    value={form.pausedFrom ?? ""}
+                    onChange={(event) => set("pausedFrom", event.target.value || null)}
+                  />
+                </div>
+                <div className="space-y-1.5">
+                  <Label htmlFor="habit-pause-until" className="text-xs font-normal">
+                    Until (inclusive)
+                  </Label>
+                  <Input
+                    id="habit-pause-until"
+                    type="date"
+                    value={form.pausedUntil ?? ""}
+                    aria-invalid={Boolean(errors.pausedUntil)}
+                    onChange={(event) => set("pausedUntil", event.target.value || null)}
+                  />
+                  {errors.pausedUntil && (
+                    <p className="text-xs text-destructive">{errors.pausedUntil[0]}</p>
+                  )}
+                </div>
               </div>
             </div>
 

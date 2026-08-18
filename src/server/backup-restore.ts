@@ -85,6 +85,7 @@ const MODEL_BY_TABLE: Record<BackupTable, string> = {
   healthRecords: "HealthRecord",
   goals: "Goal",
   goalEntries: "GoalEntry",
+  goalMilestones: "GoalMilestone",
   scheduleRules: "ScheduleRule",
   scheduleRuleDays: "ScheduleRuleDay",
   scheduleOverrides: "ScheduleOverride",
@@ -561,6 +562,14 @@ export async function restoreBackupForUser(
     return own(mapped);
   });
 
+  prepare("goalMilestones", (row) => {
+    const mapped = withId(row);
+    if (!mapped) return null;
+    if (!inFile("goals", row.goalId)) return null;
+    mapped.goalId = map(row.goalId);
+    return own(mapped);
+  });
+
   const mapOwner = (row: Row): { ownerId: string } | null => {
     if (row.ownerType === "goal" && inFile("goals", row.ownerId)) {
       return { ownerId: map(row.ownerId)! };
@@ -862,6 +871,7 @@ export async function restoreBackupForUser(
         await db.project.deleteMany({ where: { userId } });
         await db.inboxItem.deleteMany({ where: { userId } });
         await db.goalEntry.deleteMany({ where: { userId } });
+        await db.goalMilestone.deleteMany({ where: { userId } });
         await db.goal.deleteMany({ where: { userId } });
         await db.scheduleRuleDay.deleteMany({ where: { rule: { userId } } });
         await db.scheduleRule.deleteMany({ where: { userId } });
@@ -949,6 +959,7 @@ export async function restoreBackupForUser(
     healthRecords: await prisma.healthRecord.count({ where: { userId } }),
     goals: await prisma.goal.count({ where: { userId } }),
     goalEntries: await prisma.goalEntry.count({ where: { userId } }),
+    goalMilestones: await prisma.goalMilestone.count({ where: { userId } }),
     scheduleRules: await prisma.scheduleRule.count({ where: { userId } }),
     scheduleOverrides: await prisma.scheduleOverride.count({ where: { userId } }),
     journalEntries: await prisma.journalEntry.count({ where: { userId } }),
