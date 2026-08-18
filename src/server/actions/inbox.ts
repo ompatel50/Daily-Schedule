@@ -3,6 +3,7 @@
 import { revalidatePath } from "next/cache";
 
 import { getCurrentUser, prisma } from "@/lib/db";
+import { trashStamp } from "@/lib/soft-delete";
 import { INBOX_STATUSES, type InboxStatus } from "@/lib/enums";
 import {
   convertInboxItemSchema,
@@ -51,7 +52,10 @@ export async function setInboxItemStatus(id: string, status: string): Promise<Ac
 
 export async function deleteInboxItem(id: string): Promise<ActionResult<null>> {
   const user = await getCurrentUser();
-  await prisma.inboxItem.deleteMany({ where: { id, userId: user.id } });
+  await prisma.inboxItem.updateMany({
+    where: { id, userId: user.id },
+    data: { deletedAt: trashStamp() },
+  });
   revalidateAll();
   return succeed(null);
 }

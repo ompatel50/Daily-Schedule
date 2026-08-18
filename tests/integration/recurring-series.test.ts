@@ -1,6 +1,6 @@
 import { beforeAll, beforeEach, describe, expect, it } from "vitest";
 
-import { prisma } from "@/lib/prisma";
+import { prisma, prismaIncludingTrashed } from "@/lib/prisma";
 import { shiftDay, weekdayOf, type DayKey } from "@/lib/date";
 import { operationalDayOfRecord } from "@/lib/logic/operational-day";
 import { parseRule, parseSkipDates } from "@/lib/logic/recurrence";
@@ -586,8 +586,16 @@ describe("delete scopes", () => {
     const result = await deleteScheduleItem(id, "one");
     expect(result.ok).toBe(true);
 
-    // Exactly one row went — not the whole series via cascade.
-    expect(await prisma.scheduleItem.findUnique({ where: { id } })).toBeNull();
+    // Exactly one row went — not the whole series via cascade. It went to
+    // the TRASH: invisible to guarded reads, stored as a detached exception
+    // (no rule to resurrect) under the promoted parent.
+    expect(await prisma.scheduleItem.findFirst({ where: { id } })).toBeNull();
+    const trashed = await prismaIncludingTrashed.scheduleItem.findUniqueOrThrow({
+      where: { id },
+    });
+    expect(trashed.deletedAt).not.toBeNull();
+    expect(trashed.recurrenceRule).toBeNull();
+    expect(trashed.isException).toBe(true);
     const newParent = await prisma.scheduleItem.findFirst({
       where: {
         userId: alice.id,

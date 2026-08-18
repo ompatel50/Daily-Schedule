@@ -85,6 +85,14 @@ export interface SchedulableItem {
   endDate: DayKey | null;
   /** Owner-level on/off: `Goal.active`, `!Habit.archived`. */
   enabled: boolean;
+  /**
+   * Pause window, inclusive bounds, either side open. Days inside it are
+   * neither due nor missed — the occurrence answers `paused` with the same
+   * neutral flags as rest/excused — and the pause ends when the range does,
+   * with nothing to switch back. Habits today; any schedulable tomorrow.
+   */
+  pausedFrom?: DayKey | null;
+  pausedUntil?: DayKey | null;
   rules: ScheduleRuleLike[];
   overrides: ScheduleOverrideLike[];
 }
@@ -117,6 +125,7 @@ export interface ScheduleSettings {
  *  not_scheduled — the recurring schedule simply does not land here
  *  rest          — scheduled, but the user converted this date to a rest day
  *  excused       — scheduled, but legitimately excused
+ *  paused        — inside the item's pause window: not due, never missed
  *  canceled      — this occurrence was cancelled outright
  *  moved         — this occurrence was rescheduled to another date
  *  before_start  — earlier than the item's start date
@@ -129,6 +138,7 @@ export type OccurrenceState =
   | "not_scheduled"
   | "rest"
   | "excused"
+  | "paused"
   | "canceled"
   | "moved"
   | "before_start"
@@ -179,6 +189,7 @@ export type DayStatus =
   | "pending"
   | "future"
   | "rest"
+  | "paused"
   | "not_scheduled"
   | "canceled"
   | "inactive";
@@ -473,6 +484,20 @@ const NEUTRAL: Pick<Occurrence, "active" | "flexible" | "breaksStreakIfMissed" |
   counts: false,
 };
 
+/** Whether `date` falls inside the item's pause window (inclusive bounds,
+ *  either side open — from-only pauses indefinitely, until-only up to then). */
+export function isPausedOn(
+  item: Pick<SchedulableItem, "pausedFrom" | "pausedUntil">,
+  date: DayKey,
+): boolean {
+  const from = item.pausedFrom ?? null;
+  const until = item.pausedUntil ?? null;
+  if (!from && !until) return false;
+  if (from && date < from) return false;
+  if (until && date > until) return false;
+  return true;
+}
+
 export function getOccurrenceForDate(
   item: SchedulableItem,
   date: DayKey,
@@ -488,6 +513,16 @@ export function getOccurrenceForDate(
   }
   if (item.endDate && daysBetween(item.endDate, date) > 0) {
     return { ...base, ...NEUTRAL, state: "after_end", reason: "Ended" };
+  }
+  // The pause outranks per-date overrides: "on a break" is the newer, broader
+  // statement, and a paused day must never surface as due — or as missed.
+  if (isPausedOn(item, date)) {
+    return {
+      ...base,
+      ...NEUTRAL,
+      state: "paused",
+      reason: item.pausedUntil ? `Paused until ${item.pausedUntil}` : "Paused",
+    };
   }
 
   const rule = resolveEffectiveSchedule(item, date);
@@ -655,6 +690,7 @@ const STATUS_LABELS: Record<DayStatus, string> = {
   pending: "Due today",
   future: "Upcoming",
   rest: "Rest day",
+  paused: "Paused",
   not_scheduled: "Not scheduled",
   canceled: "Cancelled",
   inactive: "Inactive",
@@ -683,13 +719,15 @@ export function getStatusForDate(
         ? "rest"
         : occurrence.state === "excused"
           ? "excused"
-          : occurrence.state === "canceled" || occurrence.state === "moved"
-            ? "canceled"
-            : occurrence.state === "disabled" ||
-                occurrence.state === "before_start" ||
-                occurrence.state === "after_end"
-              ? "inactive"
-              : "not_scheduled";
+          : occurrence.state === "paused"
+            ? "paused"
+            : occurrence.state === "canceled" || occurrence.state === "moved"
+              ? "canceled"
+              : occurrence.state === "disabled" ||
+                  occurrence.state === "before_start" ||
+                  occurrence.state === "after_end"
+                ? "inactive"
+                : "not_scheduled";
     return { date, status, occurrence, completion, label: occurrence.reason };
   }
 

@@ -265,12 +265,20 @@ async function executeProposalKind(
         const { id } = payload as { id: string };
         const result = await completeTask(id);
         if (!result.ok) return { ok: false, error: result.error };
+        // The completion reflects on planner blocks scheduled from the task;
+        // the summary says so because the user is not looking at the planner.
+        const blocksNote =
+          result.data.blocksCompleted > 0
+            ? ` (${result.data.blocksCompleted} linked planner block${
+                result.data.blocksCompleted === 1 ? "" : "s"
+              } marked done)`
+            : "";
         return {
           ok: true,
           summary:
-            result.data.status === "advanced"
+            (result.data.status === "advanced"
               ? `Repeating task advanced to ${result.data.nextDue}`
-              : "Task completed",
+              : "Task completed") + blocksNote,
           recordId: id,
         };
       }

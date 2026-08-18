@@ -17,7 +17,7 @@ import {
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import type { SavingsGoalView } from "@/components/finance/savings-goal-dialog";
-import { formatMoney } from "@/lib/logic/finance";
+import { formatCents } from "@/lib/logic/money";
 import { adjustSavingsGoal } from "@/server/actions/finance";
 
 /** Quick add-to / withdraw-from a savings goal without opening the full editor. */
@@ -69,8 +69,8 @@ export function AdjustGoalDialog({
       if (result.ok) {
         toast.success(
           mode === "add"
-            ? `Added ${formatMoney(numeric, currency)} to ${goal.name}`
-            : `Withdrew ${formatMoney(numeric, currency)} from ${goal.name}`,
+            ? `Added ${formatCents(numeric, currency)} to ${goal.name}`
+            : `Withdrew ${formatCents(numeric, currency)} from ${goal.name}`,
         );
         onClose();
         router.refresh();
@@ -90,9 +90,9 @@ export function AdjustGoalDialog({
             <DialogDescription>
               Saved so far:{" "}
               <span className="tabular font-medium text-foreground">
-                {formatMoney(goal.currentAmount, currency)}
+                {formatCents(goal.currentAmount, currency)}
               </span>{" "}
-              of {formatMoney(goal.targetAmount, currency)}.
+              of {formatCents(goal.targetAmount, currency)}.
             </DialogDescription>
           </DialogHeader>
 
@@ -138,7 +138,7 @@ export function AdjustGoalDialog({
               )}
               {next !== null && next >= 0 && (
                 <p className="text-xs text-muted-foreground">
-                  New total: <span className="tabular">{formatMoney(next, currency)}</span>
+                  New total: <span className="tabular">{formatCents(next, currency)}</span>
                 </p>
               )}
             </div>

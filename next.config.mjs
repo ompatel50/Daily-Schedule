@@ -2,34 +2,13 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 
 /**
- * Content Security Policy.
- *
- * Everything the app needs is same-origin: self-hosted fonts (next/font),
- * same-origin server actions, webpack-built workers, no third-party scripts
- * and no analytics. `'unsafe-inline'` remains for scripts and styles because
- * Next.js hydration and Tailwind/styled-jsx inject inline code; a nonce-based
- * policy would require per-request middleware rewriting and is documented as
- * a possible hardening step. `blob:` covers chart rendering; `data:` covers
- * inline SVG/image data URIs. `worker-src` stays permitted because Next's own
- * build may emit workers, even though the health import no longer uses one —
- * health exports are parsed on the server (see docs/health-import-privacy.md).
+ * The Content-Security-Policy is NOT set here: a nonce-based `script-src`
+ * needs a fresh nonce per request, which a static headers() block cannot
+ * carry. The proxy (src/proxy.ts) builds and attaches it on every response
+ * that renders a document. The static headers below apply everywhere,
+ * including the few public files the proxy's matcher skips.
  */
-const contentSecurityPolicy = [
-  "default-src 'self'",
-  "script-src 'self' 'unsafe-inline'",
-  "style-src 'self' 'unsafe-inline'",
-  "img-src 'self' blob: data:",
-  "font-src 'self'",
-  "connect-src 'self'",
-  "worker-src 'self' blob:",
-  "frame-ancestors 'none'",
-  "base-uri 'self'",
-  "form-action 'self'",
-  "object-src 'none'",
-].join("; ");
-
 const securityHeaders = [
-  { key: "Content-Security-Policy", value: contentSecurityPolicy },
   { key: "X-Content-Type-Options", value: "nosniff" },
   { key: "X-Frame-Options", value: "DENY" },
   { key: "Referrer-Policy", value: "strict-origin-when-cross-origin" },
@@ -60,18 +39,13 @@ const nextConfig = {
   // workspace root, which mis-scopes file tracing and prints a warning on
   // every dev start.
   outputFileTracingRoot: path.dirname(fileURLToPath(import.meta.url)),
-  // ESLint runs as its own CI step (npm run lint); builds don't repeat it.
-  eslint: { ignoreDuringBuilds: true },
   experimental: {
-    // The largest server-action payload is a full JSON backup on import.
-    // Health exports deliberately do NOT travel through an action, and no
-    // longer travel as a single request at all: an Apple Health archive is
-    // uploaded in bounded parts to /api/health/import/part and reassembled
-    // server-side, because a serverless platform refuses a large body at the
-    // edge before any code here runs (Vercel's cap is ~4.5 MB). That cap still
-    // bounds importable *backup* size on such a platform — backup import is
-    // one action with one whole body — which is the next candidate for the
-    // same treatment (see docs/troubleshooting.md).
+    // Server actions never carry a large body by design: an Apple Health
+    // archive travels in bounded parts to /api/health/import/part, and a
+    // large backup travels the same way to /api/backup/import/part, because
+    // a serverless platform refuses a large body at the edge before any code
+    // here runs (Vercel's cap is ~4.5 MB). This limit only covers the small
+    // direct-import path (backups under 3 MB) with headroom to spare.
     serverActions: { bodySizeLimit: "16mb" },
   },
 };

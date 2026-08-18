@@ -694,3 +694,70 @@ describe("wallClockToInstant", () => {
     expect(resolved).not.toBeNull();
   });
 });
+
+describe("pause windows", () => {
+  const paused = item({ pausedFrom: TUE, pausedUntil: THU });
+
+  it("days inside the window are paused — neither due nor missed", () => {
+    for (const day of [TUE, WED, THU]) {
+      const occurrence = getOccurrenceForDate(paused, day, settings());
+      expect(occurrence.state).toBe("paused");
+      expect(occurrence.active).toBe(false);
+      expect(occurrence.counts).toBe(false);
+      expect(occurrence.breaksStreakIfMissed).toBe(false);
+    }
+    // The bounds are inclusive; the day after resumes as scheduled.
+    expect(getOccurrenceForDate(paused, FRI, settings()).state).toBe("scheduled");
+    expect(getOccurrenceForDate(paused, MON, settings()).state).toBe("scheduled");
+  });
+
+  it("either bound may be open", () => {
+    const indefinite = item({ pausedFrom: WED, pausedUntil: null });
+    expect(getOccurrenceForDate(indefinite, TUE, settings()).state).toBe("scheduled");
+    expect(getOccurrenceForDate(indefinite, SUN, settings()).state).toBe("paused");
+
+    const untilOnly = item({ pausedFrom: null, pausedUntil: WED });
+    expect(getOccurrenceForDate(untilOnly, MON, settings()).state).toBe("paused");
+    expect(getOccurrenceForDate(untilOnly, THU, settings()).state).toBe("scheduled");
+  });
+
+  it("resolves to the paused day status, with the until date in the reason", () => {
+    const resolved = getStatusForDate(paused, WED, null, settings());
+    expect(resolved.status).toBe("paused");
+    expect(resolved.occurrence.reason).toBe(`Paused until ${THU}`);
+  });
+
+  it("a paused gap never breaks a streak — it resumes on the other side", () => {
+    const daily = item({ pausedFrom: TUE, pausedUntil: THU, startDate: MON });
+    const completions = [
+      { date: MON, status: "done" },
+      { date: FRI, status: "done" },
+      { date: SAT, status: "done" },
+    ];
+    const result = calculateScheduledStreak(
+      daily,
+      SAT,
+      completions,
+      settings({ today: SAT }),
+    );
+    expect(result.current).toBe(3);
+  });
+
+  it("paused days leave the completion-rate denominator", () => {
+    const daily = item({ pausedFrom: TUE, pausedUntil: THU, startDate: MON });
+    const stats = calculateCompletionRate(
+      daily,
+      MON,
+      FRI,
+      [
+        { date: MON, status: "done" },
+        { date: FRI, status: "done" },
+      ],
+      settings({ today: FRI }),
+    );
+    // Mon + Fri scheduled; Tue–Thu paused and absent entirely.
+    expect(stats.opportunities).toBe(2);
+    expect(stats.completed).toBe(2);
+    expect(stats.missed).toBe(0);
+  });
+});

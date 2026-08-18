@@ -138,9 +138,11 @@ that touches the database re-checks on its own, every time.
 Set on every response and verified against the running server:
 
 * A same-origin **Content Security Policy** — the page may load nothing from
-  any other host. (Inline scripts/styles are allowed for the framework's
-  hydration and the styling system — a documented trade-off; a nonce-based
-  CSP is a noted possible hardening step.)
+  any other host. `script-src` is **nonce-based** in production: a fresh
+  nonce is minted per request (src/proxy.ts), the framework's own hydration
+  scripts and the theme bootstrap carry it, and any other inline script is
+  refused — no `'unsafe-inline'` for scripts. Inline *styles* remain allowed
+  for the styling system, a documented and far smaller trade-off.
 * `frame-ancestors 'none'` and `X-Frame-Options: DENY` — the app cannot be
   embedded in someone else's page.
 * `X-Content-Type-Options: nosniff`, `Referrer-Policy:
@@ -270,4 +272,4 @@ Vercel, redeploy. Consequences listed honestly:
   ordinary use, and unauthenticated requests never reach application logic.
   Import staging has its own caps (bounded chunk sizes, at most 3
   concurrent import sessions per user).
-* The CSP permits inline scripts/styles, as noted above.
+* The CSP permits inline styles (not scripts), as noted above.

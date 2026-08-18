@@ -10,7 +10,7 @@ import { EmptyState } from "@/components/shared/empty-state";
 import { SectionCard } from "@/components/shared/section-card";
 import { RowMenu } from "@/components/finance/row-menu";
 import type { SavingsGoalView } from "@/components/finance/savings-goal-dialog";
-import { formatMoney } from "@/lib/logic/finance";
+import { formatCents } from "@/lib/logic/money";
 
 /** Savings goals: a target, progress toward it, and quick add-to-goal. */
 export function SavingsGoalsSection({
@@ -112,10 +112,10 @@ function GoalRow({
       <Progress value={goal.percent} className="mt-2 h-1.5" indicatorClassName="bg-domain-finance" />
       <div className="mt-1.5 flex items-center justify-between gap-2 text-xs text-muted-foreground">
         <span className="tabular">
-          {formatMoney(goal.currentAmount, currency)} / {formatMoney(goal.targetAmount, currency)}
+          {formatCents(goal.currentAmount, currency)} / {formatCents(goal.targetAmount, currency)}
         </span>
         <span className="tabular">
-          {goal.complete ? "complete" : `${formatMoney(goal.remaining, currency)} to go`}
+          {goal.complete ? "complete" : `${formatCents(goal.remaining, currency)} to go`}
         </span>
       </div>
     </div>

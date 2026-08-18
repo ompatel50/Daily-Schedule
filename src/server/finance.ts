@@ -4,13 +4,17 @@ import { cache } from "react";
 
 import { getCurrentUser, prisma } from "@/lib/db";
 import { monthRange, shiftDay, type DayKey } from "@/lib/date";
+import { centsOrLegacy, centsOrLegacyNullable, toCents } from "@/lib/logic/money";
+import { computeTransferSuggestions } from "@/server/transfers";
 import {
   accountBalances,
   budgetFetchRange,
   budgetWindows,
   billsByUrgency,
   budgetProgress,
+  compareSpendingByCategory,
   moneyRound,
+  previousBudgetWindow,
   savingsProgress,
   spendingByCategory,
   summarizeTransactions,
@@ -18,6 +22,7 @@ import {
   type AccountBalance,
   type BudgetWindow,
 } from "@/lib/logic/finance";
+import { detectRecurringCosts } from "@/lib/logic/recurring-detect";
 import { scheduleSettingsFor } from "@/server/schedule";
 
 /**
@@ -41,6 +46,9 @@ async function accountBalancesImpl(userId: string) {
       where: { userId },
       orderBy: [{ sortOrder: "asc" }, { name: "asc" }],
     }),
+    // The aggregate reads the dual-written FLOAT column (exact for 2-decimal
+    // values at any personal scale) until the cleanup migration retires it;
+    // the sum converts to integer cents right here, once.
     prisma.financeTransaction.groupBy({
       by: ["accountId"],
       where: { userId },
@@ -48,9 +56,22 @@ async function accountBalancesImpl(userId: string) {
     }),
   ]);
   const totalByAccount = new Map(
-    totals.map((row) => [row.accountId, row._sum.amount ?? 0]),
+    totals.map((row) => [row.accountId, toCents(row._sum.amount ?? 0)]),
   );
-  return accountBalances(accounts, totalByAccount);
+  // Every money field leaves this module as integer cents — the fetch is the
+  // one boundary where legacy float columns are still consulted.
+  return accountBalances(
+    accounts.map((account) => ({
+      ...account,
+      openingBalance: centsOrLegacy(account.openingBalanceCents, account.openingBalance),
+      lowBalanceThreshold: centsOrLegacyNullable(
+        account.lowBalanceThresholdCents,
+        account.lowBalanceThreshold,
+      ),
+      creditLimit: centsOrLegacyNullable(account.creditLimitCents, account.creditLimit),
+    })),
+    totalByAccount,
+  );
 }
 
 const accountBalancesMemo = cache(accountBalancesImpl);
@@ -93,7 +114,11 @@ async function billViewsImpl(userId: string, today: DayKey) {
     orderBy: { nextDueDate: "asc" },
     take: 200,
   });
-  return billsByUrgency(bills, today, BILL_SOON_DAYS);
+  return billsByUrgency(
+    bills.map((bill) => ({ ...bill, amount: centsOrLegacy(bill.amountCents, bill.amount) })),
+    today,
+    BILL_SOON_DAYS,
+  );
 }
 
 const billViewsMemo = cache(billViewsImpl);
@@ -111,16 +136,17 @@ export async function getBillViews(): Promise<BillView[]> {
 
 export async function getTransactionsBetween(from: DayKey, to: DayKey) {
   const user = await getCurrentUser();
-  return prisma.financeTransaction.findMany({
+  const rows = await prisma.financeTransaction.findMany({
     where: { userId: user.id, date: { gte: from, lte: to } },
     orderBy: [{ date: "desc" }, { createdAt: "desc" }],
     take: TRANSACTION_WINDOW_CAP,
   });
+  return rows.map((row) => ({ ...row, amount: centsOrLegacy(row.amountCents, row.amount) }));
 }
 
 export async function getRecentTransactions(limit = 50) {
   const user = await getCurrentUser();
-  return prisma.financeTransaction.findMany({
+  const rows = await prisma.financeTransaction.findMany({
     where: { userId: user.id },
     include: {
       account: { select: { id: true, name: true, currency: true } },
@@ -129,6 +155,7 @@ export async function getRecentTransactions(limit = 50) {
     orderBy: [{ date: "desc" }, { createdAt: "desc" }],
     take: limit,
   });
+  return rows.map((row) => ({ ...row, amount: centsOrLegacy(row.amountCents, row.amount) }));
 }
 
 export type TransactionWithRefs = Awaited<ReturnType<typeof getRecentTransactions>>[number];
@@ -136,11 +163,12 @@ export type TransactionWithRefs = Awaited<ReturnType<typeof getRecentTransaction
 // --- budgets -----------------------------------------------------------------
 
 async function budgetsImpl(userId: string) {
-  return prisma.budget.findMany({
+  const rows = await prisma.budget.findMany({
     where: { userId },
     orderBy: { category: "asc" },
     take: 100,
   });
+  return rows.map((row) => ({ ...row, amount: centsOrLegacy(row.amountCents, row.amount) }));
 }
 
 const budgetsMemo = cache(budgetsImpl);
@@ -189,7 +217,13 @@ export async function getSavingsGoals(includeArchived = false) {
     orderBy: [{ sortOrder: "asc" }, { createdAt: "asc" }],
     take: 100,
   });
-  return goals.map((goal) => ({ ...goal, progress: savingsProgress(goal) }));
+  return goals
+    .map((goal) => ({
+      ...goal,
+      targetAmount: centsOrLegacy(goal.targetAmountCents, goal.targetAmount),
+      currentAmount: centsOrLegacy(goal.currentAmountCents, goal.currentAmount),
+    }))
+    .map((goal) => ({ ...goal, progress: savingsProgress(goal) }));
 }
 
 export type SavingsGoalWithProgress = Awaited<ReturnType<typeof getSavingsGoals>>[number];
@@ -205,16 +239,21 @@ export type SavingsGoalWithProgress = Awaited<ReturnType<typeof getSavingsGoals>
  */
 function financeWindows(today: DayKey, weekStartsOn: 0 | 1) {
   const month = monthRange(today);
+  // The previous calendar month rides along for the month-over-month report
+  // and for monthly budget rollover; the previous WEEK (for weekly rollover)
+  // always sits inside it or inside the current month.
+  const previousMonth = previousBudgetWindow("monthly", month);
   const windows = budgetWindows(today, weekStartsOn);
   const rollingWeekStart = shiftDay(today, -6);
   const budgetRange = budgetFetchRange(windows) ?? month;
+  const previousWeek = previousBudgetWindow("weekly", windows.weekly);
   const fetch: BudgetWindow = {
-    start: [month.start, budgetRange.start, rollingWeekStart].reduce((min, day) =>
-      day < min ? day : min,
+    start: [month.start, previousMonth.start, previousWeek.start, budgetRange.start, rollingWeekStart].reduce(
+      (min, day) => (day < min ? day : min),
     ),
     end: [month.end, budgetRange.end].reduce((max, day) => (day > max ? day : max)),
   };
-  return { month, windows, rollingWeekStart, fetch };
+  return { month, previousMonth, windows, rollingWeekStart, fetch };
 }
 
 /** Rows inside `[start, end]` — every slice below comes from the one fetch. */
@@ -222,12 +261,65 @@ function slice<T extends { date: DayKey }>(rows: T[], window: BudgetWindow): T[]
   return rows.filter((row) => row.date >= window.start && row.date <= window.end);
 }
 
+/** ~13 months — enough history for yearly cadences to show two occurrences. */
+const RECURRING_LOOKBACK_DAYS = 395;
+const RECURRING_ROW_CAP = 4000;
+const BILL_SUGGESTION_CAP = 5;
+
+/**
+ * "Track this as a bill" suggestions: recurring same-payee spending patterns
+ * (src/lib/logic/recurring-detect.ts), minus payees the user dismissed and
+ * payees an active bill already covers by name. Read-only and bounded.
+ */
+async function computeBillSuggestions(userId: string, today: DayKey) {
+  const [rows, dismissals, activeBills] = await Promise.all([
+    prisma.financeTransaction.findMany({
+      where: {
+        userId,
+        amount: { lt: 0 },
+        billId: null,
+        transferGroupId: null,
+        date: { gte: shiftDay(today, -RECURRING_LOOKBACK_DAYS) },
+      },
+      select: {
+        accountId: true,
+        date: true,
+        amount: true,
+        amountCents: true,
+        payee: true,
+        category: true,
+        billId: true,
+        transferGroupId: true,
+      },
+      orderBy: { date: "desc" },
+      take: RECURRING_ROW_CAP,
+    }),
+    prisma.billSuggestionDismissal.findMany({ where: { userId }, select: { payeeKey: true } }),
+    prisma.bill.findMany({ where: { userId, archivedAt: null }, select: { name: true } }),
+  ]);
+  const dismissed = new Set(dismissals.map((row) => row.payeeKey));
+  const covered = new Set(activeBills.map((bill) => bill.name.trim().toLowerCase()));
+  return detectRecurringCosts(
+    rows.map((row) => ({ ...row, amount: centsOrLegacy(row.amountCents, row.amount) })),
+    today,
+  )
+    .filter(
+      (suggestion) => !dismissed.has(suggestion.payeeKey) && !covered.has(suggestion.payeeKey),
+    )
+    .slice(0, BILL_SUGGESTION_CAP);
+}
+
+export type BillSuggestionView = Awaited<ReturnType<typeof computeBillSuggestions>>[number];
+
 /** Everything the finance page renders, in one round of bounded queries. */
 export async function getFinanceOverview() {
   const user = await getCurrentUser();
   const settings = scheduleSettingsFor(user);
   const today = settings.today;
-  const { month, windows, rollingWeekStart, fetch } = financeWindows(today, settings.weekStartsOn);
+  const { month, previousMonth, windows, rollingWeekStart, fetch } = financeWindows(
+    today,
+    settings.weekStartsOn,
+  );
 
   const [
     balances,
@@ -237,6 +329,8 @@ export async function getFinanceOverview() {
     savingsGoals,
     budgets,
     importBatches,
+    transferSuggestions,
+    billSuggestions,
   ] = await Promise.all([
     accountBalancesMemo(user.id),
     billViewsMemo(user.id, today),
@@ -245,9 +339,14 @@ export async function getFinanceOverview() {
     getSavingsGoals(),
     budgetsMemo(user.id),
     importBatchesMemo(user.id, IMPORT_BATCH_LIMIT),
+    // A read-only pass — would-be auto-links show as suggestions too; only
+    // an import or the explicit "run detection" action ever links unattended.
+    computeTransferSuggestions(user.id),
+    computeBillSuggestions(user.id, today),
   ]);
 
   const monthTransactions = slice(ledger, month);
+  const previousMonthTransactions = slice(ledger, previousMonth);
   // Bounded on BOTH sides so a future-dated entry (rent typed in ahead of
   // time) cannot inflate "the last 7 days".
   const weekTransactions = slice(ledger, { start: rollingWeekStart, end: today });
@@ -262,6 +361,11 @@ export async function getFinanceOverview() {
       ...summarizeTransactions(monthTransactions),
       byCategory: spendingByCategory(monthTransactions),
     },
+    previousMonth: {
+      ...summarizeTransactions(previousMonthTransactions),
+      window: previousMonth,
+    },
+    monthOverMonth: compareSpendingByCategory(monthTransactions, previousMonthTransactions),
     week: summarizeTransactions(weekTransactions),
     recentTransactions,
     savingsGoals,
@@ -270,6 +374,8 @@ export async function getFinanceOverview() {
     budgets: budgetProgress(budgets, ledger, windows),
     budgetWindows: windows,
     importBatches,
+    transferSuggestions,
+    billSuggestions,
   };
 }
 
@@ -329,3 +435,39 @@ export async function getFinanceSummary() {
 }
 
 export type FinanceSummary = Awaited<ReturnType<typeof getFinanceSummary>>;
+
+/**
+ * The weekly review's money section: this month's totals plus each budget's
+ * progress over its own current window — the same computation the finance
+ * page renders, reduced to what a review needs. Integer cents throughout.
+ */
+export async function getBudgetSnapshot() {
+  const user = await getCurrentUser();
+  const settings = scheduleSettingsFor(user);
+  const { month, windows, fetch } = financeWindows(settings.today, settings.weekStartsOn);
+
+  const [ledger, budgets] = await Promise.all([
+    getTransactionsBetween(fetch.start, fetch.end),
+    budgetsMemo(user.id),
+  ]);
+
+  const monthTotals = summarizeTransactions(slice(ledger, month));
+  const views = budgetProgress(budgets, ledger, windows);
+
+  return {
+    month: monthTotals,
+    budgets: views.map((view) => ({
+      id: view.budget.id,
+      label: view.label,
+      period: view.period,
+      spent: view.spent,
+      effectiveAmount: view.effectiveAmount,
+      percent: view.percent,
+      over: view.over,
+    })),
+  };
+}
+
+export type BudgetSnapshot = Awaited<ReturnType<typeof getBudgetSnapshot>>;
+
+

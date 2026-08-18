@@ -5,7 +5,7 @@ import { PieChart } from "lucide-react";
 
 import { EmptyState } from "@/components/shared/empty-state";
 import { SectionCard } from "@/components/shared/section-card";
-import { formatMoney } from "@/lib/logic/finance";
+import { formatCents } from "@/lib/logic/money";
 
 export interface CategoryTotalView {
   category: string;
@@ -53,7 +53,7 @@ function CategoryBars({
           <div className="flex items-center justify-between gap-2 text-sm">
             <span className="truncate">{category.label}</span>
             <span className="tabular shrink-0 font-medium">
-              {formatMoney(category.total, currency)}
+              {formatCents(category.total, currency)}
             </span>
           </div>
           <div className="mt-1 h-1 overflow-hidden rounded-full bg-muted">

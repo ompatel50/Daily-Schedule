@@ -197,3 +197,152 @@ describe("the scheduled runner", () => {
     expect(webpush.sendNotification).not.toHaveBeenCalled();
   });
 });
+
+describe("the daily digest", () => {
+  /** A habit whose reminder minute is ~12h away from now in the user's zone —
+   *  deterministically outside the precise ±30-minute push window, so only
+   *  the digest can carry it. */
+  async function farOffHabitFor(user: User, name: string) {
+    const habit = await prisma.habit.create({
+      data: { userId: user.id, name, startDate: "2026-01-01" },
+    });
+    const now = new Date();
+    const zoneMinute = Number(
+      new Intl.DateTimeFormat("en-GB", {
+        hour: "2-digit",
+        minute: "2-digit",
+        hourCycle: "h23",
+        timeZone: "America/New_York",
+      })
+        .format(now)
+        .replace(":", ""),
+    );
+    const nowMinute = Math.floor(zoneMinute / 100) * 60 + (zoneMinute % 100);
+    await prisma.scheduleRule.create({
+      data: {
+        userId: user.id,
+        ownerType: "habit",
+        ownerId: habit.id,
+        effectiveFrom: "2026-01-01",
+        mode: "every_day",
+        reminderEnabled: true,
+        reminderMinute: (nowMinute + 720) % 1440,
+      },
+    });
+    return habit;
+  }
+
+  function sentPayloads(): Array<{ title: string; body?: string; tag?: string }> {
+    return vi
+      .mocked(webpush.sendNotification)
+      .mock.calls.map((call) => JSON.parse(call[1] as string));
+  }
+
+  it("one digest per operational day, listing the day ahead", async () => {
+    await subscribePushAction(SUBSCRIPTION);
+    await farOffHabitFor(alice, "Evening stretch");
+
+    const first = await runScheduledReminderPush();
+    expect(first.delivered).toBe(0); // nothing inside the precise window
+    expect(first.digests).toBe(1);
+    const payloads = sentPayloads();
+    expect(payloads).toHaveLength(1);
+    expect(payloads[0].title).toBe("Your day ahead: 1 reminder");
+    expect(payloads[0].body).toContain("Evening stretch");
+
+    // The digest's own ledger key, on the OPERATIONAL day.
+    const today = scheduleSettingsFor(alice).today;
+    expect(
+      await prisma.reminderDelivery.count({
+        where: { userId: alice.id, key: `digest:${today}` },
+      }),
+    ).toBe(1);
+
+    // The habit's own occurrence key was NOT consumed — an open tab may
+    // still deliver it at its exact minute.
+    expect(
+      await prisma.reminderDelivery.count({
+        where: { userId: alice.id, key: { startsWith: "habit:" } },
+      }),
+    ).toBe(0);
+
+    const second = await runScheduledReminderPush();
+    expect(second.digests).toBe(0);
+    expect(webpush.sendNotification).toHaveBeenCalledTimes(1);
+  });
+
+  it("an occurrence pushed precisely this run is left out of the digest", async () => {
+    await subscribePushAction(SUBSCRIPTION);
+    await prisma.reminder.create({
+      data: {
+        userId: alice.id,
+        title: "Stretch now",
+        remindAt: new Date(Date.now() - 60 * 1000),
+        repeat: "none",
+      },
+    });
+    await farOffHabitFor(alice, "Evening stretch");
+
+    const result = await runScheduledReminderPush();
+    expect(result.delivered).toBe(1);
+    expect(result.digests).toBe(1);
+    const payloads = sentPayloads();
+    expect(payloads).toHaveLength(2);
+    expect(payloads[0].title).toBe("Stretch now");
+    expect(payloads[1].body).toContain("Evening stretch");
+    expect(payloads[1].body).not.toContain("Stretch now");
+  });
+
+  it("a day with nothing to say sends nothing", async () => {
+    await subscribePushAction(SUBSCRIPTION);
+    const result = await runScheduledReminderPush();
+    expect(result.digests).toBe(0);
+    expect(webpush.sendNotification).not.toHaveBeenCalled();
+    expect(
+      await prisma.reminderDelivery.count({
+        where: { userId: alice.id, key: { startsWith: "digest:" } },
+      }),
+    ).toBe(0);
+  });
+
+  it("each account gets its own digest with only its own items", async () => {
+    await subscribePushAction(SUBSCRIPTION);
+    await farOffHabitFor(alice, "Alice's rowing");
+    actAs(bob);
+    await subscribePushAction({
+      ...SUBSCRIPTION,
+      endpoint: "https://push.example/sub-bob-1",
+    });
+    await farOffHabitFor(bob, "Bob's chess");
+
+    const result = await runScheduledReminderPush();
+    expect(result.digests).toBe(2);
+    const bodies = sentPayloads().map((payload) => payload.body ?? "");
+    const aliceDigest = bodies.find((body) => body.includes("Alice's rowing"));
+    const bobDigest = bodies.find((body) => body.includes("Bob's chess"));
+    expect(aliceDigest).toBeDefined();
+    expect(bobDigest).toBeDefined();
+    expect(aliceDigest).not.toContain("Bob's chess");
+    expect(bobDigest).not.toContain("Alice's rowing");
+  });
+
+  it("a failed send releases the day's claim so a later run retries", async () => {
+    await subscribePushAction(SUBSCRIPTION);
+    await farOffHabitFor(alice, "Evening stretch");
+    vi.mocked(webpush.sendNotification).mockRejectedValue(
+      Object.assign(new Error("push service down"), { statusCode: 500 }),
+    );
+
+    const failed = await runScheduledReminderPush();
+    expect(failed.digests).toBe(0);
+    expect(
+      await prisma.reminderDelivery.count({
+        where: { userId: alice.id, key: { startsWith: "digest:" } },
+      }),
+    ).toBe(0);
+
+    vi.mocked(webpush.sendNotification).mockResolvedValue({ statusCode: 201 } as never);
+    const retried = await runScheduledReminderPush();
+    expect(retried.digests).toBe(1);
+  });
+});

@@ -11,6 +11,7 @@ import {
   truncateText,
   type AssistantMode,
 } from "@/lib/logic/assistant";
+import { centsToAmount } from "@/lib/logic/money";
 import { buildSearchHits } from "@/lib/logic/search";
 import { crossesMidnight } from "@/lib/logic/schedule-span";
 import { BACKUP_VERSION } from "@/lib/backup-format";
@@ -254,7 +255,7 @@ const needsAttentionTool: AssistantTool = {
 const listTasksTool: AssistantTool = {
   name: "list_tasks",
   description:
-    "Open tasks bucketed by due date (overdue, today, upcoming, someday), with ids, priorities, projects and tags. Also lists projects and recently completed tasks.",
+    "Open tasks bucketed by due date (overdue, today, upcoming, someday), with ids, priorities, projects and tags. `scheduled` lists a task's upcoming planner blocks (\"add to planner\" links, up to 3, soonest first) with their date and start time — read-only; completing the task marks those blocks done. Also lists projects and recently completed tasks.",
   parameters: { type: "object", properties: {} },
   validate: z.object({}),
   async run() {
@@ -268,6 +269,16 @@ const listTasksTool: AssistantTool = {
       project: project(task),
       tags: task.tags.map((row) => row.tag.name),
       subtasks: task.subtasks.length,
+      ...(task.scheduleItems.length > 0
+        ? {
+            scheduled: task.scheduleItems.map((block) => ({
+              id: block.id,
+              date: block.date,
+              startMinute: block.allDay ? null : block.startMinute,
+              allDay: block.allDay,
+            })),
+          }
+        : {}),
     });
     return toolOk({
       openCount: board.openCount,
@@ -372,31 +383,48 @@ const financeOverviewTool: AssistantTool = {
   validate: z.object({}),
   async run() {
     const overview = await getFinanceOverview();
+    // The app computes in integer cents; the assistant reads and writes
+    // dollars (its create_transaction proposal is dollars too) — convert at
+    // this boundary only.
     return toolOk({
-      net: overview.net,
+      net: overview.net.map((row) => ({ ...row, net: centsToAmount(row.net) })),
       balances: overview.balances.map((row) => ({
         id: row.account.id,
         name: row.account.name,
         type: row.account.type,
         currency: row.account.currency,
-        balance: row.balance,
+        balance: centsToAmount(row.balance),
         archived: row.account.archivedAt !== null,
       })),
-      month: overview.month,
-      week: overview.week,
-      billsDueSoonTotal: overview.billsDueSoonTotal,
+      month: {
+        income: centsToAmount(overview.month.income),
+        spending: centsToAmount(overview.month.spending),
+        net: centsToAmount(overview.month.net),
+        count: overview.month.count,
+        byCategory: overview.month.byCategory.map((entry) => ({
+          ...entry,
+          total: centsToAmount(entry.total),
+        })),
+      },
+      week: {
+        income: centsToAmount(overview.week.income),
+        spending: centsToAmount(overview.week.spending),
+        net: centsToAmount(overview.week.net),
+        count: overview.week.count,
+      },
+      billsDueSoonTotal: centsToAmount(overview.billsDueSoonTotal),
       budgets: overview.budgets.map((view) => ({
         category: view.label,
         period: view.period,
-        limit: view.budget.amount,
-        spent: view.spent,
+        limit: centsToAmount(view.effectiveAmount),
+        spent: centsToAmount(view.spent),
         percent: view.percent,
         over: view.over,
       })),
       savingsGoals: overview.savingsGoals.map((goal) => ({
         name: goal.name,
-        targetAmount: goal.targetAmount,
-        currentAmount: goal.currentAmount,
+        targetAmount: centsToAmount(goal.targetAmount),
+        currentAmount: centsToAmount(goal.currentAmount),
       })),
     });
   },
@@ -436,7 +464,7 @@ const listTransactionsTool: AssistantTool = {
       truncated: rows.length > limited.length,
       transactions: limited.map((tx) => ({
         date: tx.date,
-        amount: tx.amount,
+        amount: centsToAmount(tx.amount),
         payee: tx.payee,
         category: tx.category,
         account: accountById.get(tx.accountId)?.name ?? null,
@@ -459,7 +487,7 @@ const listBillsTool: AssistantTool = {
         id: view.bill.id,
         name: view.bill.name,
         kind: view.bill.kind,
-        amount: view.bill.amount,
+        amount: centsToAmount(view.bill.amount),
         currency: view.bill.account?.currency ?? null,
         nextDueDate: view.bill.nextDueDate,
         recurrence: view.bill.recurrence,
@@ -577,7 +605,7 @@ const listDocumentsTool: AssistantTool = {
 const scheduleTool: AssistantTool = {
   name: "get_schedule",
   description:
-    "Planner/calendar blocks in a date range of operational days (up to 31, defaults to the next 7 starting today). Times are minutes from midnight. `day` is the day a block belongs to under the user's daily reset; `date` is its real calendar date — they differ only for after-midnight blocks, which group with the previous day. `endsNextDay: true` marks a cross-midnight block: its endMinute is a clock time on the calendar day AFTER `date` (an endMinute lower than startMinute always means that). `recurring: true` marks a block that belongs to a repeating series — editing or deleting it via propose_action then requires an explicit scope; `recurrence` summarizes the series' pattern, start and end.",
+    "Planner/calendar blocks in a date range of operational days (up to 31, defaults to the next 7 starting today). Times are minutes from midnight. `day` is the day a block belongs to under the user's daily reset; `date` is its real calendar date — they differ only for after-midnight blocks, which group with the previous day. `endsNextDay: true` marks a cross-midnight block: its endMinute is a clock time on the calendar day AFTER `date` (an endMinute lower than startMinute always means that). `recurring: true` marks a block that belongs to a repeating series — editing or deleting it via propose_action then requires an explicit scope; `recurrence` summarizes the series' pattern, start and end. `task` names the task a block was scheduled from (\"add to planner\"), read-only — completing that task marks its planned blocks done.",
   parameters: {
     type: "object",
     properties: {
@@ -649,6 +677,9 @@ const scheduleTool: AssistantTool = {
         priority: item.priority,
         recurring: Boolean(item.seriesId) || Boolean(item.recurrenceRule),
         recurrence: summarize(item),
+        ...(item.task && !item.task.deletedAt
+          ? { task: { id: item.task.id, title: item.task.title, status: item.task.status } }
+          : {}),
       })),
     });
   },
@@ -720,6 +751,7 @@ const backupStatusTool: AssistantTool = {
     return toolOk({
       backupFormatVersion: BACKUP_VERSION,
       exportPath: "/settings#backup",
+      lastBackupExportAt: ctx.user.lastBackupExportAt?.toISOString() ?? null,
       recordCounts: {
         tasks, projects, scheduleItems, habits, meals, workouts, healthMetrics,
         transactions, accounts, bills, inboxItems, documents, reminders,

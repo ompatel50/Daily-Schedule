@@ -42,6 +42,7 @@ export interface ReminderOccurrence {
     | "bill"
     | "task"
     | "document"
+    | "milestone"
     | "low_balance"
     | "budget";
   title: string;
@@ -223,7 +224,7 @@ export function resolveScheduleReminder(
 export const DUE_REMINDER_MINUTE = 9 * 60;
 
 /** Everything that reminds from a single future date on the one resolver. */
-export type DueReminderKind = "bill" | "task" | "document";
+export type DueReminderKind = "bill" | "task" | "document" | "milestone";
 
 /**
  * Keys for due-date occurrences. The due date rides inside the key, so paying
@@ -250,6 +251,7 @@ const DUE_PHRASING: Record<DueReminderKind, { onDay: string; ahead: (when: strin
   bill: { onDay: "Bill due today", ahead: (when) => `Bill due ${when}` },
   task: { onDay: "Task due today", ahead: (when) => `Task due ${when}` },
   document: { onDay: "Expires today", ahead: (when) => `Expires ${when}` },
+  milestone: { onDay: "Milestone target is today", ahead: (when) => `Milestone target ${when}` },
 };
 
 export interface DueReminderInput {

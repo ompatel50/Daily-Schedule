@@ -17,6 +17,7 @@ import {
   type ExistingTemplateRow,
   type MoveSource,
   type TemplateRow,
+  planDayCopy,
 } from "@/lib/logic/planner";
 
 const ROUTINE: TemplateRow[] = [
@@ -614,5 +615,127 @@ describe("planMove", () => {
     });
 
     expect(plan.conflicts).toEqual(["Earlier", "Later"]);
+  });
+});
+
+describe("planDayCopy", () => {
+  let copySeq = 0;
+  function sourceRow(
+    overrides: Partial<import("@/lib/logic/planner").CopySourceRow> = {},
+  ): import("@/lib/logic/planner").CopySourceRow {
+    copySeq += 1;
+    return {
+      id: `src-${copySeq}`,
+      title: `Block ${copySeq}`,
+      notes: null,
+      startMinute: 9 * 60,
+      endMinute: 10 * 60,
+      allDay: false,
+      category: "work",
+      priority: "medium",
+      sortOrder: copySeq,
+      seriesId: null,
+      recurrenceRule: null,
+      habitId: null,
+      taskId: null,
+      tagIds: [],
+      ...overrides,
+    };
+  }
+
+  it("copies one-off blocks and skips everything recurring, counted", () => {
+    const plan = planDayCopy({
+      source: [
+        sourceRow({ title: "Plain" }),
+        sourceRow({ title: "Series parent", recurrenceRule: '{"freq":"daily"}' }),
+        sourceRow({ title: "Occurrence", seriesId: "parent" }),
+      ],
+      targetItems: [],
+      targetDate: "2026-03-10",
+    });
+    expect(plan.copies.map((copy) => copy.title)).toEqual(["Plain"]);
+    expect(plan.skippedRecurring).toBe(2);
+    expect(plan.conflicts).toEqual([]);
+  });
+
+  it("meaning links travel; record links and identity do not", () => {
+    const plan = planDayCopy({
+      source: [sourceRow({ taskId: "task1", habitId: "habit1", tagIds: ["tag1"] })],
+      targetItems: [],
+      targetDate: "2026-03-10",
+    });
+    expect(plan.copies[0]).toMatchObject({
+      taskId: "task1",
+      habitId: "habit1",
+      tagIds: ["tag1"],
+    });
+    // The planned copy simply has no workout/meal/template fields to carry.
+    expect("workoutId" in plan.copies[0]).toBe(false);
+  });
+
+  it("reports overlaps on the target day with the planner's usual tolerance", () => {
+    const plan = planDayCopy({
+      source: [sourceRow({ startMinute: 9 * 60, endMinute: 10 * 60 })],
+      targetItems: [
+        {
+          id: "t1",
+          title: "Standup",
+          date: "2026-03-10",
+          startMinute: 9 * 60 + 30,
+          endMinute: 10 * 60 + 30,
+          allDay: false,
+        },
+        {
+          id: "t2",
+          title: "Back-to-back",
+          date: "2026-03-10",
+          startMinute: 10 * 60,
+          endMinute: 11 * 60,
+          allDay: false,
+        },
+      ],
+      targetDate: "2026-03-10",
+    });
+    expect(plan.conflicts).toEqual(["Standup"]); // adjacency never warns
+  });
+
+  it("an all-day copy never conflicts, and a skipped target does not either", () => {
+    const plan = planDayCopy({
+      source: [sourceRow({ allDay: true, startMinute: null, endMinute: null })],
+      targetItems: [
+        {
+          id: "t1",
+          title: "Busy",
+          date: "2026-03-10",
+          startMinute: 0,
+          endMinute: 1440,
+          allDay: false,
+        },
+      ],
+      targetDate: "2026-03-10",
+    });
+    expect(plan.conflicts).toEqual([]);
+  });
+
+  it("a before-reset copy compares on the next calendar date", () => {
+    // A 1:00 AM block belongs to the target OPERATIONAL day but stores on the
+    // next calendar date — it must clash with that date's small hours, not
+    // the target date's.
+    const plan = planDayCopy({
+      source: [sourceRow({ startMinute: 60, endMinute: 120 })],
+      targetItems: [
+        {
+          id: "t1",
+          title: "Next-date early",
+          date: "2026-03-11",
+          startMinute: 60,
+          endMinute: 120,
+          allDay: false,
+        },
+      ],
+      targetDate: "2026-03-10",
+      resetMinute: 240,
+    });
+    expect(plan.conflicts).toEqual(["Next-date early"]);
   });
 });

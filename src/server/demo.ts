@@ -1,4 +1,5 @@
 import { prisma } from "@/lib/db";
+import { prismaIncludingTrashed } from "@/lib/prisma";
 import { type DayKey, shiftDay, toDayKey, today } from "@/lib/date";
 import {
   DEMO_MODEL_ORDER,
@@ -105,7 +106,7 @@ export async function loadSampleData(
     };
   }
 
-  const counts = await seedDemoData(prisma, { userId });
+  const counts = await seedDemoData(prismaIncludingTrashed, { userId });
   return { ok: true, records: counts.seedRecords };
 }
 
@@ -136,39 +137,44 @@ export async function previewDemoRemoval(userId: string): Promise<DemoRemovalPre
   };
 }
 
+// Demo removal is a documented HARD delete (src/lib/soft-delete.ts): it runs
+// on the raw client so a demo row the user happened to trash first is still
+// removed by id, not left behind holding its identity keys.
+const db = prismaIncludingTrashed;
+
 const DELETE_BY_MODEL: Record<DemoModel, (ids: string[]) => Promise<unknown>> = {
-  MealEntry: (ids) => prisma.mealEntry.deleteMany({ where: { id: { in: ids } } }),
-  MealTemplateItem: (ids) => prisma.mealTemplateItem.deleteMany({ where: { id: { in: ids } } }),
-  WorkoutSet: (ids) => prisma.workoutSet.deleteMany({ where: { id: { in: ids } } }),
-  HabitLog: (ids) => prisma.habitLog.deleteMany({ where: { id: { in: ids } } }),
-  GoalEntry: (ids) => prisma.goalEntry.deleteMany({ where: { id: { in: ids } } }),
-  ScheduleItem: (ids) => prisma.scheduleItem.deleteMany({ where: { id: { in: ids } } }),
-  FinanceTransaction: (ids) => prisma.financeTransaction.deleteMany({ where: { id: { in: ids } } }),
-  Bill: (ids) => prisma.bill.deleteMany({ where: { id: { in: ids } } }),
-  FinanceImportBatch: (ids) => prisma.financeImportBatch.deleteMany({ where: { id: { in: ids } } }),
-  Budget: (ids) => prisma.budget.deleteMany({ where: { id: { in: ids } } }),
-  SavingsGoal: (ids) => prisma.savingsGoal.deleteMany({ where: { id: { in: ids } } }),
-  FinanceAccount: (ids) => prisma.financeAccount.deleteMany({ where: { id: { in: ids } } }),
-  InboxItem: (ids) => prisma.inboxItem.deleteMany({ where: { id: { in: ids } } }),
-  Task: (ids) => prisma.task.deleteMany({ where: { id: { in: ids } } }),
-  Project: (ids) => prisma.project.deleteMany({ where: { id: { in: ids } } }),
-  LifeDocument: (ids) => prisma.lifeDocument.deleteMany({ where: { id: { in: ids } } }),
-  Meal: (ids) => prisma.meal.deleteMany({ where: { id: { in: ids } } }),
-  MealTemplate: (ids) => prisma.mealTemplate.deleteMany({ where: { id: { in: ids } } }),
-  Workout: (ids) => prisma.workout.deleteMany({ where: { id: { in: ids } } }),
-  WorkoutTemplate: (ids) => prisma.workoutTemplate.deleteMany({ where: { id: { in: ids } } }),
-  ScheduleTemplate: (ids) => prisma.scheduleTemplate.deleteMany({ where: { id: { in: ids } } }),
-  Habit: (ids) => prisma.habit.deleteMany({ where: { id: { in: ids } } }),
-  Goal: (ids) => prisma.goal.deleteMany({ where: { id: { in: ids } } }),
-  ScheduleRule: (ids) => prisma.scheduleRule.deleteMany({ where: { id: { in: ids } } }),
-  ScheduleOverride: (ids) => prisma.scheduleOverride.deleteMany({ where: { id: { in: ids } } }),
-  HealthRecord: (ids) => prisma.healthRecord.deleteMany({ where: { id: { in: ids } } }),
-  HealthMetric: (ids) => prisma.healthMetric.deleteMany({ where: { id: { in: ids } } }),
-  HealthImportBatch: (ids) => prisma.healthImportBatch.deleteMany({ where: { id: { in: ids } } }),
-  JournalEntry: (ids) => prisma.journalEntry.deleteMany({ where: { id: { in: ids } } }),
-  Reminder: (ids) => prisma.reminder.deleteMany({ where: { id: { in: ids } } }),
-  FavoriteItem: (ids) => prisma.favoriteItem.deleteMany({ where: { id: { in: ids } } }),
-  Tag: (ids) => prisma.tag.deleteMany({ where: { id: { in: ids } } }),
+  MealEntry: (ids) => db.mealEntry.deleteMany({ where: { id: { in: ids } } }),
+  MealTemplateItem: (ids) => db.mealTemplateItem.deleteMany({ where: { id: { in: ids } } }),
+  WorkoutSet: (ids) => db.workoutSet.deleteMany({ where: { id: { in: ids } } }),
+  HabitLog: (ids) => db.habitLog.deleteMany({ where: { id: { in: ids } } }),
+  GoalEntry: (ids) => db.goalEntry.deleteMany({ where: { id: { in: ids } } }),
+  ScheduleItem: (ids) => db.scheduleItem.deleteMany({ where: { id: { in: ids } } }),
+  FinanceTransaction: (ids) => db.financeTransaction.deleteMany({ where: { id: { in: ids } } }),
+  Bill: (ids) => db.bill.deleteMany({ where: { id: { in: ids } } }),
+  FinanceImportBatch: (ids) => db.financeImportBatch.deleteMany({ where: { id: { in: ids } } }),
+  Budget: (ids) => db.budget.deleteMany({ where: { id: { in: ids } } }),
+  SavingsGoal: (ids) => db.savingsGoal.deleteMany({ where: { id: { in: ids } } }),
+  FinanceAccount: (ids) => db.financeAccount.deleteMany({ where: { id: { in: ids } } }),
+  InboxItem: (ids) => db.inboxItem.deleteMany({ where: { id: { in: ids } } }),
+  Task: (ids) => db.task.deleteMany({ where: { id: { in: ids } } }),
+  Project: (ids) => db.project.deleteMany({ where: { id: { in: ids } } }),
+  LifeDocument: (ids) => db.lifeDocument.deleteMany({ where: { id: { in: ids } } }),
+  Meal: (ids) => db.meal.deleteMany({ where: { id: { in: ids } } }),
+  MealTemplate: (ids) => db.mealTemplate.deleteMany({ where: { id: { in: ids } } }),
+  Workout: (ids) => db.workout.deleteMany({ where: { id: { in: ids } } }),
+  WorkoutTemplate: (ids) => db.workoutTemplate.deleteMany({ where: { id: { in: ids } } }),
+  ScheduleTemplate: (ids) => db.scheduleTemplate.deleteMany({ where: { id: { in: ids } } }),
+  Habit: (ids) => db.habit.deleteMany({ where: { id: { in: ids } } }),
+  Goal: (ids) => db.goal.deleteMany({ where: { id: { in: ids } } }),
+  ScheduleRule: (ids) => db.scheduleRule.deleteMany({ where: { id: { in: ids } } }),
+  ScheduleOverride: (ids) => db.scheduleOverride.deleteMany({ where: { id: { in: ids } } }),
+  HealthRecord: (ids) => db.healthRecord.deleteMany({ where: { id: { in: ids } } }),
+  HealthMetric: (ids) => db.healthMetric.deleteMany({ where: { id: { in: ids } } }),
+  HealthImportBatch: (ids) => db.healthImportBatch.deleteMany({ where: { id: { in: ids } } }),
+  JournalEntry: (ids) => db.journalEntry.deleteMany({ where: { id: { in: ids } } }),
+  Reminder: (ids) => db.reminder.deleteMany({ where: { id: { in: ids } } }),
+  FavoriteItem: (ids) => db.favoriteItem.deleteMany({ where: { id: { in: ids } } }),
+  Tag: (ids) => db.tag.deleteMany({ where: { id: { in: ids } } }),
 };
 
 /**

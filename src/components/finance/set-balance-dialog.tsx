@@ -17,7 +17,7 @@ import {
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import type { AccountView } from "@/components/finance/account-dialog";
-import { formatMoney } from "@/lib/logic/finance";
+import { centsToAmount, formatCents } from "@/lib/logic/money";
 import { setAccountBalance } from "@/server/actions/finance";
 
 /**
@@ -41,7 +41,8 @@ export function SetBalanceDialog({
 
   React.useEffect(() => {
     if (!account) return;
-    setBalance(String(account.balance));
+    // The computed balance arrives in integer cents; the input is dollars.
+    setBalance(String(centsToAmount(account.balance)));
     setDate(today);
     setError(null);
   }, [account, today]);
@@ -65,7 +66,7 @@ export function SetBalanceDialog({
         toast.success(
           result.data.adjustment === 0
             ? "Balance already matched — nothing recorded"
-            : `Balance set — ${formatMoney(result.data.adjustment, account.currency)} adjustment recorded`,
+            : `Balance set — ${formatCents(result.data.adjustment, account.currency)} adjustment recorded`,
         );
         onClose();
         router.refresh();
@@ -85,7 +86,7 @@ export function SetBalanceDialog({
             <DialogDescription>
               {account.name} currently shows{" "}
               <span className="tabular font-medium text-foreground">
-                {formatMoney(account.balance, account.currency)}
+                {formatCents(account.balance, account.currency)}
               </span>
               .
             </DialogDescription>

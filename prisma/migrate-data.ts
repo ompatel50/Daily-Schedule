@@ -19,8 +19,9 @@ import { createDbClient } from "./db-client";
 import * as schedules from "./migrations-data/001-schedules";
 import * as templateSourceKeys from "./migrations-data/002-template-source-keys";
 import * as healthFingerprints from "./migrations-data/003-health-fingerprints";
+import * as moneyCents from "./migrations-data/004-money-cents";
 
-const MIGRATIONS = [schedules, templateSourceKeys, healthFingerprints];
+const MIGRATIONS = [schedules, templateSourceKeys, healthFingerprints, moneyCents];
 
 async function main() {
   const prisma = createDbClient();

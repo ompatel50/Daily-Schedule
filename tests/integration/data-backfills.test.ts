@@ -6,7 +6,7 @@
  */
 import { beforeEach, describe, expect, it } from "vitest";
 
-import { prisma } from "@/lib/prisma";
+import { prisma, prismaIncludingTrashed } from "@/lib/prisma";
 import { run as runScheduleBackfill } from "../../prisma/migrations-data/001-schedules";
 import { run as runSourceKeyBackfill } from "../../prisma/migrations-data/002-template-source-keys";
 import { run as runFingerprintBackfill } from "../../prisma/migrations-data/003-health-fingerprints";
@@ -73,7 +73,7 @@ describe("001-schedules — ScheduleRule backfill for goals and habits", () => {
       },
     });
 
-    const notes = await runScheduleBackfill(prisma);
+    const notes = await runScheduleBackfill(prismaIncludingTrashed);
     expect(notes.join(" ")).toContain("1 schedule rules created, 1 rows enriched");
     expect(notes.join(" ")).toContain("3 schedule rules created (2 recurrence recovered, 1 defaulted to every day)");
 
@@ -109,7 +109,7 @@ describe("001-schedules — ScheduleRule backfill for goals and habits", () => {
 
     // Idempotency: the second run reports nothing to do and changes no rows.
     const before = await scheduleSnapshot();
-    const secondNotes = await runScheduleBackfill(prisma);
+    const secondNotes = await runScheduleBackfill(prismaIncludingTrashed);
     expect(secondNotes.join(" ")).toContain("nothing to do");
     expect(await scheduleSnapshot()).toEqual(before);
   });
@@ -133,7 +133,7 @@ describe("002-template-source-keys — sourceKey backfill on routine-applied ite
       data: { userId: alice.id, title: "Dentist", date: "2026-07-01", sortOrder: 3 },
     });
 
-    const notes = await runSourceKeyBackfill(prisma);
+    const notes = await runSourceKeyBackfill(prismaIncludingTrashed);
     expect(notes.join(" ")).toContain("2 routine-applied items keyed across 1 day/routine group(s)");
 
     const rows = await prisma.scheduleItem.findMany({ orderBy: { sortOrder: "asc" } });
@@ -142,7 +142,7 @@ describe("002-template-source-keys — sourceKey backfill on routine-applied ite
     expect(rows.find((row) => row.id === manual.id)?.sourceKey).toBeNull();
 
     const before = await prisma.scheduleItem.findMany({ orderBy: { id: "asc" } });
-    const secondNotes = await runSourceKeyBackfill(prisma);
+    const secondNotes = await runSourceKeyBackfill(prismaIncludingTrashed);
     expect(secondNotes.join(" ")).toContain("nothing to do");
     expect(await prisma.scheduleItem.findMany({ orderBy: { id: "asc" } })).toEqual(before);
   });
@@ -157,7 +157,7 @@ describe("003-health-fingerprints — dedup fingerprints on pre-upgrade rows", (
       data: { userId: alice.id, date: "2026-01-02", type: "sleep_hours", value: 7.5, source: "csv" },
     });
 
-    const notes = await runFingerprintBackfill(prisma);
+    const notes = await runFingerprintBackfill(prismaIncludingTrashed);
     expect(notes.join(" ")).toContain("fingerprinted 2 pre-upgrade metric rows");
 
     expect(
@@ -168,7 +168,7 @@ describe("003-health-fingerprints — dedup fingerprints on pre-upgrade rows", (
     ).toBe("csv|sleep_hours|2026-01-02");
 
     const before = await prisma.healthMetric.findMany({ orderBy: { id: "asc" } });
-    const secondNotes = await runFingerprintBackfill(prisma);
+    const secondNotes = await runFingerprintBackfill(prismaIncludingTrashed);
     expect(secondNotes.join(" ")).toContain("nothing to do");
     expect(await prisma.healthMetric.findMany({ orderBy: { id: "asc" } })).toEqual(before);
   });
@@ -189,7 +189,7 @@ describe("003-health-fingerprints — dedup fingerprints on pre-upgrade rows", (
       data: { userId: alice.id, date: "2026-01-01", type: "steps", value: 8000, source: "manual" },
     });
 
-    const notes = await runFingerprintBackfill(prisma);
+    const notes = await runFingerprintBackfill(prismaIncludingTrashed);
     expect(notes.join(" ")).toContain("skipped 1 rows whose fingerprint already existed");
 
     // Neither row was harmed: the collision skipped, the original untouched.

@@ -129,7 +129,15 @@ async function getDayScoreImpl(
   // --- habits ---------------------------------------------------------------
   const habits = await prisma.habit.findMany({
     where: { userId, archived: false },
-    select: { id: true, name: true, startDate: true, endDate: true, archived: true },
+    select: {
+      id: true,
+      name: true,
+      startDate: true,
+      endDate: true,
+      archived: true,
+      pausedFrom: true,
+      pausedUntil: true,
+    },
   });
 
   if (habits.length > 0) {
@@ -153,6 +161,8 @@ async function getDayScoreImpl(
           startDate: habit.startDate,
           endDate: habit.endDate,
           enabled: !habit.archived,
+          pausedFrom: habit.pausedFrom,
+          pausedUntil: habit.pausedUntil,
         },
         schedules.get(habit.id),
       );
@@ -277,6 +287,8 @@ function exclusionReasonFor(status: string): ScoreExclusion["reason"] {
   switch (status) {
     case "rest":
       return "rest_day";
+    case "paused":
+      return "paused";
     case "excused":
       return "excused";
     case "canceled":

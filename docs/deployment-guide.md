@@ -259,11 +259,14 @@ Stated plainly, because this is where free plans bite:
   That is why the repository ships a daily schedule; don't edit it to run
   more often while on Hobby.
 * Hobby crons fire **sometime within the scheduled hour**, not on the minute.
-* The reminder runner **skips any occurrence more than 30 minutes past its
-  time** rather than delivering it absurdly late. Put those two facts
-  together and the daily Vercel cron will deliver few or no push reminders on
-  time by itself. It is a **safety net**, not the delivery path.
-* **Timely reminders therefore come from a free external scheduler.** Use
+* The reminder runner **skips any exact-time occurrence more than 30 minutes
+  past its time** rather than delivering it absurdly late. Put those two
+  facts together and the daily Vercel cron will deliver few or no exact-time
+  pushes by itself. What it does deliver is the **daily digest**: one push
+  per account summarizing everything still ahead in that user's day, built
+  from the same schedule-aware feed, at most once per day (a day with
+  nothing due sends nothing).
+* **Exact-time push reminders come from a free external scheduler.** Use
   <https://cron-job.org> (free, no credit card): create a job that requests
   `GET https://YOUR-DOMAIN/api/reminders/run` every **10–15 minutes** with
   the custom header `Authorization: Bearer <your CRON_SECRET>` (cron-job.org

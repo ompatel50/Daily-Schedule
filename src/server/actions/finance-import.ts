@@ -3,6 +3,7 @@
 import { revalidatePath } from "next/cache";
 
 import { getCurrentUser, prisma } from "@/lib/db";
+import { prismaIncludingTrashed } from "@/lib/prisma";
 import { FINANCE_CATEGORIES, isBookkeepingCategory, type FinanceCategory } from "@/lib/enums";
 import {
   parseFinanceCsv,
@@ -12,6 +13,8 @@ import {
   type FinanceCsvMapping,
   type FinanceImportRow,
 } from "@/lib/logic/finance-import";
+import { centsOrLegacy, centsToAmount } from "@/lib/logic/money";
+import { runTransferDetection } from "@/server/transfers";
 import {
   fail,
   financeCategoryRuleSchema,
@@ -39,7 +42,11 @@ async function findExistingImportKeys(userId: string, keys: string[]): Promise<S
   const existing = new Set<string>();
   for (let index = 0; index < keys.length; index += KEY_LOOKUP_CHUNK) {
     const slice = keys.slice(index, index + KEY_LOOKUP_CHUNK);
-    const rows = await prisma.financeTransaction.findMany({
+    // Deliberately INCLUDES trashed rows (see src/lib/soft-delete.ts): a
+    // transaction the user moved to the Trash still holds its import key, so
+    // re-importing the same file keeps deduplicating against it instead of
+    // colliding with the unique constraint — until the purge frees the key.
+    const rows = await prismaIncludingTrashed.financeTransaction.findMany({
       where: { userId, importKey: { in: slice } },
       select: { importKey: true },
     });
@@ -266,6 +273,10 @@ export interface FinanceImportReport {
   createdCount: number;
   skippedCount: number;
   rejectedCount: number;
+  /** Transfer pairs the post-import detection pass linked automatically … */
+  transfersLinked: number;
+  /** … and plausible pairs left as suggestions on the finance page. */
+  transferSuggestions: number;
 }
 
 /**
@@ -303,7 +314,10 @@ export async function commitFinanceCsvImport(
             userId: user.id,
             accountId: parsed.data.accountId,
             date: row.date,
-            amount: row.amount,
+            // Parser rows are integer cents; the float column mirrors them
+            // until the cleanup migration retires it.
+            amount: centsToAmount(row.amount),
+            amountCents: row.amount,
             payee: row.payee,
             category: row.category,
             notes: row.notes,
@@ -330,8 +344,24 @@ export async function commitFinanceCsvImport(
     };
   });
 
+  // The auto-detection pass runs AFTER the import committed: a detection
+  // hiccup must never take the import down with it. Best-effort by design.
+  let detection = { linked: 0, suggestions: 0 };
+  if (report.createdCount > 0) {
+    try {
+      detection = await runTransferDetection(user.id);
+    } catch {
+      // The rows are imported and safe; detection can always be re-run
+      // from the finance page.
+    }
+  }
+
   revalidateAll();
-  return succeed(report);
+  return succeed({
+    ...report,
+    transfersLinked: detection.linked,
+    transferSuggestions: detection.suggestions,
+  });
 }
 
 // --- undo --------------------------------------------------------------------
@@ -378,13 +408,14 @@ const UNDO_SAMPLE_SIZE = 6;
 const UNDO_ROW_CAP = 5000;
 
 async function loadUndoCandidates(userId: string, batchId: string) {
-  return prisma.financeTransaction.findMany({
+  const rows = await prisma.financeTransaction.findMany({
     where: { userId, importBatchId: batchId },
     select: {
       id: true,
       accountId: true,
       date: true,
       amount: true,
+      amountCents: true,
       payee: true,
       importKey: true,
       billId: true,
@@ -393,6 +424,8 @@ async function loadUndoCandidates(userId: string, batchId: string) {
     orderBy: [{ date: "asc" }, { createdAt: "asc" }],
     take: UNDO_ROW_CAP,
   });
+  // The identity check rebuilds keys from integer cents.
+  return rows.map((row) => ({ ...row, amount: centsOrLegacy(row.amountCents, row.amount) }));
 }
 
 /** What an undo would do — reads only, writes nothing. */
@@ -449,16 +482,20 @@ export async function undoFinanceImport(batchId: string): Promise<ActionResult<I
   if (!batch) return fail("Import not found");
   if (batch.undoneAt) return fail("This import has already been undone");
 
-  const report = await prisma.$transaction(async (db) => {
+  // The raw client's transaction: import undo is a documented HARD delete
+  // ("undoing restores importability" — the keys must actually free), and it
+  // must also remove imported rows the user separately moved to the Trash.
+  const report = await prismaIncludingTrashed.$transaction(async (db) => {
     // Re-read inside the transaction: the preview the user saw may be seconds
     // stale, and the delete must be planned from what is true now.
-    const rows = await db.financeTransaction.findMany({
+    const raw = await db.financeTransaction.findMany({
       where: { userId: user.id, importBatchId: batch.id },
       select: {
         id: true,
         accountId: true,
         date: true,
         amount: true,
+        amountCents: true,
         payee: true,
         importKey: true,
         billId: true,
@@ -466,6 +503,7 @@ export async function undoFinanceImport(batchId: string): Promise<ActionResult<I
       },
       take: UNDO_ROW_CAP,
     });
+    const rows = raw.map((row) => ({ ...row, amount: centsOrLegacy(row.amountCents, row.amount) }));
     const plan = planImportUndo(rows);
 
     let removed = 0;

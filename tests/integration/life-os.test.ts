@@ -10,7 +10,7 @@
  */
 import { beforeAll, beforeEach, describe, expect, it } from "vitest";
 
-import { prisma } from "@/lib/prisma";
+import { prisma, prismaIncludingTrashed } from "@/lib/prisma";
 import { shiftDay } from "@/lib/date";
 import { scheduleSettingsFor } from "@/server/schedule";
 import { actAs, resetDatabase, twoUsers } from "./helpers";
@@ -37,7 +37,7 @@ import { deleteInboxItem, setInboxItemStatus } from "@/server/actions/inbox";
 import { getCommandCenterSummary } from "@/server/command-center";
 import { getFinanceSummary } from "@/server/finance";
 import { getInboxSummary } from "@/server/inbox";
-import { getTaskSummary } from "@/server/tasks";
+import { getTaskBoard, getTaskSummary } from "@/server/tasks";
 import { searchEverything } from "@/server/queries";
 
 import type { User } from "./helpers";
@@ -345,7 +345,7 @@ describe("setAccountBalance", () => {
     const result = await setAccountBalance({ accountId: account.id, balance: 220.75, date: DAY });
     expect(result.ok).toBe(true);
     if (!result.ok) return;
-    expect(result.data.adjustment).toBe(70.75);
+    expect(result.data.adjustment).toBe(7075); // integer cents
 
     // openingBalance + sum(transactions) now equals exactly what was asked for.
     const total = await prisma.financeTransaction.aggregate({
@@ -357,7 +357,7 @@ describe("setAccountBalance", () => {
     const adjustment = await prisma.financeTransaction.findFirstOrThrow({
       where: { accountId: account.id, category: "adjustment" },
     });
-    expect(adjustment.amount).toBe(70.75);
+    expect(adjustment.amount).toBe(70.75); // the float column mirrors the cents
 
     // Asking for the same balance again records nothing.
     const second = await setAccountBalance({ accountId: account.id, balance: 220.75, date: DAY });
@@ -434,8 +434,17 @@ describe("task lifecycle and recurrence", () => {
     const result = await deleteProject(project.id);
     expect(result.ok).toBe(true);
 
+    // Soft delete: the project sits in the Trash and the task KEEPS its
+    // projectId (restore re-attaches) — but every read model shows it
+    // standalone, which is what "standing" means to the user.
     const after = await prisma.task.findUniqueOrThrow({ where: { id: task.id } });
-    expect(after.projectId).toBeNull();
+    expect(after.projectId).toBe(project.id);
+    expect(await prisma.project.findFirst({ where: { id: project.id } })).toBeNull();
+    const board = await getTaskBoard();
+    const row = Object.values(board.buckets)
+      .flat()
+      .find((entry) => entry.id === task.id);
+    expect(row?.project).toBeNull();
   });
 
   it("deleting an account takes its ledger with it; bills merely lose the default account", async () => {
@@ -448,9 +457,22 @@ describe("task lifecycle and recurrence", () => {
     const result = await deleteFinanceAccount(account.id);
     expect(result.ok).toBe(true);
 
-    expect(await prisma.financeTransaction.findUnique({ where: { id: transaction.id } })).toBeNull();
+    // Soft delete: the ledger goes to the Trash WITH the account (same
+    // stamp, so restoring the account brings it back); the bill stays live,
+    // keeps its accountId while the account is trashed, and only a purge
+    // detaches it for good (schema SetNull).
+    expect(
+      await prisma.financeTransaction.findFirst({ where: { id: transaction.id } }),
+    ).toBeNull();
+    const trashedTx = await prismaIncludingTrashed.financeTransaction.findUniqueOrThrow({
+      where: { id: transaction.id },
+    });
+    const trashedAccount = await prismaIncludingTrashed.financeAccount.findUniqueOrThrow({
+      where: { id: account.id },
+    });
+    expect(trashedTx.deletedAt).toEqual(trashedAccount.deletedAt);
     const billAfter = await prisma.bill.findUniqueOrThrow({ where: { id: bill.id } });
-    expect(billAfter.accountId).toBeNull();
+    expect(billAfter.accountId).toBe(account.id);
   });
 });
 
@@ -516,14 +538,14 @@ describe("command center summary", () => {
     // bob's 1499 never appears anywhere.
     const usd = summary.finance.net.find((entry) => entry.currency === "USD");
     const eur = summary.finance.net.find((entry) => entry.currency === "EUR");
-    expect(usd).toMatchObject({ net: 165.5, accounts: 2 });
-    expect(eur).toMatchObject({ net: 20, accounts: 1 });
+    expect(usd).toMatchObject({ net: 16550, accounts: 2 });
+    expect(eur).toMatchObject({ net: 2000, accounts: 1 });
     expect(summary.finance.net[0]?.currency).toBe("USD");
 
     // Month card: income and spending from this month's transactions
     // (both dated today, so the month window always contains them).
-    expect(summary.finance.month.income).toBe(25.5);
-    expect(summary.finance.month.spending).toBe(10);
+    expect(summary.finance.month.income).toBe(2550);
+    expect(summary.finance.month.spending).toBe(1000);
 
     // Inbox: open queue only.
     expect(summary.inbox.openCount).toBe(2);

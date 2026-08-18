@@ -123,7 +123,6 @@ describe("backup validation", () => {
   });
 
   it("v9 carries the persisted CSV category mappings", () => {
-    expect(BACKUP_VERSION).toBe(9);
     expect(BACKUP_TABLES).toContain("financeCategoryRules");
 
     const result = inspectBackup(
@@ -132,6 +131,39 @@ describe("backup validation", () => {
     expect(result.ok).toBe(true);
     expect(result.counts.financeCategoryRules).toBe(1);
     expect(result.warnings.join(" ")).not.toContain("unrecognised");
+  });
+
+  it("v10 carries both dismissal ledgers, transfer pairs after their rows", () => {
+    expect(BACKUP_TABLES).toContain("transferDismissals");
+    expect(BACKUP_TABLES).toContain("billSuggestionDismissals");
+    // A transfer dismissal references two ledger rows — they restore first.
+    expect(BACKUP_TABLES.indexOf("financeTransactions")).toBeLessThan(
+      BACKUP_TABLES.indexOf("transferDismissals"),
+    );
+
+    const result = inspectBackup(
+      backup({
+        data: {
+          transferDismissals: [{ id: "d1", aId: "t1", bId: "t2" }],
+          billSuggestionDismissals: [{ id: "b1", payeeKey: "netflix" }],
+        },
+      }),
+    );
+    expect(result.ok).toBe(true);
+    expect(result.counts.transferDismissals).toBe(1);
+    expect(result.counts.billSuggestionDismissals).toBe(1);
+    expect(result.warnings.join(" ")).not.toContain("unrecognised");
+  });
+
+  it("v12 adds goal milestones and the habit pause window", () => {
+    // The bump exists so an older app refuses a newer file rather than
+    // silently dropping the parts it does not know.
+    expect(BACKUP_VERSION).toBe(12);
+    expect(BACKUP_TABLES).toContain("goalMilestones");
+    // Milestones restore AFTER their goals — parents before children.
+    expect(BACKUP_TABLES.indexOf("goalMilestones")).toBeGreaterThan(
+      BACKUP_TABLES.indexOf("goals"),
+    );
   });
 
   it("a v7 file (no smart-merge accounting) still inspects cleanly", () => {
@@ -235,7 +267,9 @@ describe("the backup covers every table the app writes", () => {
   });
 
   it("wraps the restore in one transaction and rolls back on failure", () => {
-    expect(restoreSource).toContain("prisma.$transaction(");
+    // The RAW client's transaction, deliberately: replace-mode must wipe
+    // trashed rows too, or their unique keys would block the re-insert.
+    expect(restoreSource).toContain("prismaIncludingTrashed.$transaction(");
     expect(exportSource).toContain("rolled back");
   });
 

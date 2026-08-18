@@ -4,8 +4,12 @@ import { revalidatePath } from "next/cache";
 
 import { getCurrentUser, prisma } from "@/lib/db";
 import { PROJECT_STATUSES, type ProjectStatus } from "@/lib/enums";
+import { operationalDayOfRecord } from "@/lib/logic/operational-day";
+import { resetMinuteOf } from "@/lib/logic/schedule";
+import { trashStamp } from "@/lib/soft-delete";
 import { scheduleSettingsFor } from "@/server/schedule";
-import { nextDueAfterCompletion } from "@/lib/logic/tasks";
+import { recomputeDay } from "@/server/summaries";
+import { linkedBlocksToComplete, nextDueAfterCompletion } from "@/lib/logic/tasks";
 import {
   fail,
   fromZod,
@@ -60,10 +64,18 @@ export async function setProjectStatus(id: string, status: string): Promise<Acti
   return succeed(null);
 }
 
-/** Tasks survive their project's deletion — they fall back to standalone. */
+/**
+ * Move a project to the Trash. Its tasks survive: while the project sits in
+ * the Trash they render standalone (the read models hide a trashed project
+ * link), and they re-attach if it is restored. Purging detaches them for
+ * good (schema `SetNull`).
+ */
 export async function deleteProject(id: string): Promise<ActionResult<null>> {
   const user = await getCurrentUser();
-  await prisma.project.deleteMany({ where: { id, userId: user.id } });
+  await prisma.project.updateMany({
+    where: { id, userId: user.id },
+    data: { deletedAt: trashStamp() },
+  });
   revalidateAll();
   return succeed(null);
 }
@@ -176,11 +188,49 @@ export interface CompleteTaskOutcome {
   /** `completed` closed the task; `advanced` moved a repeating task's due date. */
   status: "completed" | "advanced";
   nextDue: string | null;
+  /** Linked planner blocks this completion also marked done. */
+  blocksCompleted: number;
+}
+
+/**
+ * Mark a task's still-planned linked planner blocks done alongside the
+ * completion. Which blocks reflect is the pure rule in
+ * `linkedBlocksToComplete`; this only writes it and keeps the affected days'
+ * summaries current. Runs inside the completion's transaction so the task and
+ * its blocks can never disagree.
+ */
+async function reflectCompletionOnBlocks(
+  db: Pick<typeof prisma, "scheduleItem">,
+  userId: string,
+  taskId: string,
+  outcome: "completed" | "advanced",
+  today: string,
+  resetMinute: number,
+): Promise<{ count: number; days: string[] }> {
+  const blocks = await db.scheduleItem.findMany({
+    where: { userId, taskId, status: "planned" },
+    select: { id: true, status: true, date: true, startMinute: true },
+  });
+  const completing = linkedBlocksToComplete(blocks, outcome, today, resetMinute);
+  if (completing.length === 0) return { count: 0, days: [] };
+  await db.scheduleItem.updateMany({
+    where: { id: { in: completing.map((block) => block.id) }, userId },
+    data: { status: "done", completedAt: new Date() },
+  });
+  return {
+    count: completing.length,
+    days: [...new Set(completing.map((block) => operationalDayOfRecord(block, resetMinute)))],
+  };
 }
 
 /**
  * Completing a repeating task advances its due date instead of closing it —
  * the repeat IS the task. Everything else closes with a completion stamp.
+ *
+ * Either way the completion reflects on planner blocks scheduled from this
+ * task: closing marks every still-planned block done, advancing marks only
+ * blocks up to today (future blocks are time set aside for the next
+ * occurrence). See `linkedBlocksToComplete` for the rule and its reasoning.
  */
 export async function completeTask(id: string): Promise<ActionResult<CompleteTaskOutcome>> {
   const user = await getCurrentUser();
@@ -188,19 +238,25 @@ export async function completeTask(id: string): Promise<ActionResult<CompleteTas
   if (!task) return fail("Task not found");
   if (task.status !== "open") return fail("This task is not open");
 
-  const nextDue = nextDueAfterCompletion(task, scheduleSettingsFor(user).today);
-  if (nextDue) {
-    await prisma.task.update({ where: { id }, data: { dueDate: nextDue } });
-    revalidateAll();
-    return succeed({ status: "advanced", nextDue });
-  }
+  const settings = scheduleSettingsFor(user);
+  const reset = resetMinuteOf(settings);
 
-  await prisma.task.update({
-    where: { id },
-    data: { status: "done", completedAt: new Date() },
+  const nextDue = nextDueAfterCompletion(task, settings.today);
+  const outcome: CompleteTaskOutcome["status"] = nextDue ? "advanced" : "completed";
+
+  const reflected = await prisma.$transaction(async (db) => {
+    await db.task.update({
+      where: { id },
+      data: nextDue ? { dueDate: nextDue } : { status: "done", completedAt: new Date() },
+    });
+    return reflectCompletionOnBlocks(db, user.id, id, outcome, settings.today, reset);
   });
+
+  for (const day of reflected.days) {
+    await recomputeDay(user.id, day);
+  }
   revalidateAll();
-  return succeed({ status: "completed", nextDue: null });
+  return succeed({ status: outcome, nextDue: nextDue ?? null, blocksCompleted: reflected.count });
 }
 
 export async function reopenTask(id: string): Promise<ActionResult<null>> {
@@ -226,12 +282,49 @@ export async function dropTask(id: string): Promise<ActionResult<null>> {
   return succeed(null);
 }
 
-/** Deleting a task takes its subtasks with it (schema cascade). */
+/**
+ * Move a task to the Trash, its subtasks with it. Children share the
+ * parent's trash stamp, so restoring the task brings back exactly the rows
+ * this delete removed — a subtask trashed separately stays trashed. Planner
+ * blocks scheduled from the task keep their link (hidden while the task is
+ * trashed, live again on restore); purging detaches them (schema `SetNull`).
+ */
 export async function deleteTask(id: string): Promise<ActionResult<null>> {
   const user = await getCurrentUser();
-  await prisma.task.deleteMany({ where: { id, userId: user.id } });
+  const task = await prisma.task.findFirst({ where: { id, userId: user.id }, select: { id: true } });
+  if (!task) return succeed(null);
+  await prisma.task.updateMany({
+    where: { userId: user.id, OR: [{ id }, { parentId: id }] },
+    data: { deletedAt: trashStamp() },
+  });
   revalidateAll();
   return succeed(null);
+}
+
+/**
+ * "Didn't get to it" — the weekly review's one-click roll: move an OPEN
+ * task's due date forward (typically to the next week's start). A repeating
+ * task re-anchors on the new date, exactly as an edit through the dialog
+ * would, so its cadence walks from where it actually restarts.
+ */
+export async function rollTaskForward(
+  id: string,
+  toDate: string,
+): Promise<ActionResult<{ dueDate: string }>> {
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(toDate)) return fail("Expected a YYYY-MM-DD date");
+  const user = await getCurrentUser();
+  const task = await prisma.task.findFirst({ where: { id, userId: user.id, status: "open" } });
+  if (!task) return fail("Task not found");
+
+  await prisma.task.update({
+    where: { id },
+    data: {
+      dueDate: toDate,
+      repeatAnchor: task.repeat === "none" ? task.repeatAnchor : toDate,
+    },
+  });
+  revalidateAll();
+  return succeed({ dueDate: toDate });
 }
 
 export interface ScheduleTaskOutcome {
@@ -241,11 +334,16 @@ export interface ScheduleTaskOutcome {
 
 /**
  * Put a task on the planner: an ordinary planner block on the chosen day,
- * carrying the task's title and priority and a link back to the task. No
- * scheduling logic rides the link — the block behaves exactly like one typed
- * into the planner, completing it never completes the task, and deleting the
- * task merely unlinks the block. One task can be scheduled onto several days;
- * that is time-blocking, not duplication.
+ * carrying the task's title and priority and a link back to the task. One
+ * task can be scheduled onto several days; that is time-blocking, not
+ * duplication.
+ *
+ * The link is live in both directions but never destructive: marking the
+ * block done OFFERS to complete the task (`ScheduleStatusOutcome.taskOffer`),
+ * completing the task from anywhere marks its planned blocks done
+ * (`completeTask`), and deleting either side merely detaches — the task's
+ * deletion nulls the block's `taskId` (schema `SetNull`), the block's
+ * deletion never touches the task.
  */
 export async function scheduleTaskOnPlanner(
   input: unknown,

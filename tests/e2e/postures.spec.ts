@@ -43,7 +43,7 @@ async function deleteItemIfPresent(page: Page, title: string) {
       (await page.getByRole("menuitem", { name: "Delete", exact: true }).count()) > 0,
     );
     await page.getByRole("menuitem", { name: "Delete", exact: true }).click();
-    await expect(page.getByText("Item deleted").first()).toBeVisible();
+    await expect(page.getByText("Item moved to Trash").first()).toBeVisible();
     await page.reload();
     await page.waitForLoadState("networkidle");
   }

@@ -22,10 +22,17 @@ interface AxeViolation {
 /**
  * Automated accessibility floor: no serious/critical axe violations on the
  * app's main surfaces, at phone width, plus the drawer and palette open
- * states. axe is injected from node_modules (CSP allows inline script), so
- * no network access is needed.
+ * states. axe is injected from node_modules, so no network access is
+ * needed; the production CSP is nonce-based with no 'unsafe-inline', so the
+ * injection needs `bypassCSP` — a property of this test harness, not of the
+ * app (every other spec runs under the real policy and tracks violations as
+ * console errors).
  */
-test.use({ storageState: STORAGE.you, viewport: { width: 390, height: 844 } });
+test.use({
+  storageState: STORAGE.you,
+  viewport: { width: 390, height: 844 },
+  bypassCSP: true,
+});
 
 async function auditPage(page: import("@playwright/test").Page): Promise<AxeViolation[]> {
   await page.addScriptTag({ content: AXE_SOURCE });
@@ -52,7 +59,19 @@ function describeViolations(violations: AxeViolation[]): string {
     .join("\n");
 }
 
-for (const route of ["/", "/today", "/planner", "/habits", "/settings", "/assistant"]) {
+for (const route of [
+  "/",
+  "/today",
+  "/planner",
+  "/habits",
+  "/settings",
+  "/assistant",
+  // The surfaces this update added — each holds the same floor.
+  "/finance",
+  "/review",
+  "/settings/data",
+  "/settings/trash",
+]) {
   test(`${route} has no serious axe violations at phone width`, async ({ page }) => {
     await page.goto(route);
     await expect(page.locator("main h1, main h2").first()).toBeVisible();

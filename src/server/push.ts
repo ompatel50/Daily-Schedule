@@ -3,7 +3,9 @@ import "server-only";
 import webpush from "web-push";
 
 import { prisma } from "@/lib/prisma";
+import { buildDailyDigest, digestKey } from "@/lib/logic/digest";
 import { nowMinuteIn, todayIn } from "@/lib/logic/schedule";
+import { scheduleSettingsFor } from "@/server/schedule";
 import { getReminderFeedFor, recordReminderDeliveryFor } from "@/server/reminders";
 import { logRedactedError } from "@/server/safe-error";
 
@@ -97,6 +99,8 @@ export interface PushRunResult {
   usersEvaluated: number;
   delivered: number;
   suppressed: number;
+  /** Daily digests sent — at most one per user per operational day. */
+  digests: number;
   /** Users whose evaluation threw — skipped, never the whole run. */
   usersFailed: number;
 }
@@ -109,7 +113,13 @@ export interface PushRunResult {
  * tab that already delivered suppresses the push.
  */
 export async function runScheduledReminderPush(): Promise<PushRunResult> {
-  const result: PushRunResult = { usersEvaluated: 0, delivered: 0, suppressed: 0, usersFailed: 0 };
+  const result: PushRunResult = {
+    usersEvaluated: 0,
+    delivered: 0,
+    suppressed: 0,
+    digests: 0,
+    usersFailed: 0,
+  };
   if (!pushConfigured()) return result;
 
   const subscribedUserIds = await prisma.pushSubscription.findMany({
@@ -120,7 +130,9 @@ export async function runScheduledReminderPush(): Promise<PushRunResult> {
 
   const users = await prisma.user.findMany({
     where: { id: { in: subscribedUserIds.map((row) => row.userId) } },
-    select: { id: true, timezone: true, weekStartsOn: true },
+    // dayResetMinute rides along so the operational day (feed AND digest
+    // key) honours a custom day reset, exactly as the in-tab path does.
+    select: { id: true, timezone: true, weekStartsOn: true, dayResetMinute: true },
   });
 
   for (const user of users) {
@@ -139,7 +151,7 @@ export async function runScheduledReminderPush(): Promise<PushRunResult> {
 }
 
 async function pushRemindersForUser(
-  user: { id: string; timezone: string; weekStartsOn: number },
+  user: { id: string; timezone: string; weekStartsOn: number; dayResetMinute?: number },
   result: PushRunResult,
 ): Promise<void> {
   result.usersEvaluated += 1;
@@ -152,6 +164,10 @@ async function pushRemindersForUser(
   // reminder on operational Wednesday is dated Thursday), so due-ness is a
   // straight same-calendar-date comparison. Exact times fire exactly.
   const today = todayIn(user.timezone);
+  // Occurrences this very run pushes precisely: the digest that follows
+  // must not also list them — that would be the same reminder twice in the
+  // same minute.
+  const pushedNow = new Set<string>();
 
   for (const occurrence of feed) {
     // Two fireAt encodings exist: classic reminders carry a real instant
@@ -191,6 +207,7 @@ async function pushRemindersForUser(
 
     if (sent > 0) {
       result.delivered += 1;
+      pushedNow.add(occurrence.key);
       // Classic reminders advance/disable through the shared path. The
       // ledger row already exists; recordReminderDeliveryFor tolerates that.
       if (occurrence.kind === "reminder" && occurrence.reminderId) {
@@ -204,5 +221,56 @@ async function pushRemindersForUser(
         .catch(() => undefined);
       result.suppressed += 1;
     }
+  }
+
+  await pushDailyDigest(user, feed, pushedNow, result);
+}
+
+/**
+ * The once-a-day digest: everything still ahead in the user's coming
+ * operational day, as one push — what makes a single daily cron run useful
+ * (see src/lib/logic/digest.ts). Keyed on the OPERATIONAL day through the
+ * same delivery ledger as every reminder, so however many times the
+ * scheduler runs, the digest goes out once; occurrences this run already
+ * pushed precisely are left out of it. The digest never consumes the
+ * occurrences' own keys — an open tab still delivers each at its exact
+ * minute.
+ */
+async function pushDailyDigest(
+  user: { id: string; timezone: string; weekStartsOn: number; dayResetMinute?: number },
+  feed: Awaited<ReturnType<typeof getReminderFeedFor>>,
+  pushedNow: ReadonlySet<string>,
+  result: PushRunResult,
+): Promise<void> {
+  const operationalToday = scheduleSettingsFor(user).today;
+  const digest = buildDailyDigest(
+    feed.filter((occurrence) => !pushedNow.has(occurrence.key)),
+    { timezone: user.timezone, nowMs: Date.now() },
+  );
+  if (!digest) return;
+
+  // Claim before sending — the collision IS the "already digested today".
+  try {
+    await prisma.reminderDelivery.create({
+      data: { userId: user.id, key: digestKey(operationalToday) },
+    });
+  } catch {
+    return;
+  }
+
+  const sent = await sendPushToUser(user.id, {
+    title: digest.title,
+    body: digest.body,
+    url: "/today",
+    tag: digestKey(operationalToday),
+  });
+  if (sent > 0) {
+    result.digests += 1;
+  } else {
+    // No subscription accepted it: release the claim so the next run (or a
+    // recovered subscription) can try again today.
+    await prisma.reminderDelivery
+      .deleteMany({ where: { userId: user.id, key: digestKey(operationalToday) } })
+      .catch(() => undefined);
   }
 }

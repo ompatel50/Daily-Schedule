@@ -86,6 +86,17 @@ export interface ScheduleItemDraft {
   seriesRule?: string | null;
 }
 
+// Accessible names for the weekday toggles — two-letter initials repeat.
+const WEEKDAY_FULL_NAMES = [
+  "Sunday",
+  "Monday",
+  "Tuesday",
+  "Wednesday",
+  "Thursday",
+  "Friday",
+  "Saturday",
+];
+
 /** The Repeat select's values. "weekdays" is weekly Mon–Fri, spelled out. */
 type RepeatChoice = "none" | "daily" | "weekdays" | "weekly" | "monthly";
 
@@ -287,7 +298,9 @@ export function ScheduleItemDialog({
       const result = await deleteScheduleItem(item.id!, deleteScope);
       if (result.ok) {
         toast.success(
-          result.data.deleted > 1 ? `Deleted ${result.data.deleted} items` : "Item deleted",
+          result.data.deleted > 1
+            ? `Moved ${result.data.deleted} items to Trash`
+            : "Item moved to Trash",
         );
         setChooser(null);
         onOpenChange(false);
@@ -367,9 +380,9 @@ export function ScheduleItemDialog({
               />
             </div>
             <div className="space-y-1.5">
-              <Label>Category</Label>
+              <Label htmlFor="item-category">Category</Label>
               <Select value={category} onValueChange={(value) => setCategory(value as ScheduleCategory)}>
-                <SelectTrigger>
+                <SelectTrigger id="item-category">
                   <SelectValue />
                 </SelectTrigger>
                 <SelectContent>
@@ -420,7 +433,10 @@ export function ScheduleItemDialog({
               </p>
             )}
             {conflicts.length > 0 && (
-              <p className="flex items-start gap-1.5 text-xs text-amber-800 dark:text-amber-400">
+              <p
+                role="status"
+                className="flex items-start gap-1.5 text-xs text-amber-800 dark:text-amber-400"
+              >
                 <TriangleAlert className="mt-0.5 h-3.5 w-3.5 shrink-0" aria-hidden />
                 <span>
                   Overlaps {conflicts.join(", ")}. Double-booking is allowed — this is a warning,
@@ -432,9 +448,9 @@ export function ScheduleItemDialog({
 
           <div className="grid grid-cols-2 gap-3">
             <div className="space-y-1.5">
-              <Label>Priority</Label>
+              <Label htmlFor="item-priority">Priority</Label>
               <Select value={priority} onValueChange={(value) => setPriority(value as Priority)}>
-                <SelectTrigger>
+                <SelectTrigger id="item-priority">
                   <SelectValue />
                 </SelectTrigger>
                 <SelectContent>
@@ -447,9 +463,9 @@ export function ScheduleItemDialog({
               </Select>
             </div>
             <div className="space-y-1.5">
-              <Label>Status</Label>
+              <Label htmlFor="item-status">Status</Label>
               <Select value={status} onValueChange={(value) => setStatus(value as ItemStatus)}>
-                <SelectTrigger>
+                <SelectTrigger id="item-status">
                   <SelectValue />
                 </SelectTrigger>
                 <SelectContent>
@@ -482,11 +498,11 @@ export function ScheduleItemDialog({
           ) : (
           <div className="space-y-2 rounded-lg border p-3">
             <div className="flex items-center justify-between gap-2">
-              <Label>Repeat</Label>
+              <Label htmlFor="item-repeat">Repeat</Label>
               <span className="text-xs text-muted-foreground">{describeRecurrence(rule, date)}</span>
             </div>
             <Select value={repeat} onValueChange={(value) => setRepeat(value as RepeatChoice)}>
-              <SelectTrigger aria-label="Repeats">
+              <SelectTrigger id="item-repeat">
                 <SelectValue />
               </SelectTrigger>
               <SelectContent>
@@ -502,10 +518,15 @@ export function ScheduleItemDialog({
               <div className="flex flex-wrap gap-1 pt-1">
                 {WEEKDAY_LABELS.map((label, index) => {
                   const active = weekdays.includes(index);
+                  const fullName = WEEKDAY_FULL_NAMES[index];
                   return (
                     <button
                       key={label}
                       type="button"
+                      // Toggle semantics for AT (the visual is color-only) and
+                      // the full day name, since two-letter initials repeat.
+                      aria-pressed={active}
+                      aria-label={fullName}
                       onClick={() =>
                         setWeekdays((current) =>
                           active ? current.filter((day) => day !== index) : [...current, index],
@@ -513,12 +534,13 @@ export function ScheduleItemDialog({
                       }
                       className={cn(
                         "h-8 w-10 rounded-md border text-xs font-medium transition-colors",
+                        "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2",
                         active
                           ? "border-primary bg-primary text-primary-foreground"
                           : "hover:bg-accent",
                       )}
                     >
-                      {label.slice(0, 2)}
+                      <span aria-hidden="true">{label.slice(0, 2)}</span>
                     </button>
                   );
                 })}

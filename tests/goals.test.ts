@@ -9,6 +9,10 @@ import {
   measureGoal,
   type GoalFacts,
   type GoalLike,
+  milestoneMet,
+  newlyReachedMilestones,
+  nextMilestone,
+  orderMilestones,
 } from "@/lib/logic/goals";
 import {
   calculateScheduledStreak,
@@ -292,5 +296,59 @@ describe("disabled and archived goals", () => {
     // Past completions still resolve as completions.
     const resolved = getStatusForDate(disabled, MON, { date: MON, status: "done" }, settings());
     expect(resolved.status).toBe("completed");
+  });
+});
+
+describe("milestones", () => {
+  function milestone(
+    overrides: Partial<import("@/lib/logic/goals").MilestoneLike> = {},
+  ): import("@/lib/logic/goals").MilestoneLike {
+    return {
+      id: overrides.id ?? "m1",
+      label: null,
+      targetValue: 100,
+      targetDate: null,
+      ordinal: 0,
+      reachedAt: null,
+      ...overrides,
+    };
+  }
+
+  it("orders by ordinal, then target value in the goal's direction", () => {
+    const list = [
+      milestone({ id: "a", targetValue: 300 }),
+      milestone({ id: "b", targetValue: 100 }),
+      milestone({ id: "c", targetValue: 200, ordinal: -1 }),
+    ];
+    expect(orderMilestones(list, "gte").map((m) => m.id)).toEqual(["c", "b", "a"]);
+    // A weight-loss goal counts DOWN: the highest number is the first checkpoint.
+    expect(orderMilestones(list, "lte").map((m) => m.id)).toEqual(["c", "a", "b"]);
+  });
+
+  it("the next milestone is the first unreached one in progress order", () => {
+    const list = [
+      milestone({ id: "a", targetValue: 100, reachedAt: new Date() }),
+      milestone({ id: "b", targetValue: 200 }),
+      milestone({ id: "c", targetValue: 300 }),
+    ];
+    expect(nextMilestone(list, "gte")?.id).toBe("b");
+    expect(nextMilestone([], "gte")).toBeNull();
+  });
+
+  it("meeting a value stamps every checkpoint it blows through — once", () => {
+    const list = [
+      milestone({ id: "a", targetValue: 100, reachedAt: new Date() }),
+      milestone({ id: "b", targetValue: 200 }),
+      milestone({ id: "c", targetValue: 300 }),
+      milestone({ id: "d", targetValue: 400 }),
+    ];
+    expect(newlyReachedMilestones(list, "gte", 350).map((m) => m.id)).toEqual(["b", "c"]);
+    expect(newlyReachedMilestones(list, "gte", null)).toEqual([]);
+  });
+
+  it("direction decides what 'met' means", () => {
+    expect(milestoneMet(milestone({ targetValue: 80 }), "lte", 75)).toBe(true);
+    expect(milestoneMet(milestone({ targetValue: 80 }), "lte", 85)).toBe(false);
+    expect(milestoneMet(milestone({ targetValue: 80 }), "gte", 85)).toBe(true);
   });
 });

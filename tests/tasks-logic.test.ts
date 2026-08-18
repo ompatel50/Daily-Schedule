@@ -5,6 +5,7 @@ import {
   compareTasks,
   describeRepeat,
   filterByTags,
+  linkedBlocksToComplete,
   nextDueAfterCompletion,
   normalizeTagName,
   normalizeTagNames,
@@ -14,6 +15,7 @@ import {
   TASK_TAG_LIMIT,
   TAG_NAME_MAX,
   tasksDueNow,
+  type LinkedBlockLike,
   type TaskLike,
 } from "@/lib/logic/tasks";
 
@@ -198,6 +200,54 @@ describe("nextDueAfterCompletion", () => {
       TODAY,
     );
     expect(next).toBe("2026-08-01");
+  });
+});
+
+describe("linkedBlocksToComplete", () => {
+  const RESET = 240; // 4:00 AM daily reset
+
+  let blockSeq = 0;
+  function block(partial: Partial<LinkedBlockLike> = {}): LinkedBlockLike {
+    blockSeq += 1;
+    return {
+      id: `block-${blockSeq}`,
+      status: "planned",
+      date: TODAY,
+      startMinute: null,
+      ...partial,
+    };
+  }
+
+  it("closing the task completes every planned block, future ones included", () => {
+    const past = block({ date: "2026-07-20" });
+    const todayBlock = block({ date: TODAY });
+    const future = block({ date: "2026-08-15" });
+    const picked = linkedBlocksToComplete([past, todayBlock, future], "completed", TODAY, RESET);
+    expect(picked.map((row) => row.id)).toEqual([past.id, todayBlock.id, future.id]);
+  });
+
+  it("advancing a repeat completes only blocks up to today — future ones serve the next occurrence", () => {
+    const past = block({ date: "2026-07-20" });
+    const todayBlock = block({ date: TODAY });
+    const future = block({ date: "2026-08-15" });
+    const picked = linkedBlocksToComplete([past, todayBlock, future], "advanced", TODAY, RESET);
+    expect(picked.map((row) => row.id)).toEqual([past.id, todayBlock.id]);
+  });
+
+  it("never rewrites a done or skipped block", () => {
+    const done = block({ status: "done" });
+    const skipped = block({ status: "skipped" });
+    expect(linkedBlocksToComplete([done, skipped], "completed", TODAY, RESET)).toEqual([]);
+  });
+
+  it("compares operational days: tonight's after-midnight session belongs to today", () => {
+    // Stored on tomorrow's calendar date, timed before the reset — the user
+    // sees it under today, so advancing a repeat completes it.
+    const lateNight = block({ date: "2026-08-01", startMinute: 60 });
+    expect(linkedBlocksToComplete([lateNight], "advanced", TODAY, RESET)).toHaveLength(1);
+    // The same clock time tomorrow evening is genuinely tomorrow's block.
+    const tomorrowEvening = block({ date: "2026-08-01", startMinute: 20 * 60 });
+    expect(linkedBlocksToComplete([tomorrowEvening], "advanced", TODAY, RESET)).toEqual([]);
   });
 });
 

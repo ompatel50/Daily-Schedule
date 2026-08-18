@@ -17,7 +17,7 @@ import { PageHeader } from "@/components/shared/page-header";
 import { StatCard } from "@/components/shared/stat-card";
 import { Skeleton } from "@/components/ui/skeleton";
 import { toDayKey } from "@/lib/date";
-import { formatMoney } from "@/lib/logic/finance";
+import { formatCents } from "@/lib/logic/money";
 import { pluralize } from "@/lib/utils";
 import { BILL_SOON_DAYS, getFinanceOverview } from "@/server/finance";
 
@@ -41,6 +41,8 @@ export default async function FinancePage() {
     currency: account.currency,
     openingBalance: account.openingBalance,
     lowBalanceThreshold: account.lowBalanceThreshold,
+    creditLimit: account.creditLimit,
+    statementDueDay: account.statementDueDay,
     notes: account.notes,
     archived: account.archivedAt !== null,
     balance,
@@ -75,6 +77,9 @@ export default async function FinancePage() {
     remaining: view.remaining,
     percent: view.percent,
     over: view.over,
+    rollover: view.budget.rollover ?? false,
+    carry: view.carry,
+    effectiveAmount: view.effectiveAmount,
     windowStart: view.window.start,
     windowEnd: view.window.end,
   }));
@@ -145,7 +150,7 @@ export default async function FinancePage() {
       <div className="stat-grid mb-6">
         <StatCard
           label="Net balance"
-          value={primary ? formatMoney(primary.net, primary.currency) : "—"}
+          value={primary ? formatCents(primary.net, primary.currency) : "—"}
           hint={
             otherCurrencies > 0
               ? `+${otherCurrencies} other ${pluralize(otherCurrencies, "currency", "currencies")}`
@@ -158,10 +163,10 @@ export default async function FinancePage() {
         />
         <StatCard
           label="Spent this month"
-          value={overview.month.count > 0 ? formatMoney(overview.month.spending, primaryCurrency) : "—"}
+          value={overview.month.count > 0 ? formatCents(overview.month.spending, primaryCurrency) : "—"}
           hint={
             overview.month.count > 0
-              ? `${formatMoney(overview.week.spending, primaryCurrency)} in the last 7 days`
+              ? `${formatCents(overview.week.spending, primaryCurrency)} in the last 7 days`
               : "nothing recorded yet"
           }
           icon={TrendingDown}
@@ -169,10 +174,10 @@ export default async function FinancePage() {
         />
         <StatCard
           label="Income this month"
-          value={overview.month.count > 0 ? formatMoney(overview.month.income, primaryCurrency) : "—"}
+          value={overview.month.count > 0 ? formatCents(overview.month.income, primaryCurrency) : "—"}
           hint={
             overview.month.count > 0
-              ? `${overview.month.net >= 0 ? "+" : ""}${formatMoney(overview.month.net, primaryCurrency)} net`
+              ? `${overview.month.net >= 0 ? "+" : ""}${formatCents(overview.month.net, primaryCurrency)} net`
               : "nothing recorded yet"
           }
           icon={TrendingUp}
@@ -183,7 +188,7 @@ export default async function FinancePage() {
           value={`${dueSoon.length}`}
           hint={
             dueSoon.length > 0
-              ? `${formatMoney(overview.billsDueSoonTotal, primaryCurrency)} expected`
+              ? `${formatCents(overview.billsDueSoonTotal, primaryCurrency)} expected`
               : "all clear"
           }
           icon={CalendarClock}
@@ -200,6 +205,21 @@ export default async function FinancePage() {
           budgets={budgets}
           importBatches={importBatches}
           byCategory={byCategory}
+          transferSuggestions={overview.transferSuggestions}
+          billSuggestions={overview.billSuggestions}
+          month={{
+            income: overview.month.income,
+            spending: overview.month.spending,
+            net: overview.month.net,
+            count: overview.month.count,
+          }}
+          previousMonth={{
+            income: overview.previousMonth.income,
+            spending: overview.previousMonth.spending,
+            net: overview.previousMonth.net,
+            count: overview.previousMonth.count,
+          }}
+          monthOverMonth={overview.monthOverMonth}
           today={overview.today}
           primaryCurrency={primaryCurrency}
         />

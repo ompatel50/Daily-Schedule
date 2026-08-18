@@ -3,19 +3,20 @@
 import { revalidatePath } from "next/cache";
 
 import { getCurrentUser, prisma } from "@/lib/db";
+import { trashStamp } from "@/lib/soft-delete";
 import { type DayKey } from "@/lib/date";
 import {
   dateOverrideSchema,
   fail,
   fromZod,
   goalEntrySchema,
+  goalMilestoneSchema,
   goalWithScheduleSchema,
   succeed,
   type ActionResult,
 } from "@/lib/validation";
 import {
   clearDateOverride,
-  deleteSchedule,
   scheduleSettingsFor,
   setDateOverride,
   setScheduleEnabled,
@@ -136,16 +137,19 @@ export async function archiveGoal(id: string, archived = true): Promise<ActionRe
   return succeed(null);
 }
 
+/**
+ * "Delete" now means the Trash: the goal (and, implicitly, its entries —
+ * they hide with it and cascade away on purge) can be restored from
+ * Settings → Trash for 30 days. The polymorphic schedule is disabled, not
+ * deleted, so a restore can switch it back on.
+ */
 export async function deleteGoalPermanently(id: string): Promise<ActionResult<null>> {
   const user = await getCurrentUser();
   const goal = await prisma.goal.findFirst({ where: { id, userId: user.id } });
   if (!goal) return fail("Goal not found");
 
-  await prisma.$transaction([
-    prisma.goalEntry.deleteMany({ where: { goalId: id } }),
-    prisma.goal.delete({ where: { id } }),
-  ]);
-  await deleteSchedule(user.id, "goal", id);
+  await prisma.goal.update({ where: { id }, data: { deletedAt: trashStamp() } });
+  await setScheduleEnabled(user.id, "goal", id, false);
 
   await recomputeDay(user.id, scheduleSettingsFor(user).today);
   revalidateAll();
@@ -153,6 +157,65 @@ export async function deleteGoalPermanently(id: string): Promise<ActionResult<nu
 }
 
 /** Record a manual outcome — for goals the app cannot prove on its own. */
+/**
+ * Create or edit one milestone on a goal the caller owns. Changing an
+ * unreached-into-reached transition is the read path's job
+ * (evaluateGoalsForDate stamps `reachedAt`); editing `targetValue` clears an
+ * existing stamp — a moved checkpoint is a different checkpoint.
+ */
+export async function saveGoalMilestone(input: unknown): Promise<ActionResult<{ id: string }>> {
+  const parsed = goalMilestoneSchema.safeParse(input);
+  if (!parsed.success) return fromZod(parsed.error);
+  const user = await getCurrentUser();
+  const { id, goalId, ...data } = parsed.data;
+
+  const goal = await prisma.goal.findFirst({ where: { id: goalId, userId: user.id } });
+  if (!goal) return fail("Goal not found");
+
+  const payload = {
+    label: data.label?.trim() ? data.label.trim() : null,
+    targetValue: data.targetValue,
+    targetDate: data.targetDate ?? null,
+    reminderEnabled: data.reminderEnabled,
+  };
+
+  if (id) {
+    const existing = await prisma.goalMilestone.findFirst({
+      where: { id, userId: user.id, goalId },
+    });
+    if (!existing) return fail("Milestone not found");
+    await prisma.goalMilestone.update({
+      where: { id },
+      data: {
+        ...payload,
+        reachedAt:
+          existing.targetValue === data.targetValue ? existing.reachedAt : null,
+      },
+    });
+    revalidateAll();
+    return succeed({ id });
+  }
+
+  const created = await prisma.goalMilestone.create({
+    data: {
+      ...payload,
+      userId: user.id,
+      goalId,
+      ordinal: await prisma.goalMilestone.count({ where: { goalId } }),
+    },
+  });
+  revalidateAll();
+  return succeed({ id: created.id });
+}
+
+/** Milestones are goal sub-records, like entries — their delete stays hard. */
+export async function deleteGoalMilestone(id: string): Promise<ActionResult<null>> {
+  const user = await getCurrentUser();
+  await prisma.goalMilestone.deleteMany({ where: { id, userId: user.id } });
+  revalidateAll();
+  return succeed(null);
+}
+
 export async function logGoalEntry(input: unknown): Promise<ActionResult<{ status: string }>> {
   const parsed = goalEntrySchema.safeParse(input);
   if (!parsed.success) return fromZod(parsed.error);

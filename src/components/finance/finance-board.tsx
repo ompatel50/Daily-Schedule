@@ -7,7 +7,11 @@ import { toast } from "sonner";
 import { AccountDialog, type AccountView } from "@/components/finance/account-dialog";
 import { AccountsSection } from "@/components/finance/accounts-section";
 import { AdjustGoalDialog } from "@/components/finance/adjust-goal-dialog";
-import { BillDialog, type BillRowView } from "@/components/finance/bill-dialog";
+import {
+  BillDialog,
+  type BillPrefill,
+  type BillRowView,
+} from "@/components/finance/bill-dialog";
 import { BillsSection } from "@/components/finance/bills-section";
 import { BudgetDialog, type BudgetView } from "@/components/finance/budget-dialog";
 import { BudgetsSection } from "@/components/finance/budgets-section";
@@ -20,6 +24,11 @@ import {
   ImportBatchesSection,
   type ImportBatchView,
 } from "@/components/finance/import-batches-section";
+import { MarkTransferDialog } from "@/components/finance/mark-transfer-dialog";
+import {
+  MonthlyReportSection,
+  type MonthTotalsView,
+} from "@/components/finance/monthly-report-section";
 import {
   SavingsGoalDialog,
   type SavingsGoalView,
@@ -32,8 +41,16 @@ import {
 } from "@/components/finance/transaction-dialog";
 import { TransactionsSection } from "@/components/finance/transactions-section";
 import { TransferDialog } from "@/components/finance/transfer-dialog";
+import { TransferSuggestionsSection } from "@/components/finance/transfer-suggestions-section";
 import { UndoImportDialog } from "@/components/finance/undo-import-dialog";
+import { toastMovedToTrash } from "@/components/shared/trash-toast";
 import { formatDay } from "@/lib/date";
+import { BILL_RECURRENCES, isBookkeepingCategory } from "@/lib/enums";
+import type { CategoryDelta } from "@/lib/logic/finance";
+import type { RecurringSuggestion } from "@/lib/logic/recurring-detect";
+import { dismissBillSuggestion } from "@/server/actions/finance";
+import { unlinkTransfer } from "@/server/actions/transfers";
+import type { TransferSuggestionView } from "@/server/transfers";
 import {
   deleteBill,
   deleteBudget,
@@ -63,6 +80,11 @@ export function FinanceBoard({
   budgets,
   importBatches,
   byCategory,
+  transferSuggestions,
+  billSuggestions,
+  month,
+  previousMonth,
+  monthOverMonth,
   today,
   primaryCurrency,
 }: {
@@ -73,6 +95,11 @@ export function FinanceBoard({
   budgets: BudgetView[];
   importBatches: ImportBatchView[];
   byCategory: CategoryTotalView[];
+  transferSuggestions: TransferSuggestionView[];
+  billSuggestions: RecurringSuggestion[];
+  month: MonthTotalsView;
+  previousMonth: MonthTotalsView;
+  monthOverMonth: CategoryDelta[];
   today: string;
   /** Currency of the largest account group — used where no account is linked. */
   primaryCurrency: string;
@@ -95,14 +122,56 @@ export function FinanceBoard({
   const [importOpen, setImportOpen] = React.useState(false);
   const [balanceAccount, setBalanceAccount] = React.useState<AccountView | null>(null);
   const [adjustingGoal, setAdjustingGoal] = React.useState<SavingsGoalView | null>(null);
+  const [markingTransfer, setMarkingTransfer] = React.useState<TransactionView | null>(null);
+  const [billPrefill, setBillPrefill] = React.useState<BillPrefill | null>(null);
 
   const activeAccounts = accounts.filter((account) => !account.archived);
+
+  /** "Track as bill": open the bill dialog pre-filled from the suggestion. */
+  function trackSuggestion(suggestion: RecurringSuggestion) {
+    setBillEditing(null);
+    setBillPrefill({
+      name: suggestion.payee,
+      amount: suggestion.amount,
+      // The bill dialog forbids income/bookkeeping categories — fall back.
+      category:
+        suggestion.category === "income" || isBookkeepingCategory(suggestion.category)
+          ? "other"
+          : suggestion.category,
+      recurrence: (BILL_RECURRENCES as readonly string[]).includes(suggestion.cadence)
+        ? suggestion.cadence
+        : "monthly",
+      dueDate: suggestion.nextDueDate,
+      accountId: activeAccounts.some((account) => account.id === suggestion.accountId)
+        ? suggestion.accountId
+        : null,
+    });
+    setBillOpen(true);
+  }
 
   function run(fn: () => Promise<{ ok: boolean; error?: string }>, message: string) {
     startTransition(async () => {
       const result = await fn();
       if (result.ok) {
         toast.success(message);
+        router.refresh();
+      } else {
+        toast.error(result.error ?? "Something went wrong");
+      }
+    });
+  }
+
+  /** Deletes are soft: the toast names the Trash and offers the real undo. */
+  function runDelete(
+    fn: () => Promise<{ ok: boolean; error?: string }>,
+    message: string,
+    model: Parameters<typeof toastMovedToTrash>[1],
+    id: string,
+  ) {
+    startTransition(async () => {
+      const result = await fn();
+      if (result.ok) {
+        toastMovedToTrash(message, model, id, () => router.refresh());
         router.refresh();
       } else {
         toast.error(result.error ?? "Something went wrong");
@@ -150,15 +219,32 @@ export function FinanceBoard({
             setTxOpen(true);
           }}
           onDelete={(transaction) =>
-            run(() => deleteTransaction(transaction.id), "Transaction deleted")
+            runDelete(
+              () => deleteTransaction(transaction.id),
+              "Transaction moved to Trash",
+              "FinanceTransaction",
+              transaction.id,
+            )
+          }
+          onMarkTransfer={setMarkingTransfer}
+          onUnlinkTransfer={(transaction) =>
+            run(
+              () => unlinkTransfer(transaction.id),
+              "Transfer unlinked — both rows are ordinary entries again",
+            )
           }
         />
 
+        <TransferSuggestionsSection suggestions={transferSuggestions} />
+
         <BillsSection
           bills={bills}
+          suggestions={billSuggestions}
+          currency={primaryCurrency}
           today={today}
           onNew={() => {
             setBillEditing(null);
+            setBillPrefill(null);
             setBillOpen(true);
           }}
           onMarkPaid={markPaid}
@@ -167,13 +253,28 @@ export function FinanceBoard({
             setBillOpen(true);
           }}
           onArchive={(bill) => run(() => setBillArchived(bill.id, true), "Bill archived")}
-          onDelete={(bill) => run(() => deleteBill(bill.id), "Bill deleted")}
+          onDelete={(bill) => runDelete(() => deleteBill(bill.id), "Bill moved to Trash", "Bill", bill.id)}
+          onTrackSuggestion={trackSuggestion}
+          onDismissSuggestion={(suggestion) =>
+            run(
+              () => dismissBillSuggestion(suggestion.payee),
+              `Got it — ${suggestion.payee} won't be suggested again`,
+            )
+          }
+        />
+
+        <MonthlyReportSection
+          month={month}
+          previousMonth={previousMonth}
+          deltas={monthOverMonth}
+          currency={primaryCurrency}
         />
       </div>
 
       <div className="space-y-6">
         <AccountsSection
           accounts={accounts}
+          today={today}
           onNew={() => {
             setAccountEditing(null);
             setAccountOpen(true);
@@ -190,7 +291,12 @@ export function FinanceBoard({
             run(() => setFinanceAccountArchived(account.id, false), "Account restored")
           }
           onDelete={(account) =>
-            run(() => deleteFinanceAccount(account.id), "Account and its ledger deleted")
+            runDelete(
+              () => deleteFinanceAccount(account.id),
+              "Account and its ledger moved to Trash",
+              "FinanceAccount",
+              account.id,
+            )
           }
         />
 
@@ -207,7 +313,9 @@ export function FinanceBoard({
             setGoalOpen(true);
           }}
           onArchive={(goal) => run(() => setSavingsGoalArchived(goal.id, true), "Goal archived")}
-          onDelete={(goal) => run(() => deleteSavingsGoal(goal.id), "Goal deleted")}
+          onDelete={(goal) =>
+            runDelete(() => deleteSavingsGoal(goal.id), "Goal moved to Trash", "SavingsGoal", goal.id)
+          }
         />
 
         <BudgetsSection
@@ -221,7 +329,9 @@ export function FinanceBoard({
             setBudgetEditing(budget);
             setBudgetOpen(true);
           }}
-          onDelete={(budget) => run(() => deleteBudget(budget.id), "Budget deleted")}
+          onDelete={(budget) =>
+            runDelete(() => deleteBudget(budget.id), "Budget moved to Trash", "Budget", budget.id)
+          }
         />
 
         <ImportBatchesSection batches={importBatches} onUndo={setUndoBatch} />
@@ -239,8 +349,12 @@ export function FinanceBoard({
       <AccountDialog open={accountOpen} onOpenChange={setAccountOpen} account={accountEditing} />
       <BillDialog
         open={billOpen}
-        onOpenChange={setBillOpen}
+        onOpenChange={(open) => {
+          setBillOpen(open);
+          if (!open) setBillPrefill(null);
+        }}
         bill={billEditing}
+        initial={billPrefill}
         accounts={activeAccounts}
         today={today}
       />
@@ -262,6 +376,10 @@ export function FinanceBoard({
         takenCategories={budgets.map((budget) => budget.category)}
       />
       <UndoImportDialog batch={undoBatch} onClose={() => setUndoBatch(null)} />
+      <MarkTransferDialog
+        transaction={markingTransfer}
+        onClose={() => setMarkingTransfer(null)}
+      />
       <TransferDialog
         open={transferOpen}
         onOpenChange={setTransferOpen}

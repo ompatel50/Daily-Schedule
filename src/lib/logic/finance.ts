@@ -1,4 +1,4 @@
-import { monthRange, weekRange, type DayKey } from "@/lib/date";
+import { monthRange, shiftDay, weekRange, type DayKey } from "@/lib/date";
 import type { AccountType, BillRecurrence, BudgetPeriod, FinanceCategory } from "@/lib/enums";
 import { ACCOUNT_TYPE_META, FINANCE_CATEGORY_META, isBookkeepingCategory } from "@/lib/enums";
 import {
@@ -15,34 +15,21 @@ import { round, sum } from "@/lib/utils";
  * them into balances, summaries and due states lives here so the finance page,
  * the dashboard and the tests all read the same arithmetic.
  *
- * Money is stored as floats and normalised to cents by `moneyRound` at every
- * boundary that produces a number a user will see. Amounts are SIGNED:
- * positive is money in, negative is money out.
+ * Money flows through this module as INTEGER CENTS (see
+ * src/lib/logic/money.ts — the storage unit and the display boundary).
+ * Everything here is sums, differences and ratios, which work identically on
+ * any fixed unit; the remaining `moneyRound` calls are no-ops on integers and
+ * survive only so the module still behaves for legacy float inputs until the
+ * cleanup migration retires those columns. Amounts are SIGNED: positive is
+ * money in, negative is money out.
  */
 
 export function moneyRound(value: number): number {
   return round(value, 2);
 }
 
-/**
- * "$1,240.50" / "−$86.20". Locale is pinned so tests are deterministic and the
- * app renders identically everywhere; `currency` is display-only — nothing in
- * the app ever converts between currencies.
- */
-export function formatMoney(value: number, currency = "USD"): string {
-  const rounded = moneyRound(value);
-  try {
-    return new Intl.NumberFormat("en-US", {
-      style: "currency",
-      currency,
-      minimumFractionDigits: Number.isInteger(rounded) ? 0 : 2,
-      maximumFractionDigits: 2,
-    }).format(rounded);
-  } catch {
-    // An unknown currency code must never crash a page over a display detail.
-    return `${rounded < 0 ? "-" : ""}${currency} ${Math.abs(rounded).toFixed(2)}`;
-  }
-}
+// Display formatting lives in src/lib/logic/money.ts (`formatCents`) — the
+// old dollar-float `formatMoney` was retired with the integer-cents switch.
 
 // --- accounts ----------------------------------------------------------------
 
@@ -84,6 +71,58 @@ export function netBalance(balances: AccountBalance[]): number {
 }
 
 // --- transaction summaries ---------------------------------------------------
+
+// --- credit cards ------------------------------------------------------------
+
+export type UtilizationTone = "ok" | "elevated" | "high";
+
+export interface CreditUtilization {
+  /** What is currently owed, as a positive number. */
+  owed: number;
+  limit: number;
+  available: number;
+  /** owed ÷ limit, rounded, uncapped — 104 means over the limit. */
+  percent: number;
+  /** <30% ok · 30–69% elevated · ≥70% high — the usual utilisation advice. */
+  tone: UtilizationTone;
+}
+
+/**
+ * Credit utilisation for a debt account with a tracked limit. Null when there
+ * is no meaningful limit; a positive balance (the card owes YOU) is 0%.
+ */
+export function creditUtilization(account: {
+  balance: number;
+  creditLimit: number | null;
+}): CreditUtilization | null {
+  const limit = account.creditLimit ?? 0;
+  if (limit <= 0) return null;
+  const owed = moneyRound(Math.max(0, -account.balance));
+  const percent = Math.round((owed / limit) * 100);
+  return {
+    owed,
+    limit: moneyRound(limit),
+    available: moneyRound(Math.max(0, limit - owed)),
+    percent,
+    tone: percent >= 70 ? "high" : percent >= 30 ? "elevated" : "ok",
+  };
+}
+
+/**
+ * The next date a day-of-month statement due day lands on, today included.
+ * Days beyond a month's length clamp to its last day (31 → Feb 28), the
+ * convention every "due on the Nth" card statement follows.
+ */
+export function nextStatementDueDate(dayOfMonth: number, today: DayKey): DayKey {
+  const day = Math.min(31, Math.max(1, Math.round(dayOfMonth)));
+  const clampInto = (window: { start: DayKey; end: DayKey }): DayKey => {
+    const lastDay = Number(window.end.slice(8, 10));
+    return `${window.end.slice(0, 8)}${String(Math.min(day, lastDay)).padStart(2, "0")}`;
+  };
+  const thisMonth = clampInto(monthRange(today));
+  if (thisMonth >= today) return thisMonth;
+  return clampInto(monthRange(shiftDay(monthRange(today).end, 1)));
+}
 
 export interface TransactionLike {
   amount: number;
@@ -148,6 +187,54 @@ export function spendingByCategory(transactions: TransactionLike[], limit = 6): 
 }
 
 // --- bills -------------------------------------------------------------------
+
+export interface CategoryDelta {
+  category: FinanceCategory | string;
+  label: string;
+  /** Spending this window / the previous one, as positive numbers. */
+  current: number;
+  previous: number;
+  /** current − previous: positive = spending grew. */
+  delta: number;
+}
+
+/**
+ * Spending per category across two windows — the month-over-month report.
+ * Every category that appears in either window is present; sorted by the
+ * size of the change, biggest mover first, so `slice(0, n)` IS "top movers".
+ * Built on the same bookkeeping-excluding arithmetic as spendingByCategory.
+ */
+export function compareSpendingByCategory(
+  current: TransactionLike[],
+  previous: TransactionLike[],
+): CategoryDelta[] {
+  const totals = new Map<string, { current: number; previous: number }>();
+  const add = (transactions: TransactionLike[], side: "current" | "previous") => {
+    for (const transaction of transactions) {
+      if (transaction.amount >= 0 || isBookkeepingCategory(transaction.category)) continue;
+      const entry = totals.get(transaction.category) ?? { current: 0, previous: 0 };
+      entry[side] -= transaction.amount;
+      totals.set(transaction.category, entry);
+    }
+  };
+  add(current, "current");
+  add(previous, "previous");
+
+  return [...totals.entries()]
+    .map(([category, entry]) => ({
+      category,
+      label: FINANCE_CATEGORY_META[category as FinanceCategory]?.label ?? category,
+      current: moneyRound(entry.current),
+      previous: moneyRound(entry.previous),
+      delta: moneyRound(entry.current - entry.previous),
+    }))
+    .sort(
+      (a, b) =>
+        Math.abs(b.delta) - Math.abs(a.delta) ||
+        b.current - a.current ||
+        a.label.localeCompare(b.label),
+    );
+}
 
 export interface BillLike {
   id: string;
@@ -282,6 +369,17 @@ export function budgetFetchRange(windows: Record<string, BudgetWindow>): BudgetW
   };
 }
 
+/**
+ * The window immediately before one — where rollover carry is measured.
+ * Weekly steps back seven days; monthly is the previous calendar month.
+ */
+export function previousBudgetWindow(period: BudgetPeriod, window: BudgetWindow): BudgetWindow {
+  if (period === "weekly") {
+    return { start: shiftDay(window.start, -7), end: shiftDay(window.end, -7) };
+  }
+  return monthRange(shiftDay(window.start, -1));
+}
+
 export interface BudgetLike {
   id: string;
   category: string;
@@ -290,6 +388,8 @@ export interface BudgetLike {
   period: string;
   /** Warn once per period at this share of the target; null = no alert. */
   alertThresholdPercent?: number | null;
+  /** Opt-in: last period's unused amount adds to this period's room. */
+  rollover?: boolean;
 }
 
 /** A ledger row as budget arithmetic needs it: an amount, a category, a day. */
@@ -302,11 +402,19 @@ export interface BudgetProgress<B extends BudgetLike = BudgetLike> {
   label: string;
   /** Money out in the budget's category over the window, as a positive number. */
   spent: number;
-  /** Target − spent, floored at zero — "how much room is left". */
+  /** Effective room (target + carry) − spent, floored at zero. */
   remaining: number;
-  /** Spent ÷ target, uncapped and rounded — 130 means 30% over. */
+  /** Spent ÷ effective room, uncapped and rounded — 130 means 30% over. */
   percent: number;
   over: boolean;
+  /**
+   * What last period's unused amount added to this one — zero unless the
+   * budget opted into rollover. Capped at one period's target, and an
+   * overspent previous period never claws room away (floor zero).
+   */
+  carry: number;
+  /** target + carry — what spent/percent/over/remaining are measured against. */
+  effectiveAmount: number;
   /** The period this budget measures, normalised. */
   period: BudgetPeriod;
   /** The days that period currently covers. */
@@ -337,46 +445,61 @@ export function budgetProgress<B extends BudgetLike>(
   transactions: DatedTransactionLike[],
   windows: Record<string, BudgetWindow>,
 ): BudgetProgress<B>[] {
-  // One pass over the ledger per period in play, not per budget — a hundred
-  // budgets cost the same two passes as two do.
-  const spentByPeriod = new Map<string, Map<string, number>>();
-  const spentFor = (period: BudgetPeriod): Map<string, number> => {
-    const cached = spentByPeriod.get(period);
+  // One pass over the ledger per window in play, not per budget — a hundred
+  // budgets cost the same few passes as two do.
+  const spentByWindow = new Map<string, Map<string, number>>();
+  const spentIn = (window: BudgetWindow | undefined): Map<string, number> => {
+    if (!window) return new Map();
+    const key = `${window.start}|${window.end}`;
+    const cached = spentByWindow.get(key);
     if (cached) return cached;
-    const window = windows[period] ?? windows.monthly;
     const totals = new Map<string, number>();
-    if (window) {
-      for (const transaction of transactions) {
-        if (transaction.amount >= 0 || isBookkeepingCategory(transaction.category)) continue;
-        if (transaction.date < window.start || transaction.date > window.end) continue;
-        totals.set(
-          transaction.category,
-          (totals.get(transaction.category) ?? 0) - transaction.amount,
-        );
-      }
+    for (const transaction of transactions) {
+      if (transaction.amount >= 0 || isBookkeepingCategory(transaction.category)) continue;
+      if (transaction.date < window.start || transaction.date > window.end) continue;
+      totals.set(
+        transaction.category,
+        (totals.get(transaction.category) ?? 0) - transaction.amount,
+      );
     }
-    spentByPeriod.set(period, totals);
+    spentByWindow.set(key, totals);
     return totals;
   };
 
   return budgets
     .map((budget) => {
       const period = budgetPeriodOf(budget.period);
-      const spent = moneyRound(spentFor(period).get(budget.category) ?? 0);
+      const window = windows[period] ?? windows.monthly;
+      const spent = moneyRound(spentIn(window).get(budget.category) ?? 0);
       const target = Math.max(0, budget.amount);
-      const percent = target <= 0 ? (spent > 0 ? 999 : 0) : Math.round((spent / target) * 100);
+
+      // Opt-in rollover: last period's unused room joins this period's,
+      // capped at one period's worth. An overspent previous period carries
+      // zero — a budget is a ceiling, never a debt.
+      let carry = 0;
+      if (budget.rollover && target > 0 && window) {
+        const previous = previousBudgetWindow(period, window);
+        const previousSpent = moneyRound(spentIn(previous).get(budget.category) ?? 0);
+        carry = moneyRound(Math.min(target, Math.max(0, target - previousSpent)));
+      }
+      const effectiveAmount = moneyRound(target + carry);
+
+      const percent =
+        effectiveAmount <= 0 ? (spent > 0 ? 999 : 0) : Math.round((spent / effectiveAmount) * 100);
       const threshold = budget.alertThresholdPercent ?? null;
       return {
         budget,
         label: FINANCE_CATEGORY_META[budget.category as FinanceCategory]?.label ?? budget.category,
         spent,
-        remaining: moneyRound(Math.max(0, target - spent)),
+        remaining: moneyRound(Math.max(0, effectiveAmount - spent)),
         percent,
-        over: spent > target,
+        over: spent > effectiveAmount,
+        carry,
+        effectiveAmount,
         period,
-        window: windows[period] ?? windows.monthly,
+        window,
         threshold,
-        thresholdReached: threshold !== null && target > 0 && percent >= threshold,
+        thresholdReached: threshold !== null && effectiveAmount > 0 && percent >= threshold,
       };
     })
     .sort(

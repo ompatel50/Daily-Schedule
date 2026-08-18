@@ -26,6 +26,8 @@ import {
 } from "lucide-react";
 import { toast } from "sonner";
 
+import { toastMovedToTrash } from "@/components/shared/trash-toast";
+
 import { EmptyState } from "@/components/shared/empty-state";
 import { SectionCard } from "@/components/shared/section-card";
 import { Badge } from "@/components/ui/badge";
@@ -46,7 +48,7 @@ import {
   type ScheduleSource,
 } from "@/components/tasks/schedule-task-dialog";
 import { TaskDialog, blankTask, type TaskDraft } from "@/components/tasks/task-dialog";
-import { formatDay } from "@/lib/date";
+import { formatDay, formatMinute } from "@/lib/date";
 import { PRIORITY_META, PROJECT_STATUS_META, type Priority, type ProjectStatus } from "@/lib/enums";
 import { describeDueDistance, isOverdue } from "@/lib/logic/due";
 import { describeRepeat, filterByTags } from "@/lib/logic/tasks";
@@ -73,6 +75,9 @@ export interface PlannerLink {
   id: string;
   date: string;
   status: string;
+  /** Minutes from midnight; null with `allDay: true` means an all-day block. */
+  startMinute: number | null;
+  allDay: boolean;
 }
 
 export interface TaskItem extends TaskDraft {
@@ -202,6 +207,16 @@ export function TaskBoard({ board }: { board: TaskBoardData }) {
     });
   }
 
+  /** Deletes are soft: the toast names the Trash and offers the real undo. */
+  function runDelete(fn: () => Promise<ActionResult<unknown>>, message: string, id: string) {
+    startTransition(async () => {
+      const result = await fn();
+      if (result.ok) toastMovedToTrash(message, "Task", id, () => router.refresh());
+      else toast.error(result.error);
+      router.refresh();
+    });
+  }
+
   /** Checkbox click: complete an open task, reopen a checked subtask. */
   function toggleDone(id: string, status: string) {
     if (status !== "open") {
@@ -212,13 +227,19 @@ export function TaskBoard({ board }: { board: TaskBoardData }) {
     startTransition(async () => {
       const result = await completeTask(id);
       if (result.ok) {
+        // Completing also marks the task's planned planner blocks done — say
+        // so, because the change reaches a page the user is not looking at.
+        const blocks = result.data.blocksCompleted;
+        const blocksNote =
+          blocks > 0 ? ` · ${blocks} planner ${blocks === 1 ? "block" : "blocks"} marked done` : "";
         if (result.data.status === "advanced" && result.data.nextDue) {
           // No Undo here: completing a repeating task advanced its due date,
           // and "reopen" could not restore the previous one reliably.
-          toast.success(`Done — next on ${formatDay(result.data.nextDue)}`);
+          toast.success(`Done — next on ${formatDay(result.data.nextDue)}${blocksNote}`);
         } else {
           // Real rollback, not a visual one: Undo calls the reopen action.
-          toast.success("Task completed", {
+          // (It reopens the task only — blocks marked done stay done.)
+          toast.success(`Task completed${blocksNote}`, {
             action: {
               label: "Undo",
               onClick: () => run(() => reopenTask(id), "Task reopened"),
@@ -364,7 +385,7 @@ export function TaskBoard({ board }: { board: TaskBoardData }) {
                       setScheduling({ id: task.id, title: task.title, dueDate: task.dueDate })
                     }
                     onDrop={() => run(() => dropTask(task.id), "Task dropped")}
-                    onDelete={() => run(() => deleteTask(task.id), "Task deleted")}
+                    onDelete={() => runDelete(() => deleteTask(task.id), "Task moved to Trash", task.id)}
                   />
                 ))}
               </div>
@@ -520,8 +541,9 @@ function TaskRow({
   const countable = task.subtasks.filter((subtask) => subtask.status !== "dropped");
   const subtasksDone = countable.filter((subtask) => subtask.status === "done").length;
 
-  // The next planner block for this task: today or later, not yet done/skipped.
-  const nextPlanned = task.plannerItems.find(
+  // Upcoming planner blocks for this task: today or later, not yet
+  // done/skipped. The server sends at most three, soonest first.
+  const planned = task.plannerItems.filter(
     (item) => item.status === "planned" && item.date >= today,
   );
 
@@ -578,7 +600,7 @@ function TaskRow({
             ))}
           </div>
 
-          {(task.dueDate || task.repeat !== "none" || countable.length > 0 || nextPlanned) && (
+          {(task.dueDate || task.repeat !== "none" || countable.length > 0 || planned.length > 0) && (
             <div className="mt-1 flex flex-wrap items-center gap-x-3 gap-y-0.5 text-xs text-muted-foreground">
               {task.dueDate && (
                 <span className={cn(overdue && "font-medium text-red-700 dark:text-red-400")}>
@@ -594,15 +616,22 @@ function TaskRow({
                   {describeRepeat(task.repeat, task.repeatEvery)}
                 </span>
               )}
-              {nextPlanned && (
-                <span
-                  className="inline-flex items-center gap-1"
-                  title={`On the planner for ${formatDay(nextPlanned.date)}`}
-                >
-                  <CalendarPlus className="h-3 w-3" aria-hidden="true" />
-                  Planned · {formatDay(nextPlanned.date, "MMM d")}
-                </span>
-              )}
+              {planned.map((block) => {
+                const when =
+                  block.allDay || block.startMinute === null
+                    ? formatDay(block.date, "MMM d")
+                    : `${formatDay(block.date, "MMM d")} ${formatMinute(block.startMinute)}`;
+                return (
+                  <span
+                    key={block.id}
+                    className="inline-flex items-center gap-1"
+                    title={`On the planner for ${formatDay(block.date)}`}
+                  >
+                    <CalendarPlus className="h-3 w-3" aria-hidden="true" />
+                    Planned · {when}
+                  </span>
+                );
+              })}
               {countable.length > 0 && (
                 <button
                   type="button"

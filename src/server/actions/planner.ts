@@ -2,11 +2,10 @@
 
 import { revalidatePath } from "next/cache";
 
-import type { Prisma } from "@prisma/client";
-
 import { prisma } from "@/lib/db";
 import { getCurrentUser } from "@/lib/db";
-import { type DayKey, shiftDay } from "@/lib/date";
+import { prismaIncludingTrashed, type Tx } from "@/lib/prisma";
+import { type DayKey, shiftDay, weekRange } from "@/lib/date";
 import {
   calendarDateForOperationalTime,
   operationalDayOfRecord,
@@ -26,17 +25,22 @@ import {
 import { parseQuickAdd } from "@/lib/logic/quick-add";
 import {
   isSchedulingConflict,
+  planDayCopy,
   planMove,
   planTemplateApplication,
   type ConflictCandidate,
+  type CopySourceRow,
+  type PlannedCopyRow,
   type TemplateApplyMode,
   type TemplateRow,
 } from "@/lib/logic/planner";
 import { comparePlannerSpans } from "@/lib/logic/schedule-span";
+import { trashStamp } from "@/lib/soft-delete";
 import {
   conflictPreviewSchema,
   fail,
   fromZod,
+  plannerCopySchema,
   quickAddSchema,
   scheduleItemSchema,
   scheduleTemplateSchema,
@@ -193,8 +197,6 @@ export async function quickAddScheduleItem(input: unknown): Promise<ActionResult
   });
 }
 
-/** The transaction-client slice these helpers need. */
-type Tx = Prisma.TransactionClient;
 
 /** Replace an item's tag links with the given set. */
 async function setItemTags(tx: Tx, scheduleItemId: string, tagIds: string[]) {
@@ -564,7 +566,34 @@ export async function updateScheduleItem(
   return succeed({ id: existing.id, updated });
 }
 
-export async function toggleScheduleItem(id: string): Promise<ActionResult<{ status: string }>> {
+export interface ScheduleStatusOutcome {
+  status: string;
+  /**
+   * Present when the block just became done and links a still-open task: the
+   * caller OFFERS to complete the task too (a toast action). Nothing is
+   * completed automatically — a block can be one of several work sessions,
+   * and only the user knows whether this one finished the task.
+   */
+  taskOffer: { id: string; title: string } | null;
+}
+
+/** The linked still-open task, when marking `done` should offer completing it. */
+async function taskOfferFor(
+  userId: string,
+  item: { taskId: string | null },
+  status: string,
+): Promise<ScheduleStatusOutcome["taskOffer"]> {
+  if (status !== "done" || !item.taskId) return null;
+  const task = await prisma.task.findFirst({
+    where: { id: item.taskId, userId, status: "open" },
+    select: { id: true, title: true },
+  });
+  return task ? { id: task.id, title: task.title } : null;
+}
+
+export async function toggleScheduleItem(
+  id: string,
+): Promise<ActionResult<ScheduleStatusOutcome>> {
   const user = await getCurrentUser();
   const item = await prisma.scheduleItem.findFirst({ where: { id, userId: user.id } });
   if (!item) return fail("Item not found");
@@ -577,13 +606,13 @@ export async function toggleScheduleItem(id: string): Promise<ActionResult<{ sta
 
   await touchDays(user.id, [operationalDayOfRecord(item, resetFor(user))]);
   revalidateAll();
-  return succeed({ status });
+  return succeed({ status, taskOffer: await taskOfferFor(user.id, item, status) });
 }
 
 export async function setScheduleItemStatus(
   id: string,
   status: "planned" | "done" | "skipped",
-): Promise<ActionResult<{ status: string }>> {
+): Promise<ActionResult<ScheduleStatusOutcome>> {
   const user = await getCurrentUser();
   const item = await prisma.scheduleItem.findFirst({ where: { id, userId: user.id } });
   if (!item) return fail("Item not found");
@@ -595,7 +624,7 @@ export async function setScheduleItemStatus(
 
   await touchDays(user.id, [operationalDayOfRecord(item, resetFor(user))]);
   revalidateAll();
-  return succeed({ status });
+  return succeed({ status, taskOffer: await taskOfferFor(user.id, item, status) });
 }
 
 /** What `moveScheduleItem` reports back to the UI. */
@@ -699,22 +728,27 @@ export async function reorderScheduleItems(
 }
 
 /**
- * Delete one occurrence, this one and every later one, or the whole series.
+ * Trash one occurrence, this one and every later one, or the whole series.
+ * Deletes are SOFT — rows get a `deletedAt` stamp and move to Settings →
+ * Trash; the series bookkeeping around them is unchanged, so regeneration
+ * can never quietly refill what the user removed:
  *
- *  * `one` on an occurrence really deletes the row AND records its slot in
- *    the parent's `skipDates`, so regeneration can never quietly bring it
- *    back. `one` on the FIRST occurrence promotes the next occurrence to
- *    series parent first — deleting the rule holder must not take the whole
- *    series down with it.
+ *  * `one` on an occurrence stamps the row AND records its slot in the
+ *    parent's `skipDates`. `one` on the FIRST occurrence promotes the next
+ *    occurrence to series parent first, then stamps the old parent as a
+ *    detached exception (rule cleared, re-pointed at the new parent) — so a
+ *    later restore yields one sane standalone-ish block, not a second rule
+ *    holder.
  *
  *  * `future` terminates the series at the selected occurrence: the parent's
  *    rule gains an `until` on the day before (so nothing regenerates), and
- *    every row from that day on is removed. History before it is untouched.
- *    Selecting the first occurrence means there is no history to preserve —
- *    the whole series goes.
+ *    every row from that day on is stamped. History before it is untouched.
  *
- *  * `all` deletes the entire series including history — the long-standing
+ *  * `all` stamps the entire series including history — the long-standing
  *    explicit option, kept for exactly that explicit choice.
+ *
+ * Reminders attached to the stamped rows are stamped with them (children
+ * follow parents), sharing the stamp so a restore brings both back.
  */
 export async function deleteScheduleItem(
   id: string,
@@ -726,8 +760,23 @@ export async function deleteScheduleItem(
 
   const reset = resetFor(user);
   const isSeriesRow = Boolean(item.seriesId) || Boolean(item.recurrenceRule);
+  const stamp = trashStamp();
   let deleted = 0;
   const touched: DayKey[] = [operationalDayOfRecord(item, reset)];
+
+  /** Stamp these rows and their reminders in one transaction step. */
+  const stampRows = async (tx: Tx, ids: string[]) => {
+    if (ids.length === 0) return 0;
+    const result = await tx.scheduleItem.updateMany({
+      where: { id: { in: ids }, userId: user.id },
+      data: { deletedAt: stamp },
+    });
+    await tx.reminder.updateMany({
+      where: { scheduleItemId: { in: ids }, userId: user.id },
+      data: { deletedAt: stamp },
+    });
+    return result.count;
+  };
 
   if (scope === "one" || !isSeriesRow) {
     if (item.seriesId) {
@@ -738,7 +787,7 @@ export async function deleteScheduleItem(
         select: { id: true, skipDates: true },
       });
       await prisma.$transaction(async (tx) => {
-        await tx.scheduleItem.delete({ where: { id } });
+        await stampRows(tx, [id]);
         if (parent) {
           await tx.scheduleItem.update({
             where: { id: parent.id },
@@ -749,22 +798,42 @@ export async function deleteScheduleItem(
       deleted = 1;
     } else if (item.recurrenceRule) {
       // The series parent. Hand the series to the next occurrence before the
-      // row goes — a cascade here would erase every occurrence.
+      // row goes — trashing the rule holder must not take the series down.
       const rule = parseRule(item.recurrenceRule);
       const children = await prisma.scheduleItem.findMany({
         where: { seriesId: item.id, userId: user.id },
       });
       if (rule && children.length > 0) {
         await prisma.$transaction(async (tx) => {
-          await promoteNextOccurrence(tx, item, children, rule, reset);
-          await tx.scheduleItem.delete({ where: { id } });
+          const newParentId = await promoteNextOccurrence(tx, item, children, rule, reset);
+          // The stamped row leaves as a detached exception: no rule to
+          // resurrect, its slot still occupied under the new parent.
+          await tx.scheduleItem.update({
+            where: { id: item.id },
+            data: {
+              deletedAt: stamp,
+              recurrenceRule: null,
+              skipDates: null,
+              seriesId: newParentId,
+              isException: true,
+              originalDate: item.originalDate ?? slotOfOccurrence(item, reset),
+            },
+          });
+          await tx.reminder.updateMany({
+            where: { scheduleItemId: item.id, userId: user.id },
+            data: { deletedAt: stamp },
+          });
         });
       } else {
-        await prisma.scheduleItem.delete({ where: { id } });
+        await prisma.$transaction(async (tx) => {
+          await stampRows(tx, [id]);
+        });
       }
       deleted = 1;
     } else {
-      await prisma.scheduleItem.delete({ where: { id } });
+      await prisma.$transaction(async (tx) => {
+        await stampRows(tx, [id]);
+      });
       deleted = 1;
     }
   } else if (scope === "future") {
@@ -776,15 +845,15 @@ export async function deleteScheduleItem(
     const selectedDay = operationalDayOfRecord(item, reset);
 
     if (!parent || item.id === parent.id) {
-      // Deleting from the first occurrence on = the whole series; cascade
-      // removes the occurrences with the parent.
+      // Trashing from the first occurrence on = the whole series.
       const affected = await prisma.scheduleItem.findMany({
         where: { userId: user.id, OR: [{ id: item.id }, { seriesId: item.id }] },
-        select: { date: true, startMinute: true },
+        select: { id: true, date: true, startMinute: true },
       });
       touched.push(...affected.map((row) => operationalDayOfRecord(row, reset)));
-      await prisma.scheduleItem.delete({ where: { id: item.id } });
-      deleted = affected.length;
+      await prisma.$transaction(async (tx) => {
+        deleted = await stampRows(tx, affected.map((row) => row.id));
+      });
     } else {
       const children = await prisma.scheduleItem.findMany({
         where: { seriesId: parent.id, userId: user.id },
@@ -807,10 +876,7 @@ export async function deleteScheduleItem(
             },
           });
         }
-        const result = await tx.scheduleItem.deleteMany({
-          where: { id: { in: removing.map((row) => row.id) }, userId: user.id },
-        });
-        deleted = result.count;
+        deleted = await stampRows(tx, removing.map((row) => row.id));
       });
     }
   } else {
@@ -819,11 +885,12 @@ export async function deleteScheduleItem(
     const where = { userId: user.id, OR: [{ id: seriesId }, { seriesId }] };
     const affected = await prisma.scheduleItem.findMany({
       where,
-      select: { date: true, startMinute: true },
+      select: { id: true, date: true, startMinute: true },
     });
     touched.push(...affected.map((row) => operationalDayOfRecord(row, reset)));
-    const result = await prisma.scheduleItem.deleteMany({ where });
-    deleted = result.count;
+    await prisma.$transaction(async (tx) => {
+      deleted = await stampRows(tx, affected.map((row) => row.id));
+    });
   }
 
   await touchDays(user.id, touched);
@@ -1006,8 +1073,12 @@ export async function applyScheduleTemplate(
   // The routine is stamped onto an OPERATIONAL day: rows timed before the
   // daily reset (a night routine's 1:00 AM wind-down) store on the next
   // calendar date, so the duplicate check spans both dates the day covers.
+  // The read deliberately INCLUDES trashed rows (see src/lib/soft-delete.ts):
+  // a stamped block sitting in the Trash still occupies its
+  // (user, date, template, key) identity until purged, so re-applying asks
+  // instead of colliding with the unique constraint.
   const reset = resetFor(user);
-  const existing = await prisma.scheduleItem.findMany({
+  const existing = await prismaIncludingTrashed.scheduleItem.findMany({
     where: { userId: user.id, templateId: template.id, ...operationalDayWhere(date, reset) },
     select: { id: true, sourceKey: true },
   });
@@ -1037,7 +1108,12 @@ export async function applyScheduleTemplate(
   let removed = 0;
 
   try {
-    await prisma.$transaction(async (tx) => {
+    // The raw client's transaction: "replace" clears the previous application
+    // outright — a documented HARD delete, since the rows may include trashed
+    // ones whose (user, date, template, key) identities would otherwise block
+    // the re-stamp. The fresh copy takes their place, so there is nothing
+    // meaningful to restore.
+    await prismaIncludingTrashed.$transaction(async (tx) => {
       if (plan.remove.length > 0) {
         const result = await tx.scheduleItem.deleteMany({
           where: { id: { in: plan.remove }, userId: user.id },
@@ -1085,6 +1161,202 @@ export async function applyScheduleTemplate(
   await touchDays(user.id, [date]);
   revalidateAll();
   return succeed({ status: "applied", created, removed, ordinal: plan.ordinal });
+}
+
+
+// --- copy day / copy week ----------------------------------------------------
+
+export type CopyPlannerResult =
+  /** Written. `skippedRecurring` counts blocks left out because they repeat. */
+  | { status: "copied"; created: number; skippedRecurring: number }
+  /** The copied spans overlap these titles. Nothing was written; ask. */
+  | { status: "conflict"; conflicts: string[] }
+  /** The source day (or week) has nothing to copy at all. */
+  | { status: "empty" };
+
+/** One operational day's rows, shaped for `planDayCopy`. */
+async function loadCopySource(
+  userId: string,
+  day: DayKey,
+  reset: number,
+): Promise<CopySourceRow[]> {
+  const rows = await prisma.scheduleItem.findMany({
+    where: { userId, ...operationalDayWhere(day, reset) },
+    include: { tags: { select: { tagId: true } } },
+    orderBy: [{ date: "asc" }, { sortOrder: "asc" }],
+  });
+  return rows.map((row) => ({
+    id: row.id,
+    title: row.title,
+    notes: row.notes,
+    startMinute: row.startMinute,
+    endMinute: row.endMinute,
+    allDay: row.allDay,
+    category: row.category,
+    priority: row.priority,
+    sortOrder: row.sortOrder,
+    seriesId: row.seriesId,
+    recurrenceRule: row.recurrenceRule,
+    habitId: row.habitId,
+    taskId: row.taskId,
+    tagIds: row.tags.map((tag) => tag.tagId),
+  }));
+}
+
+/** Everything a copied span could land on around the target operational day. */
+async function copyTargetCandidates(userId: string, to: DayKey) {
+  return prisma.scheduleItem.findMany({
+    // The operational day covers two calendar dates, plus one each side for
+    // cross-midnight reach — the same wider-net reasoning as moveScheduleItem.
+    where: { userId, date: { in: [shiftDay(to, -1), to, shiftDay(to, 1), shiftDay(to, 2)] } },
+    select: {
+      id: true,
+      title: true,
+      date: true,
+      startMinute: true,
+      endMinute: true,
+      allDay: true,
+      status: true,
+    },
+  });
+}
+
+/** Write one day's planned copies. Returns how many rows were created. */
+async function writeCopies(
+  tx: Tx,
+  userId: string,
+  to: DayKey,
+  copies: PlannedCopyRow[],
+  reset: number,
+): Promise<number> {
+  if (copies.length === 0) return 0;
+  const maxOrder = await tx.scheduleItem.aggregate({
+    where: { userId, date: to },
+    _max: { sortOrder: true },
+  });
+  let order = (maxOrder._max.sortOrder ?? 0) + 1;
+  for (const copy of copies) {
+    await tx.scheduleItem.create({
+      data: {
+        userId,
+        title: copy.title,
+        notes: copy.notes,
+        date: calendarDateForOperationalTime(to, copy.allDay ? null : copy.startMinute, reset),
+        startMinute: copy.allDay ? null : copy.startMinute,
+        endMinute: copy.allDay ? null : copy.endMinute,
+        allDay: copy.allDay,
+        category: copy.category,
+        priority: copy.priority,
+        status: "planned",
+        sortOrder: order,
+        habitId: copy.habitId,
+        taskId: copy.taskId,
+        tags: copy.tagIds.length
+          ? { create: copy.tagIds.map((tagId) => ({ tagId })) }
+          : undefined,
+      },
+    });
+    order += 1;
+  }
+  return copies.length;
+}
+
+/**
+ * Duplicate one operational day's layout onto another. One-off blocks copy
+ * as fresh planned blocks (task/habit/tag links travel; logged-record links
+ * and template identity do not); recurring blocks are skipped and reported —
+ * they already recur. Overlaps warn first and write only on `confirm`, the
+ * planner's usual double-booking manners. See `planDayCopy`.
+ */
+export async function copyPlannerDay(input: unknown): Promise<ActionResult<CopyPlannerResult>> {
+  const parsed = plannerCopySchema.safeParse(input);
+  if (!parsed.success) return fromZod(parsed.error);
+  const { from, to, confirm } = parsed.data;
+
+  const user = await getCurrentUser();
+  const reset = resetFor(user);
+  const source = await loadCopySource(user.id, from, reset);
+  if (source.length === 0) return succeed({ status: "empty" });
+
+  const plan = planDayCopy({
+    source,
+    targetItems: await copyTargetCandidates(user.id, to),
+    targetDate: to,
+    resetMinute: reset,
+  });
+  if (plan.conflicts.length > 0 && !confirm) {
+    return succeed({ status: "conflict", conflicts: plan.conflicts });
+  }
+
+  await prisma.$transaction(async (tx) => {
+    await writeCopies(tx, user.id, to, plan.copies, reset);
+  });
+
+  await touchDays(user.id, [to]);
+  revalidateAll();
+  return succeed({
+    status: "copied",
+    created: plan.copies.length,
+    skippedRecurring: plan.skippedRecurring,
+  });
+}
+
+/**
+ * Copy a whole week's layout onto another week, weekday for weekday. `from`
+ * and `to` may be any day inside their weeks — both normalise to the user's
+ * week start. Conflicts across all seven days are gathered into ONE warning,
+ * confirmed once.
+ */
+export async function copyPlannerWeek(input: unknown): Promise<ActionResult<CopyPlannerResult>> {
+  const parsed = plannerCopySchema.safeParse(input);
+  if (!parsed.success) return fromZod(parsed.error);
+  const { confirm } = parsed.data;
+
+  const user = await getCurrentUser();
+  const weekStartsOn = user.weekStartsOn === 0 ? 0 : 1;
+  const fromStart = weekRange(parsed.data.from, weekStartsOn).start;
+  const toStart = weekRange(parsed.data.to, weekStartsOn).start;
+  if (fromStart === toStart) return fail("Pick a different week to copy to");
+
+  const reset = resetFor(user);
+  const days: Array<{ to: DayKey; plan: ReturnType<typeof planDayCopy> }> = [];
+  let sourceRows = 0;
+  for (let offset = 0; offset < 7; offset += 1) {
+    const source = await loadCopySource(user.id, shiftDay(fromStart, offset), reset);
+    sourceRows += source.length;
+    if (source.length === 0) continue;
+    const to = shiftDay(toStart, offset);
+    days.push({
+      to,
+      plan: planDayCopy({
+        source,
+        targetItems: await copyTargetCandidates(user.id, to),
+        targetDate: to,
+        resetMinute: reset,
+      }),
+    });
+  }
+  if (sourceRows === 0) return succeed({ status: "empty" });
+
+  const conflicts = [...new Set(days.flatMap(({ plan }) => plan.conflicts))];
+  if (conflicts.length > 0 && !confirm) {
+    return succeed({ status: "conflict", conflicts });
+  }
+
+  let created = 0;
+  await prisma.$transaction(async (tx) => {
+    for (const { to, plan } of days) {
+      created += await writeCopies(tx, user.id, to, plan.copies, reset);
+    }
+  });
+
+  await touchDays(user.id, days.map(({ to }) => to));
+  revalidateAll();
+  return succeed({
+    status: "copied",
+    created,
+    skippedRecurring: days.reduce((total, { plan }) => total + plan.skippedRecurring, 0),
+  });
 }
 
 export async function deleteScheduleTemplate(id: string): Promise<ActionResult<null>> {

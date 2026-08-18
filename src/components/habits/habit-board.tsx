@@ -31,6 +31,8 @@ export interface HabitBoardItem extends HabitDraft {
   weekDone: number;
   weekTarget: number;
   scheduleSummary: string;
+  /** Today's resolved status — "paused" renders the pause badge. */
+  status: DayStatus;
   recentLogs: Array<{ date: string; status: string }>;
   /**
    * Resolved status per day, decided by the schedule engine on the server. The
@@ -55,6 +57,7 @@ const DOT_CLASSES: Record<DayStatus, string> = {
   pending: "bg-muted ring-1 ring-inset ring-foreground/20",
   future: "border border-dashed border-muted-foreground/30 bg-transparent",
   rest: "bg-teal-500/20",
+  paused: "bg-violet-500/20",
   not_scheduled: "border border-dashed border-muted bg-transparent",
   canceled: "border border-dashed border-muted bg-transparent",
   inactive: "border border-dashed border-muted bg-transparent",
@@ -199,6 +202,16 @@ function HabitCard({
             {habit.timeOfDay !== "anytime" && (
               <Badge variant="muted" className="text-[10px]">
                 {TIME_OF_DAY_META[habit.timeOfDay as TimeOfDay]?.label}
+              </Badge>
+            )}
+            {habit.status === "paused" && (
+              <Badge
+                variant="outline"
+                className="border-violet-500/40 bg-violet-500/10 text-[10px] text-violet-700 dark:text-violet-300"
+              >
+                {habit.pausedUntil
+                  ? `Paused until ${formatDay(habit.pausedUntil, "MMM d")}`
+                  : "Paused"}
               </Badge>
             )}
           </div>

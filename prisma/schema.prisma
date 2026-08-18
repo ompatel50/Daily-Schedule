@@ -22,8 +22,8 @@ generator client {
 }
 
 datasource db {
-  provider = "postgresql"
-  url      = env("DATABASE_URL")
+  provider  = "postgresql"
+  url       = env("DATABASE_URL")
   // Migrations connect directly; DATABASE_URL may point at a pooler in
   // production. Locally the two are simply the same URL.
   directUrl = env("DIRECT_DATABASE_URL")
@@ -34,15 +34,19 @@ datasource db {
 // ---------------------------------------------------------------------------
 
 model User {
-  id        String   @id @default(cuid())
-  name      String
+  id                 String    @id @default(cuid())
+  name               String
   /// The sign-in identifier. Kept nullable deliberately: a row without an
   /// email (or without a password) simply can never sign in — the credential
   /// check fails closed on null — and forcing NOT NULL here would make the
   /// migration fail on any historical row rather than harmlessly stranding
   /// it. Every account created through public sign-up has one.
-  email     String?  @unique
-  timezone  String   @default("America/New_York")
+  email              String?   @unique
+  timezone           String    @default("America/New_York")
+  /// When this account last exported a full backup — the Settings data page's
+  /// "backup recency" line. Stamped by exportBackup; null = never exported.
+  lastBackupExportAt DateTime?
+
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
@@ -98,55 +102,57 @@ model User {
   /// answering questions must never be one setting away from writing data.
   assistantMode    String  @default("readonly")
 
-  scheduleItems     ScheduleItem[]
-  scheduleTemplates ScheduleTemplate[]
-  habits            Habit[]
-  habitLogs         HabitLog[]
-  foodItems         FoodItem[]
-  meals             Meal[]
-  mealTemplates     MealTemplate[]
-  workouts          Workout[]
-  workoutTemplates  WorkoutTemplate[]
-  healthMetrics     HealthMetric[]
-  healthRecords     HealthRecord[]
-  goals             Goal[]
-  daySummaries      CalendarDaySummary[]
-  journalEntries    JournalEntry[]
-  reminders         Reminder[]
-  reminderDeliveries ReminderDelivery[]
-  favorites         FavoriteItem[]
-  tags              Tag[]
-  scheduleRules     ScheduleRule[]
-  scheduleOverrides ScheduleOverride[]
-  seedBatches       SeedBatch[]
-  healthImportBatches HealthImportBatch[]
-  healthImportSessions HealthImportSession[]
-  healthUploadSessions HealthUploadSession[]
-  pushSubscriptions PushSubscription[]
-  recoveryCodes     RecoveryCode[]
-  projects          Project[]
-  tasks             Task[]
-  financeAccounts   FinanceAccount[]
-  financeTransactions FinanceTransaction[]
-  bills             Bill[]
-  savingsGoals      SavingsGoal[]
-  budgets           Budget[]
-  financeImportBatches FinanceImportBatch[]
-  financeCategoryRules FinanceCategoryRule[]
-  inboxItems        InboxItem[]
-  documents         LifeDocument[]
-  assistantProposals AssistantProposal[]
-  assistantAuditEntries AssistantAuditEntry[]
+  scheduleItems            ScheduleItem[]
+  scheduleTemplates        ScheduleTemplate[]
+  habits                   Habit[]
+  habitLogs                HabitLog[]
+  foodItems                FoodItem[]
+  meals                    Meal[]
+  mealTemplates            MealTemplate[]
+  workouts                 Workout[]
+  workoutTemplates         WorkoutTemplate[]
+  healthMetrics            HealthMetric[]
+  healthRecords            HealthRecord[]
+  goals                    Goal[]
+  daySummaries             CalendarDaySummary[]
+  journalEntries           JournalEntry[]
+  reminders                Reminder[]
+  reminderDeliveries       ReminderDelivery[]
+  favorites                FavoriteItem[]
+  tags                     Tag[]
+  scheduleRules            ScheduleRule[]
+  scheduleOverrides        ScheduleOverride[]
+  seedBatches              SeedBatch[]
+  healthImportBatches      HealthImportBatch[]
+  healthImportSessions     HealthImportSession[]
+  healthUploadSessions     HealthUploadSession[]
+  pushSubscriptions        PushSubscription[]
+  recoveryCodes            RecoveryCode[]
+  projects                 Project[]
+  tasks                    Task[]
+  financeAccounts          FinanceAccount[]
+  financeTransactions      FinanceTransaction[]
+  bills                    Bill[]
+  savingsGoals             SavingsGoal[]
+  budgets                  Budget[]
+  financeImportBatches     FinanceImportBatch[]
+  financeCategoryRules     FinanceCategoryRule[]
+  transferDismissals       TransferDismissal[]
+  billSuggestionDismissals BillSuggestionDismissal[]
+  inboxItems               InboxItem[]
+  documents                LifeDocument[]
+  assistantProposals       AssistantProposal[]
+  assistantAuditEntries    AssistantAuditEntry[]
 
   // --- day score configuration ----------------------------------------------
   /// JSON map of category → weight, e.g. {"planner":30,"habits":30,"goals":40}.
   /// Null/empty means "weight every applicable category equally", which is the
   /// default and needs no explanation beyond that sentence.
-  scoreWeights String?
+  scoreWeights       String?
   /// Whether low-priority planner items count toward the day score.
   scoreOptionalTasks Boolean @default(false)
   /// JSON blob backing the dismissible onboarding checklist.
-  onboardingState String @default("{}")
+  onboardingState    String  @default("{}")
 }
 
 // Authentication is in-app email+password (no OAuth provider, no Account
@@ -167,7 +173,7 @@ model RecoveryCode {
   user   User   @relation(fields: [userId], references: [id], onDelete: Cascade)
 
   /// SHA-256 hex of the normalized (lowercased, separator-stripped) code.
-  codeHash String @unique
+  codeHash String    @unique
   usedAt   DateTime?
 
   createdAt DateTime @default(now())
@@ -219,16 +225,16 @@ model ScheduleRule {
 
   /// For interval_days / interval_weeks: repeat every N, anchored on
   /// `effectiveFrom`.
-  interval Int @default(1)
+  interval     Int  @default(1)
   /// For times_per_week: how many completions in the week count as success.
   timesPerWeek Int?
   /// For monthly: day-of-month, clamped to the last day of short months.
-  monthDay Int?
+  monthDay     Int?
 
   enabled Boolean @default(true)
 
   /// morning | afternoon | evening | before_bed | anytime
-  daypart String @default("anytime")
+  daypart    String @default("anytime")
   /// Optional explicit time, minutes from midnight.
   timeMinute Int?
 
@@ -439,10 +445,18 @@ model ScheduleItem {
   templateId String?
   template   ScheduleTemplate? @relation(fields: [templateId], references: [id], onDelete: SetNull)
 
-  /// Set when this block was created from a task ("add to planner"). The item
-  /// stays an ordinary planner block — no scheduling logic rides this link;
-  /// it only records where the block came from. Deleting the task keeps the
-  /// block (SetNull); completing either side never touches the other.
+  /// Set when this block was created from a task ("add to planner"). A plain
+  /// column, deliberately not a join model: the FK direction (many blocks →
+  /// one task) already covers time-blocking one task across several days, and
+  /// recurrence materialises every occurrence as a real row, so a series
+  /// link is the parent's `taskId` copied at materialisation — exactly how
+  /// `habitId` propagates. A join model would need one row per materialised
+  /// occurrence anyway, and the one/future/all scope mechanics (exception
+  /// detach, series split, parent promotion) preserve a column for free.
+  ///
+  /// The link is live but never destructive: marking the block done offers to
+  /// complete the task, completing the task marks its planned blocks done
+  /// (see completeTask), and deletes on either side only detach (SetNull).
   taskId String?
   task   Task?   @relation(fields: [taskId], references: [id], onDelete: SetNull)
 
@@ -460,11 +474,16 @@ model ScheduleItem {
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
+  /// In the Trash when set — hidden everywhere by the guarded client
+  /// (src/lib/soft-delete.ts); restored or purged from Settings → Trash.
+  deletedAt DateTime?
+
   @@unique([userId, date, templateId, sourceKey])
   @@index([userId, date])
   @@index([userId, status])
   @@index([seriesId])
   @@index([taskId])
+  @@index([userId, deletedAt])
 }
 
 /// A reusable block (or whole routine) that can be stamped onto any day.
@@ -480,7 +499,7 @@ model ScheduleTemplate {
   items       String  @default("[]")
   icon        String?
 
-  useCount Int      @default(0)
+  useCount Int       @default(0)
   lastUsed DateTime?
 
   scheduleItems ScheduleItem[]
@@ -514,15 +533,22 @@ model Habit {
   // only thing the engine reads. These three columns are kept, and rewritten on
   // every save, so that backups taken before the upgrade still restore and the
   // raw database stays readable on its own. Never read them for scheduling.
-  frequency String @default("daily") // daily | weekly | custom
+  frequency     String @default("daily") // daily | weekly | custom
   /// For `custom`: JSON array of weekday numbers, 0=Sun … 6=Sat.
-  weekdays  String @default("[0,1,2,3,4,5,6]")
+  weekdays      String @default("[0,1,2,3,4,5,6]")
   /// For `weekly`: how many times per week counts as a success.
-  targetPerWeek Int @default(7)
+  targetPerWeek Int    @default(7)
 
   /// Optional numeric target, e.g. "8" glasses of water.
   targetValue Float?
   unit        String?
+
+  /// Pause window, inclusive `YYYY-MM-DD` bounds. Days inside it are neither
+  /// due nor missed — streaks, day scores and insights skip them entirely —
+  /// and the pause ends by itself when the range does. Either bound may be
+  /// open (from-only = "until further notice", until-only = "until then").
+  pausedFrom  String?
+  pausedUntil String?
 
   archived  Boolean @default(false)
   sortOrder Int     @default(0)
@@ -536,7 +562,12 @@ model Habit {
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
+  /// In the Trash when set — hidden everywhere by the guarded client
+  /// (src/lib/soft-delete.ts); restored or purged from Settings → Trash.
+  deletedAt DateTime?
+
   @@index([userId, archived])
+  @@index([userId, deletedAt])
 }
 
 model HabitLog {
@@ -551,7 +582,7 @@ model HabitLog {
   /// skipped — deliberately not done (breaks the streak, like a miss)
   /// excused — legitimately prevented (neutral: no credit, no broken streak)
   /// missed  — explicitly recorded as missed
-  status String @default("done")
+  status String  @default("done")
   value  Float?
   notes  String?
 
@@ -581,20 +612,20 @@ model FoodItem {
 
   /// Where this row came from: "local" (bundled) | "custom" (user-made) |
   /// "usda" | "off". Provider + externalId is the identity of an imported food.
-  provider   String  @default("local")
+  provider       String    @default("local")
   /// The provider's own id — an FDC id, or an Open Food Facts barcode. Null for
   /// local and custom foods, and SQLite treats NULLs as distinct in a unique
   /// index, so they never collide with each other.
-  externalId String?
-  barcode    String?
+  externalId     String?
+  barcode        String?
   /// "generic" (an ingredient — chicken breast, oats) | "branded" (a product).
-  kind       String  @default("generic")
+  kind           String    @default("generic")
   /// Human-readable attribution shown in the UI, e.g. "USDA FoodData Central".
-  source     String?
+  source         String?
   /// When the provider record was first pulled, and when it was last refreshed.
   /// A refresh updates the food but never a `MealEntry` already logged from it.
-  retrievedAt DateTime?
-  refreshedAt DateTime?
+  retrievedAt    DateTime?
+  refreshedAt    DateTime?
   /// JSON: nutrients beyond the seven first-class columns — saturated fat,
   /// cholesterol, potassium, calcium, iron, vitamins. Kept whole rather than
   /// discarded, because the provider will not always be reachable later.
@@ -604,16 +635,16 @@ model FoodItem {
   servingOptions String?
   /// 0–1: how much of the core nutrient set the provider actually supplied.
   /// Community data is often partial, and the UI says so rather than implying 0.
-  completeness Float?
+  completeness   Float?
   /// True when the row exists only because a provider result was cached.
-  cached Boolean @default(false)
+  cached         Boolean   @default(false)
 
   /// "per_100g" | "per_serving" | "per_package" | "per_item"
   basis String @default("per_100g")
 
   /// Default serving used when logging, expressed in grams for per_100g foods.
-  servingSize Float  @default(100)
-  servingUnit String @default("g")
+  servingSize  Float   @default(100)
+  servingUnit  String  @default("g")
   servingLabel String? // "1 medium (118 g)"
 
   calories Float
@@ -624,11 +655,11 @@ model FoodItem {
   sugar    Float @default(0)
   sodium   Float @default(0) // mg
 
-  category String  @default("other") // protein | grain | vegetable | fruit | dairy | fat | snack | beverage | supplement | prepared | other
-  isCustom Boolean @default(false)
-  verified Boolean @default(false)
+  category  String  @default("other") // protein | grain | vegetable | fruit | dairy | fat | snack | beverage | supplement | prepared | other
+  isCustom  Boolean @default(false)
+  verified  Boolean @default(false)
   /// Free-text search helper: lowercase name + brand + aliases.
-  searchKey String @default("")
+  searchKey String  @default("")
 
   entries      MealEntry[]
   templateRows MealTemplateItem[]
@@ -647,9 +678,9 @@ model Meal {
   userId String
   user   User   @relation(fields: [userId], references: [id], onDelete: Cascade)
 
-  date String // YYYY-MM-DD
+  date  String // YYYY-MM-DD
   /// breakfast | lunch | dinner | snack | custom
-  type  String @default("breakfast")
+  type  String  @default("breakfast")
   /// Free label for `custom` (e.g. "Pre-workout").
   label String?
   time  String? // HH:mm
@@ -661,7 +692,12 @@ model Meal {
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
+  /// In the Trash when set — hidden everywhere by the guarded client
+  /// (src/lib/soft-delete.ts); restored or purged from Settings → Trash.
+  deletedAt DateTime?
+
   @@index([userId, date])
+  @@index([userId, deletedAt])
 }
 
 model MealEntry {
@@ -727,7 +763,7 @@ model MealTemplate {
   user   User   @relation(fields: [userId], references: [id], onDelete: Cascade)
 
   name     String
-  mealType String @default("breakfast")
+  mealType String  @default("breakfast")
   notes    String?
 
   items MealTemplateItem[]
@@ -771,15 +807,15 @@ model Workout {
   /// strength | cardio | walking | running | cycling | swimming | yoga | mobility | sport | hiit | custom
   type String @default("strength")
 
-  durationMin    Int     @default(0)
-  intensity      String  @default("moderate") // easy | moderate | hard | max
-  caloriesBurned Int?
-  avgHeartRate   Int?
-  maxHeartRate   Int?
-  distanceKm     Float?
-  elevationM     Float?
-  perceivedEffort Int?   // RPE 1-10
-  notes          String?
+  durationMin     Int     @default(0)
+  intensity       String  @default("moderate") // easy | moderate | hard | max
+  caloriesBurned  Int?
+  avgHeartRate    Int?
+  maxHeartRate    Int?
+  distanceKm      Float?
+  elevationM      Float?
+  perceivedEffort Int? // RPE 1-10
+  notes           String?
 
   /// planned | in_progress | completed | abandoned | skipped
   ///
@@ -818,10 +854,15 @@ model Workout {
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
+  /// In the Trash when set — hidden everywhere by the guarded client
+  /// (src/lib/soft-delete.ts); restored or purged from Settings → Trash.
+  deletedAt DateTime?
+
   @@unique([userId, source, externalId])
   @@index([userId, date])
   @@index([userId, type])
   @@index([importBatchId])
+  @@index([userId, deletedAt])
 }
 
 model WorkoutSet {
@@ -834,13 +875,13 @@ model WorkoutSet {
 
   /// What actually happened. During a session these stay null until the set is
   /// ticked off; for a workout logged after the fact they are filled straight in.
-  reps       Int?
-  weightKg   Float?
+  reps        Int?
+  weightKg    Float?
   durationSec Int?
-  distanceM  Float?
-  restSec    Int?
-  rpe        Float?
-  notes      String?
+  distanceM   Float?
+  restSec     Int?
+  rpe         Float?
+  notes       String?
 
   /// What the plan asked for, kept separate from what was done. A session shows
   /// the target next to the input, and "3×8 @ 60 planned, 3×8 @ 62.5 done" stays
@@ -851,7 +892,7 @@ model WorkoutSet {
   /// Defaults true so a workout logged after the fact is complete on arrival —
   /// which is how every row before Phase 10 was written. A session creates its
   /// sets with `false` and ticks them off.
-  completed  Boolean @default(true)
+  completed   Boolean   @default(true)
   /// When the set was ticked. Drives the rest timer, and is what makes a
   /// session's elapsed time reconstructable rather than guessed.
   completedAt DateTime?
@@ -898,7 +939,7 @@ model HealthMetric {
 
   /// Reporting day. For a sleep interval that crosses midnight this is the day
   /// the interval *ends* — the night belongs to the morning you woke up on.
-  date String // YYYY-MM-DD
+  date  String // YYYY-MM-DD
   /// steps | active_calories | resting_calories | sleep_hours | resting_hr |
   /// heart_rate | hrv | body_weight | body_fat | hydration_ml | distance_km |
   /// blood_pressure | mood | energy
@@ -916,20 +957,20 @@ model HealthMetric {
   /// Optional secondary value, e.g. diastolic for blood pressure.
   secondaryValue Float?
   /// Range of the day's samples where the row summarises many (heart rate).
-  minValue Float?
-  maxValue Float?
-  notes    String?
+  minValue       Float?
+  maxValue       Float?
+  notes          String?
 
   /// Instant of the reading when known; otherwise the day is enough.
   recordedAt DateTime?
   /// Interval bounds for records that cover a span (sleep, summed samples).
-  startAt DateTime?
-  endAt   DateTime?
+  startAt    DateTime?
+  endAt      DateTime?
 
   /// Where the number came from: manual | apple_health | csv | workout |
   /// calculated | estimated. Estimated or manual data is never presented as a
   /// device measurement — the UI labels every value with this field.
-  source     String  @default("manual")
+  source       String  @default("manual")
   /// The app that recorded it (Apple Health sourceName, or the CSV's `source`
   /// column) — distinct devices are separate groups so phone + watch never
   /// double-count.
@@ -980,24 +1021,30 @@ model HealthUploadSession {
   userId String
   user   User   @relation(fields: [userId], references: [id], onDelete: Cascade)
 
+  /// What the staged bytes are: "health" (an Apple Health archive) or
+  /// "backup" (a personal-os backup JSON). One transport, two consumers —
+  /// each finalize endpoint asserts the kind it expects, so a backup can
+  /// never be fed to the health parser or vice versa.
+  kind String @default("health")
+
   /// receiving → parsing → (deleted). A failed parse deletes the parts and
   /// keeps the row only long enough to answer the request that failed.
   status String @default("receiving")
 
   /// Base filename only — never a path from the user's machine.
-  fileName String
+  fileName      String
   /// What the browser said the file is. A claim used only to size the upload;
   /// `receivedBytes` is what the server actually counted and is what binds.
-  declaredSize Int
+  declaredSize  Int
   /// Bytes actually stored, recomputed from the parts after every write.
-  receivedBytes Int @default(0)
+  receivedBytes Int    @default(0)
   /// Parts this session expects, derived server-side from declaredSize.
-  totalParts Int
+  totalParts    Int
   /// Parts actually stored, recomputed from the parts after every write.
-  receivedParts Int @default(0)
+  receivedParts Int    @default(0)
   /// The slice size the session was opened with, so a resumed upload keeps
   /// using the boundaries the stored parts were cut on.
-  partBytes Int
+  partBytes     Int
 
   expiresAt DateTime
   createdAt DateTime @default(now())
@@ -1054,12 +1101,12 @@ model HealthImportSession {
   /// Chunks the client declared at creation; all must arrive before finalize.
   totalChunks Int @default(0)
 
-  examined Int    @default(0)
-  invalid  Int    @default(0)
+  examined    Int    @default(0)
+  invalid     Int    @default(0)
   /// JSON array [{type, count}] of unsupported record types.
   unsupported String @default("[]")
   /// JSON array of parser warnings (bounded).
-  warnings String @default("[]")
+  warnings    String @default("[]")
 
   /// After finalize: the server-validated plan (rows, workouts, dupe lists)
   /// the confirm step writes from. Never the raw file.
@@ -1106,26 +1153,26 @@ model HealthImportBatch {
   fileSize Int?
 
   /// completed | failed | removed
-  status String @default("completed")
+  status String  @default("completed")
   error  String?
 
-  dateFrom String?
-  dateTo   String?
+  dateFrom   String?
+  dateTo     String?
   /// JSON array of the metric types the user selected (plus "workouts").
-  categories String @default("[]")
+  categories String  @default("[]")
 
   /// Raw records examined in the file, before rollup.
-  examined Int @default(0)
+  examined   Int @default(0)
   /// Normalised rows newly written.
-  imported Int @default(0)
+  imported   Int @default(0)
   /// Existing rows a re-import refreshed with a fuller value.
-  updated Int @default(0)
+  updated    Int @default(0)
   /// Rows already present and unchanged — the same file imported twice.
   duplicates Int @default(0)
   /// Records of types Personal OS does not track.
-  skipped Int @default(0)
+  skipped    Int @default(0)
   /// Rows that failed validation.
-  invalid Int @default(0)
+  invalid    Int @default(0)
 
   workoutsImported Int @default(0)
   workoutsSkipped  Int @default(0)
@@ -1135,11 +1182,11 @@ model HealthImportBatch {
   /// JSON array of non-fatal errors (a member file that would not parse, a
   /// record that could not be read) — kept apart from warnings so the history
   /// can show "it worked, but…" distinctly from "it did not work".
-  errors String @default("[]")
+  errors   String @default("[]")
 
   /// Non-metric records this run wrote (ECGs, medications, clinical records,
   /// workout routes). Counted separately because they are not days of numbers.
-  recordsImported Int @default(0)
+  recordsImported  Int @default(0)
   recordsDuplicate Int @default(0)
 
   /// Wall-clock of the run itself, so the history can show how long a
@@ -1150,9 +1197,9 @@ model HealthImportBatch {
 
   /// Bytes of `export.xml` the streaming parser read. A useful, non-identifying
   /// measure of how big the export really was once unzipped.
-  xmlBytes BigInt?
+  xmlBytes     BigInt?
   /// Member files the archive contained that this app does not read.
-  ignoredFiles String @default("[]")
+  ignoredFiles String  @default("[]")
 
   removedAt DateTime?
 
@@ -1218,19 +1265,19 @@ model HealthRecord {
   kind String
 
   /// Reporting day, so a record sits on the timeline with everything else.
-  date String // YYYY-MM-DD
+  date       String // YYYY-MM-DD
   recordedAt DateTime?
   startAt    DateTime?
   endAt      DateTime?
 
   /// What the record is, in one line — "Sinus rhythm", "Metformin 500 mg".
-  title String
+  title    String
   /// Secondary line: the classification, the issuer, the provider.
   subtitle String?
   /// Optional single number the kind is measured by (ECG average bpm, route
   /// distance in km, session minutes). Null when the kind has no such number.
-  value Float?
-  unit  String @default("")
+  value    Float?
+  unit     String  @default("")
 
   /// JSON object of kind-specific fields, bounded at write time. Display only.
   detail String @default("{}")
@@ -1290,7 +1337,7 @@ model Goal {
   /// manual | workout_count | workout_minutes | workout_distance | steps |
   /// active_calories | sleep_hours | hydration | calories | protein | carbs |
   /// fat | fiber | habit | planner_required
-  source String @default("manual")
+  source    String  @default("manual")
   /// For `habit` goals: the habit id. Otherwise null.
   sourceRef String?
 
@@ -1304,16 +1351,56 @@ model Goal {
 
   archivedAt DateTime?
 
-  entries GoalEntry[]
+  entries    GoalEntry[]
+  milestones GoalMilestone[]
 
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
+
+  /// In the Trash when set — hidden everywhere by the guarded client
+  /// (src/lib/soft-delete.ts); restored or purged from Settings → Trash.
+  deletedAt DateTime?
 
   // NOTE: deliberately *not* unique on (userId, domain, metric, period).
   // "Complete a workout on Mon/Tue/Thu/Fri" and "4 workouts per week" are two
   // legitimate simultaneous goals over the same metric.
   @@index([userId, domain, metric])
   @@index([userId, active])
+  @@index([userId, deletedAt])
+}
+
+/// An ordered checkpoint on a goal's way to its target: "10,000 steps by
+/// March", "save the first $1,000". Progress displays surface the next
+/// unreached milestone; `reachedAt` records the moment the goal's value first
+/// met `targetValue` (stamped by the server when it computes progress, so a
+/// milestone reached while the app was closed is still recorded on the next
+/// look). `reminderEnabled` opts one milestone's target date into the
+/// reminder feed, deduplicated by the same delivery ledger as every other
+/// reminder. Both sides are user-scoped; the action layer verifies the goal
+/// belongs to the caller before writing a row.
+model GoalMilestone {
+  id     String @id @default(cuid())
+  userId String
+
+  goalId String
+  goal   Goal   @relation(fields: [goalId], references: [id], onDelete: Cascade)
+
+  label           String?
+  targetValue     Float
+  /// Optional deadline, `YYYY-MM-DD`.
+  targetDate      String?
+  /// Display and progress order (drag-free: ordered by target value ascending
+  /// unless the user sets explicit ordinals via edits).
+  ordinal         Int     @default(0)
+  reminderEnabled Boolean @default(false)
+
+  reachedAt DateTime?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([goalId, ordinal])
+  @@index([userId])
 }
 
 /// A user-recorded outcome for one goal on one date.
@@ -1328,9 +1415,9 @@ model GoalEntry {
   goal   Goal   @relation(fields: [goalId], references: [id], onDelete: Cascade)
   userId String
 
-  date String // YYYY-MM-DD
+  date   String // YYYY-MM-DD
   /// done | skipped | excused
-  status String @default("done")
+  status String  @default("done")
   value  Float?
   notes  String?
 
@@ -1362,9 +1449,9 @@ model CalendarDaySummary {
   carbs    Float @default(0)
   fat      Float @default(0)
 
-  workoutCount    Int @default(0)
-  workoutMinutes  Int @default(0)
-  caloriesBurned  Int @default(0)
+  workoutCount   Int @default(0)
+  workoutMinutes Int @default(0)
+  caloriesBurned Int @default(0)
 
   steps      Float?
   sleepHours Float?
@@ -1408,8 +1495,13 @@ model JournalEntry {
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
+  /// In the Trash when set — hidden everywhere by the guarded client
+  /// (src/lib/soft-delete.ts); restored or purged from Settings → Trash.
+  deletedAt DateTime?
+
   @@unique([userId, date])
   @@index([userId, date])
+  @@index([userId, deletedAt])
 }
 
 model Reminder {
@@ -1417,8 +1509,8 @@ model Reminder {
   userId String
   user   User   @relation(fields: [userId], references: [id], onDelete: Cascade)
 
-  title   String
-  message String?
+  title    String
+  message  String?
   /// Local wall-clock instant the reminder should fire.
   remindAt DateTime
   /// none | daily | weekdays | weekly
@@ -1433,7 +1525,12 @@ model Reminder {
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
+  /// In the Trash when set — hidden everywhere by the guarded client
+  /// (src/lib/soft-delete.ts); restored or purged from Settings → Trash.
+  deletedAt DateTime?
+
   @@index([userId, enabled])
+  @@index([userId, deletedAt])
 }
 
 /// One row per delivered reminder occurrence. The unique key is what makes
@@ -1489,7 +1586,7 @@ model Project {
 
   name        String
   description String?
-  color       String @default("slate")
+  color       String  @default("slate")
 
   /// active | completed | archived (validated in src/lib/enums.ts)
   status      String    @default("active")
@@ -1502,7 +1599,12 @@ model Project {
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
+  /// In the Trash when set — hidden everywhere by the guarded client
+  /// (src/lib/soft-delete.ts); restored or purged from Settings → Trash.
+  deletedAt DateTime?
+
   @@index([userId, status])
+  @@index([userId, deletedAt])
 }
 
 /// One actionable item. Distinct from a planner ScheduleItem on purpose: a
@@ -1527,7 +1629,7 @@ model Task {
   notes String?
 
   /// open | done | dropped
-  status String @default("open")
+  status   String @default("open")
   /// low | medium | high | urgent — the planner's priority scale, reused.
   priority String @default("medium")
 
@@ -1536,9 +1638,9 @@ model Task {
 
   /// none | daily | weekly | monthly | yearly. Completing a repeating task
   /// advances `dueDate` to the next occurrence instead of closing the row.
-  repeat      String @default("none")
+  repeat       String  @default("none")
   /// Repeat every N units (every 2 weeks = weekly / 2).
-  repeatEvery Int    @default(1)
+  repeatEvery  Int     @default(1)
   /// The due date the repeat was configured against. Advancing generates
   /// occurrences from this anchor, so "monthly on the 31st" clamps to short
   /// months without drifting to the 28th forever.
@@ -1549,9 +1651,10 @@ model Task {
 
   sortOrder Int @default(0)
 
-  /// Planner blocks created from this task ("add to planner") and inbox
-  /// captures this task was converted from. Both links are informational —
-  /// deleting the task merely unlinks them.
+  /// Planner blocks created from this task ("add to planner") — completion
+  /// reflects both ways (the block offers, the task marks planned blocks
+  /// done) but deleting the task merely unlinks them. Inbox captures this
+  /// task was converted from stay purely informational.
   scheduleItems ScheduleItem[]
   inboxItems    InboxItem[]
 
@@ -1561,10 +1664,15 @@ model Task {
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
+  /// In the Trash when set — hidden everywhere by the guarded client
+  /// (src/lib/soft-delete.ts); restored or purged from Settings → Trash.
+  deletedAt DateTime?
+
   @@index([userId, status])
   @@index([userId, dueDate])
   @@index([projectId])
   @@index([parentId])
+  @@index([userId, deletedAt])
 }
 
 // ---------------------------------------------------------------------------
@@ -1579,9 +1687,9 @@ model FinanceAccount {
   userId String
   user   User   @relation(fields: [userId], references: [id], onDelete: Cascade)
 
-  name String
+  name     String
   /// checking | savings | cash | credit_card | investment | loan | other
-  type String @default("checking")
+  type     String @default("checking")
   /// ISO 4217 code, display-only — the app never converts between currencies.
   currency String @default("USD")
 
@@ -1589,13 +1697,29 @@ model FinanceAccount {
   /// always `openingBalance + sum(transactions)` — computed, never stored, so
   /// it cannot drift from the ledger. "Set balance" writes an adjustment
   /// transaction rather than editing this.
-  openingBalance Float @default(0)
+  openingBalance      Float @default(0)
+  /// Integer-cents replacement for openingBalance (see src/lib/logic/money.ts).
+  /// Dual-written with the float until the cleanup migration retires it.
+  openingBalanceCents Int?
 
   /// Remind when the computed balance sits below this amount (in the
   /// account's own currency). Null = no low-balance reminder. Delivery rides
   /// the reminder ledger, at most once per week per account — see
   /// resolveLowBalanceReminder in src/lib/logic/reminders.ts.
-  lowBalanceThreshold Float?
+  lowBalanceThreshold      Float?
+  /// Integer-cents replacement for lowBalanceThreshold.
+  lowBalanceThresholdCents Int?
+
+  /// Credit limit, for debt accounts (credit cards): what utilisation is
+  /// measured against. Null = not tracked.
+  creditLimit      Float?
+  /// Integer-cents replacement for creditLimit.
+  creditLimitCents Int?
+
+  /// Day of month (1–31) the statement payment is due, for credit cards.
+  /// Clamped to the month's length when shorter (31 → Feb 28). Surfaced with
+  /// the same due-distance language bills use. Null = not tracked.
+  statementDueDay Int?
 
   notes      String?
   archivedAt DateTime?
@@ -1608,7 +1732,12 @@ model FinanceAccount {
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
+  /// In the Trash when set — hidden everywhere by the guarded client
+  /// (src/lib/soft-delete.ts); restored or purged from Settings → Trash.
+  deletedAt DateTime?
+
   @@index([userId])
+  @@index([userId, deletedAt])
 }
 
 /// One ledger entry. `amount` is signed: positive is money in, negative is
@@ -1627,8 +1756,11 @@ model FinanceTransaction {
   billId String?
   bill   Bill?   @relation(fields: [billId], references: [id], onDelete: SetNull)
 
-  date   String // YYYY-MM-DD
-  amount Float // signed; never zero (validated in the action layer)
+  date        String // YYYY-MM-DD
+  amount      Float // signed; never zero (validated in the action layer)
+  /// Integer-cents replacement for amount — the value the app reads. Signed.
+  /// Dual-written with the float until the cleanup migration retires it.
+  amountCents Int?
 
   /// Merchant / counterparty, free text. What a future CSV import maps its
   /// description column onto.
@@ -1650,6 +1782,15 @@ model FinanceTransaction {
   /// `transfer`, which every income/spending summary excludes.
   transferGroupId String?
 
+  /// When this row became a transfer leg by LINKING (mark-as-transfer or
+  /// auto-detection) rather than the Transfer flow, the category it carried
+  /// before — what unlinking restores. Null for rows the Transfer flow wrote
+  /// (they never were anything else) and for non-legs.
+  preTransferCategory String?
+
+  transferDismissalsA TransferDismissal[] @relation("dismissalRowA")
+  transferDismissalsB TransferDismissal[] @relation("dismissalRowB")
+
   /// The CSV import batch that created this row, for auditability. Optional —
   /// deleting the batch record keeps the transactions.
   importBatchId String?
@@ -1658,12 +1799,17 @@ model FinanceTransaction {
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
+  /// In the Trash when set — hidden everywhere by the guarded client
+  /// (src/lib/soft-delete.ts); restored or purged from Settings → Trash.
+  deletedAt DateTime?
+
   @@unique([userId, importKey])
   @@index([userId, date])
   @@index([accountId, date])
   @@index([billId])
   @@index([transferGroupId])
   @@index([importBatchId])
+  @@index([userId, deletedAt])
 }
 
 /// A recurring obligation — a bill or a subscription (`kind` separates the
@@ -1676,10 +1822,12 @@ model Bill {
   userId String
   user   User   @relation(fields: [userId], references: [id], onDelete: Cascade)
 
-  name   String
+  name        String
   /// The expected amount per occurrence; the actual paid amount lives on the
   /// linked transaction.
-  amount Float
+  amount      Float
+  /// Integer-cents replacement for amount.
+  amountCents Int?
 
   /// bill | subscription
   kind     String @default("bill")
@@ -1691,21 +1839,21 @@ model Bill {
   account   FinanceAccount? @relation(fields: [accountId], references: [id], onDelete: SetNull)
 
   /// once | weekly | monthly | quarterly | yearly
-  recurrence String @default("monthly")
+  recurrence  String    @default("monthly")
   /// First due date the recurrence generates from. Never edited by payments.
-  anchorDate String // YYYY-MM-DD
+  anchorDate  String // YYYY-MM-DD
   /// The next unpaid occurrence. Everything that asks "what is due?" reads
   /// this one column.
   nextDueDate String // YYYY-MM-DD
   /// A `once` bill that has been paid: nothing further is due, row kept for
   /// history.
-  settledAt DateTime?
+  settledAt   DateTime?
 
   autoPay Boolean @default(false)
 
-  reminderEnabled     Boolean @default(true)
+  reminderEnabled    Boolean @default(true)
   /// Also remind this many days before the due date (0 = only on the day).
-  reminderDaysBefore  Int     @default(3)
+  reminderDaysBefore Int     @default(3)
 
   lastPaidDate String?
   notes        String?
@@ -1716,8 +1864,13 @@ model Bill {
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
+  /// In the Trash when set — hidden everywhere by the guarded client
+  /// (src/lib/soft-delete.ts); restored or purged from Settings → Trash.
+  deletedAt DateTime?
+
   @@index([userId, nextDueDate])
   @@index([accountId])
+  @@index([userId, deletedAt])
 }
 
 /// Money being put aside toward something. `currentAmount` is maintained by
@@ -1728,11 +1881,14 @@ model SavingsGoal {
   userId String
   user   User   @relation(fields: [userId], references: [id], onDelete: Cascade)
 
-  name          String
-  targetAmount  Float
-  currentAmount Float   @default(0)
-  targetDate    String? // YYYY-MM-DD
-  notes         String?
+  name               String
+  targetAmount       Float
+  currentAmount      Float   @default(0)
+  /// Integer-cents replacements (see src/lib/logic/money.ts).
+  targetAmountCents  Int?
+  currentAmountCents Int?
+  targetDate         String? // YYYY-MM-DD
+  notes              String?
 
   archivedAt DateTime?
   sortOrder  Int       @default(0)
@@ -1740,7 +1896,12 @@ model SavingsGoal {
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
+  /// In the Trash when set — hidden everywhere by the guarded client
+  /// (src/lib/soft-delete.ts); restored or purged from Settings → Trash.
+  deletedAt DateTime?
+
   @@index([userId])
+  @@index([userId, deletedAt])
 }
 
 /// A spending target for one category over one window. Spending in the window
@@ -1755,12 +1916,14 @@ model Budget {
 
   /// See FINANCE_CATEGORIES in src/lib/enums.ts. Bookkeeping categories
   /// (adjustment, transfer) and income are rejected in the action layer.
-  category String
+  category    String
   /// Target spend per period, in the user's primary currency.
-  amount   Float
+  amount      Float
+  /// Integer-cents replacement for amount.
+  amountCents Int?
   /// monthly | weekly — the window spending is measured over. Weekly windows
   /// follow the user's own weekStartsOn convention.
-  period   String @default("monthly")
+  period      String @default("monthly")
 
   /// Remind once per period when spending crosses this share of the target
   /// (50, 75, 90 …). Null = no threshold reminder. Delivery rides the one
@@ -1768,11 +1931,21 @@ model Budget {
   /// resolveBudgetThresholdReminder in src/lib/logic/reminders.ts.
   alertThresholdPercent Int?
 
+  /// Opt-in rollover: the previous period's unused amount carries into the
+  /// current one, capped at one period's worth. The maths live in
+  /// budgetProgress (src/lib/logic/finance.ts) — this is only the switch.
+  rollover Boolean @default(false)
+
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
+  /// In the Trash when set — hidden everywhere by the guarded client
+  /// (src/lib/soft-delete.ts); restored or purged from Settings → Trash.
+  deletedAt DateTime?
+
   @@unique([userId, category])
   @@index([userId, alertThresholdPercent])
+  @@index([userId, deletedAt])
 }
 
 /// One CSV import run — the audit record behind "where did these rows come
@@ -1788,7 +1961,7 @@ model FinanceImportBatch {
   accountId String?
   account   FinanceAccount? @relation(fields: [accountId], references: [id], onDelete: SetNull)
 
-  fileName String
+  fileName      String
   /// Rows in the file, excluding the header.
   rowCount      Int
   createdCount  Int
@@ -1800,12 +1973,12 @@ model FinanceImportBatch {
   /// Set when the user undid this import. The batch row itself is never
   /// deleted — an import that happened stays in the history, now labelled as
   /// rolled back — and the stamp is what makes undo refuse to run twice.
-  undoneAt DateTime?
+  undoneAt    DateTime?
   /// Rows the undo actually removed …
-  undoneCount Int @default(0)
+  undoneCount Int       @default(0)
   /// … and rows it deliberately left in place because they had been edited
   /// away from what the import wrote (see src/lib/logic/finance-import.ts).
-  keptCount   Int @default(0)
+  keptCount   Int       @default(0)
 
   transactions FinanceTransaction[]
 
@@ -1813,6 +1986,43 @@ model FinanceImportBatch {
 
   @@index([userId, createdAt])
   @@index([accountId])
+}
+
+/// A "track this as a bill" suggestion the user said NO to: recurring-cost
+/// detection must never re-offer this payee. Keyed on the normalised
+/// (trimmed, lowercased) payee — dismissing "Netflix" covers every cadence
+/// it might be re-detected at.
+model BillSuggestionDismissal {
+  id     String @id @default(cuid())
+  userId String
+  user   User   @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  payeeKey String
+
+  createdAt DateTime @default(now())
+
+  @@unique([userId, payeeKey])
+}
+
+/// A transfer suggestion the user said NO to: this exact pair of ledger rows
+/// must never be offered (or auto-linked) again. The pair is stored in
+/// canonical order (aId < bId), so leg order can never resurrect a dismissed
+/// suggestion. Rows cascade — a dismissal dies with either row.
+model TransferDismissal {
+  id     String @id @default(cuid())
+  userId String
+  user   User   @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  aId String
+  a   FinanceTransaction @relation("dismissalRowA", fields: [aId], references: [id], onDelete: Cascade)
+  bId String
+  b   FinanceTransaction @relation("dismissalRowB", fields: [bId], references: [id], onDelete: Cascade)
+
+  createdAt DateTime @default(now())
+
+  @@unique([userId, aId, bId])
+  @@index([aId])
+  @@index([bId])
 }
 
 /// A persisted CSV category mapping: when an import's category cell says
@@ -1868,8 +2078,13 @@ model InboxItem {
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
+  /// In the Trash when set — hidden everywhere by the guarded client
+  /// (src/lib/soft-delete.ts); restored or purged from Settings → Trash.
+  deletedAt DateTime?
+
   @@index([userId, status])
   @@index([taskId])
+  @@index([userId, deletedAt])
 }
 
 // ---------------------------------------------------------------------------
@@ -1890,27 +2105,32 @@ model LifeDocument {
   userId String
   user   User   @relation(fields: [userId], references: [id], onDelete: Cascade)
 
-  name String
+  name   String
   /// id | insurance | lease | warranty | licence | membership | other
   /// (validated in src/lib/enums.ts)
-  kind String @default("other")
+  kind   String  @default("other")
   /// Who issued or holds it — an insurer, a landlord, an agency. Optional.
   issuer String?
 
   expiryDate String // YYYY-MM-DD
   notes      String?
 
-  reminderEnabled Boolean @default(true)
+  reminderEnabled    Boolean @default(true)
   /// Remind this many days before the expiry date (0 = only on the day).
-  reminderDaysBefore Int @default(30)
+  reminderDaysBefore Int     @default(30)
 
   archivedAt DateTime?
 
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
+  /// In the Trash when set — hidden everywhere by the guarded client
+  /// (src/lib/soft-delete.ts); restored or purged from Settings → Trash.
+  deletedAt DateTime?
+
   @@index([userId, expiryDate])
   @@index([userId, archivedAt])
+  @@index([userId, deletedAt])
 }
 
 /// Generic "pin this" across domains — foods, workouts, templates, habits.
@@ -1923,8 +2143,8 @@ model FavoriteItem {
   kind       String
   refId      String
   label      String
-  sortOrder  Int    @default(0)
-  useCount   Int    @default(0)
+  sortOrder  Int       @default(0)
+  useCount   Int       @default(0)
   lastUsedAt DateTime?
 
   createdAt DateTime @default(now())
@@ -1959,28 +2179,28 @@ model AssistantProposal {
   /// (src/lib/logic/assistant.ts): create_task | complete_task |
   /// create_reminder | create_inbox_item | create_transaction |
   /// create_planner_block | delete_task | delete_reminder
-  kind String
+  kind           String
   /// Validated, normalized action input as JSON — exactly what will execute.
-  payload String
+  payload        String
   /// One human sentence describing the action, shown on the proposal card.
-  summary String
+  summary        String
   /// normal | sensitive | destructive — drives how much confirmation the UI
   /// demands. Derived from the kind server-side, never client-supplied.
-  risk String
+  risk           String
   /// Truncated user request that led to this proposal (for the activity feed).
   requestPreview String @default("")
 
   /// proposed | confirmed | rejected | expired | failed
-  status String @default("proposed")
+  status           String    @default("proposed")
   /// Set when the user decides (confirm or reject), or the sweep expires it.
-  decidedAt DateTime?
+  decidedAt        DateTime?
   /// A proposal the user never decides on stops being executable here.
-  expiresAt DateTime
+  expiresAt        DateTime
   /// Outcome of execution: created/changed record id, when there is one.
   executedRecordId String?
   /// App-authored one-liner about how execution went ("Task created", or the
   /// action's own error message). Never a stack trace.
-  resultSummary String?
+  resultSummary    String?
 
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
@@ -2002,23 +2222,23 @@ model AssistantAuditEntry {
   user   User   @relation(fields: [userId], references: [id], onDelete: Cascade)
 
   /// chat | action | connection
-  kind String
+  kind           String
   /// ok | error | refused | cancelled
-  status String
+  status         String
   /// Bounded, app-authored description of what happened.
-  summary String
+  summary        String
   /// Truncated first line of the user's request ("" for connection tests).
-  requestPreview String @default("")
+  requestPreview String  @default("")
   /// JSON array of { tool, args } with bounded, truncated argument summaries.
-  toolCalls String @default("[]")
+  toolCalls      String  @default("[]")
   /// The proposal this entry records a decision about, when kind = "action".
   /// A plain reference (no FK): audit history must outlive nothing — it keeps
   /// meaning even if the proposal table is ever pruned.
-  proposalId String?
+  proposalId     String?
   /// The Ollama model that served the exchange, when one was involved.
-  model String?
+  model          String?
   /// Wall-clock duration of the exchange, for "why was that slow".
-  durationMs Int?
+  durationMs     Int?
 
   createdAt DateTime @default(now())
 

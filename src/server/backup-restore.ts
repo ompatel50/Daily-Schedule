@@ -4,8 +4,9 @@ import { createHash } from "node:crypto";
 
 import { Prisma } from "@prisma/client";
 
-import { prisma } from "@/lib/prisma";
+import { prisma, prismaIncludingTrashed } from "@/lib/prisma";
 import { BACKUP_TABLES, type BackupFile, type BackupTable } from "@/lib/backup-format";
+import { SOFT_DELETE_MODELS } from "@/lib/soft-delete";
 
 /**
  * Restoring a backup into a *hosted, multi-user* database.
@@ -47,6 +48,21 @@ export function remapId(userId: string, oldId: string): string {
   return "i" + createHash("sha256").update(`personal-os-import|${userId}|${oldId}`).digest("hex").slice(0, 24);
 }
 
+/**
+ * Money restore: a v10-or-older file carries only the legacy float columns —
+ * derive the integer cents the app reads (same rounding `toCents` uses). A
+ * v11+ file carries both and keeps its own cents.
+ */
+function ensureCents(
+  row: Record<string, unknown>,
+  centsKey: string,
+  floatKey: string,
+): void {
+  if (typeof row[centsKey] === "number") return;
+  const legacy = row[floatKey];
+  row[centsKey] = typeof legacy === "number" ? Math.round(legacy * 100) : null;
+}
+
 // --- schema-driven row sanitising ------------------------------------------
 
 const MODEL_BY_TABLE: Record<BackupTable, string> = {
@@ -69,6 +85,7 @@ const MODEL_BY_TABLE: Record<BackupTable, string> = {
   healthRecords: "HealthRecord",
   goals: "Goal",
   goalEntries: "GoalEntry",
+  goalMilestones: "GoalMilestone",
   scheduleRules: "ScheduleRule",
   scheduleRuleDays: "ScheduleRuleDay",
   scheduleOverrides: "ScheduleOverride",
@@ -83,9 +100,11 @@ const MODEL_BY_TABLE: Record<BackupTable, string> = {
   financeImportBatches: "FinanceImportBatch",
   bills: "Bill",
   financeTransactions: "FinanceTransaction",
+  transferDismissals: "TransferDismissal",
   savingsGoals: "SavingsGoal",
   budgets: "Budget",
   financeCategoryRules: "FinanceCategoryRule",
+  billSuggestionDismissals: "BillSuggestionDismissal",
   inboxItems: "InboxItem",
   documents: "LifeDocument",
   seedBatches: "SeedBatch",
@@ -543,6 +562,14 @@ export async function restoreBackupForUser(
     return own(mapped);
   });
 
+  prepare("goalMilestones", (row) => {
+    const mapped = withId(row);
+    if (!mapped) return null;
+    if (!inFile("goals", row.goalId)) return null;
+    mapped.goalId = map(row.goalId);
+    return own(mapped);
+  });
+
   const mapOwner = (row: Row): { ownerId: string } | null => {
     if (row.ownerType === "goal" && inFile("goals", row.ownerId)) {
       return { ownerId: map(row.ownerId)! };
@@ -629,7 +656,11 @@ export async function restoreBackupForUser(
 
   prepare("financeAccounts", (row) => {
     const mapped = withId(row);
-    return mapped ? own(mapped) : null;
+    if (!mapped) return null;
+    ensureCents(mapped, "openingBalanceCents", "openingBalance");
+    ensureCents(mapped, "lowBalanceThresholdCents", "lowBalanceThreshold");
+    ensureCents(mapped, "creditLimitCents", "creditLimit");
+    return own(mapped);
   });
 
   prepare("financeImportBatches", (row) => {
@@ -644,6 +675,7 @@ export async function restoreBackupForUser(
     const mapped = withId(row);
     if (!mapped) return null;
     mapped.accountId = inFile("financeAccounts", row.accountId) ? map(row.accountId) : null;
+    ensureCents(mapped, "amountCents", "amount");
     return own(mapped);
   });
 
@@ -676,20 +708,48 @@ export async function restoreBackupForUser(
       typeof row.transferGroupId === "string" && row.transferGroupId.length > 0
         ? remapId(userId, row.transferGroupId)
         : null;
+    ensureCents(mapped, "amountCents", "amount");
+    return own(mapped);
+  });
+
+  prepare("transferDismissals", (row) => {
+    const mapped = withId(row);
+    if (!mapped) return null;
+    // A dismissal is meaningless without both of its rows in the file.
+    if (!inFile("financeTransactions", row.aId) || !inFile("financeTransactions", row.bId)) {
+      return null;
+    }
+    const first = map(row.aId as string);
+    const second = map(row.bId as string);
+    if (!first || !second) return null;
+    // Remapping can flip lexical order — re-canonicalise (aId < bId), the
+    // invariant the unique index and the pair key rely on.
+    mapped.aId = first < second ? first : second;
+    mapped.bId = first < second ? second : first;
     return own(mapped);
   });
 
   prepare("savingsGoals", (row) => {
     const mapped = withId(row);
-    return mapped ? own(mapped) : null;
+    if (!mapped) return null;
+    ensureCents(mapped, "targetAmountCents", "targetAmount");
+    ensureCents(mapped, "currentAmountCents", "currentAmount");
+    return own(mapped);
   });
 
   prepare("budgets", (row) => {
     const mapped = withId(row);
-    return mapped ? own(mapped) : null;
+    if (!mapped) return null;
+    ensureCents(mapped, "amountCents", "amount");
+    return own(mapped);
   });
 
   prepare("financeCategoryRules", (row) => {
+    const mapped = withId(row);
+    return mapped ? own(mapped) : null;
+  });
+
+  prepare("billSuggestionDismissals", (row) => {
     const mapped = withId(row);
     return mapped ? own(mapped) : null;
   });
@@ -759,8 +819,25 @@ export async function restoreBackupForUser(
   // ---- the transaction -------------------------------------------------------
   const outcomes: TableOutcome[] = [];
 
-  await prisma.$transaction(
+  // The RAW client's transaction, deliberately (src/lib/soft-delete.ts):
+  // replace-mode must wipe trashed rows too (a guarded delete would leave
+  // them holding unique keys the restore is about to re-insert), and the
+  // verification counts below must count what is really in the tables.
+  await prismaIncludingTrashed.$transaction(
     async (db) => {
+      // Restored tables start from a clean Trash in BOTH modes: a trashed
+      // row still holds its unique keys (import keys, budget categories,
+      // journal dates…) and would fail the insert. Backups exclude trashed
+      // rows by design, so this only drops rows already headed for the
+      // 30-day purge.
+      for (const { table, rows } of prepared) {
+        if (rows.length === 0) continue;
+        const model = MODEL_BY_TABLE[table];
+        if (!SOFT_DELETE_MODELS.has(model)) continue;
+        const delegate = (model[0].toLowerCase() + model.slice(1)) as "task";
+        await db[delegate].deleteMany({ where: { userId, deletedAt: { not: null } } });
+      }
+
       if (mode === "replace") {
         // Children before parents. Every delete is scoped to this user.
         await db.scheduleItemTag.deleteMany({ where: { scheduleItem: { userId } } });
@@ -781,6 +858,7 @@ export async function restoreBackupForUser(
         await db.reminder.deleteMany({ where: { userId } });
         await db.reminderDelivery.deleteMany({ where: { userId } });
         await db.favoriteItem.deleteMany({ where: { userId } });
+        await db.transferDismissal.deleteMany({ where: { userId } });
         await db.financeTransaction.deleteMany({ where: { userId } });
         await db.bill.deleteMany({ where: { userId } });
         await db.financeImportBatch.deleteMany({ where: { userId } });
@@ -788,10 +866,12 @@ export async function restoreBackupForUser(
         await db.savingsGoal.deleteMany({ where: { userId } });
         await db.budget.deleteMany({ where: { userId } });
         await db.financeCategoryRule.deleteMany({ where: { userId } });
+        await db.billSuggestionDismissal.deleteMany({ where: { userId } });
         await db.task.deleteMany({ where: { userId } });
         await db.project.deleteMany({ where: { userId } });
         await db.inboxItem.deleteMany({ where: { userId } });
         await db.goalEntry.deleteMany({ where: { userId } });
+        await db.goalMilestone.deleteMany({ where: { userId } });
         await db.goal.deleteMany({ where: { userId } });
         await db.scheduleRuleDay.deleteMany({ where: { rule: { userId } } });
         await db.scheduleRule.deleteMany({ where: { userId } });
@@ -879,6 +959,7 @@ export async function restoreBackupForUser(
     healthRecords: await prisma.healthRecord.count({ where: { userId } }),
     goals: await prisma.goal.count({ where: { userId } }),
     goalEntries: await prisma.goalEntry.count({ where: { userId } }),
+    goalMilestones: await prisma.goalMilestone.count({ where: { userId } }),
     scheduleRules: await prisma.scheduleRule.count({ where: { userId } }),
     scheduleOverrides: await prisma.scheduleOverride.count({ where: { userId } }),
     journalEntries: await prisma.journalEntry.count({ where: { userId } }),
@@ -890,9 +971,11 @@ export async function restoreBackupForUser(
     financeImportBatches: await prisma.financeImportBatch.count({ where: { userId } }),
     bills: await prisma.bill.count({ where: { userId } }),
     financeTransactions: await prisma.financeTransaction.count({ where: { userId } }),
+    transferDismissals: await prisma.transferDismissal.count({ where: { userId } }),
     savingsGoals: await prisma.savingsGoal.count({ where: { userId } }),
     budgets: await prisma.budget.count({ where: { userId } }),
     financeCategoryRules: await prisma.financeCategoryRule.count({ where: { userId } }),
+    billSuggestionDismissals: await prisma.billSuggestionDismissal.count({ where: { userId } }),
     inboxItems: await prisma.inboxItem.count({ where: { userId } }),
     taskTags: await prisma.taskTag.count({ where: { task: { userId } } }),
     documents: await prisma.lifeDocument.count({ where: { userId } }),
@@ -914,7 +997,7 @@ export async function restoreBackupForUser(
   return { report };
 }
 
-type DbClient = Parameters<Parameters<typeof prisma.$transaction>[0]>[0];
+type DbClient = Parameters<Parameters<typeof prismaIncludingTrashed.$transaction>[0]>[0];
 
 /**
  * Give any goal or habit that arrived without a schedule an every-day rule.

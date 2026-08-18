@@ -9,7 +9,7 @@
  */
 import { beforeAll, beforeEach, describe, expect, it } from "vitest";
 
-import { prisma } from "@/lib/prisma";
+import { prisma, prismaIncludingTrashed } from "@/lib/prisma";
 import { BACKUP_VERSION } from "@/lib/backup-format";
 import { monthRange, shiftDay, weekRange } from "@/lib/date";
 import { budgetThresholdReminderKey, dueReminderKey } from "@/lib/logic/reminders";
@@ -467,12 +467,12 @@ describe("budget periods and thresholds", () => {
     const dining = byCategory.get("dining")!;
     expect(dining.period).toBe("weekly");
     expect(dining.window).toEqual(week);
-    expect(dining.spent).toBe(25); // the 99 outside the week never counts
+    expect(dining.spent).toBe(2500); // the 99 outside the week never counts
 
     const groceries = byCategory.get("groceries")!;
     expect(groceries.period).toBe("monthly");
     expect(groceries.window).toEqual(month);
-    expect(groceries.spent).toBe(earlier >= month.start ? 75 : 30);
+    expect(groceries.spent).toBe(earlier >= month.start ? 7500 : 3000);
   });
 
   it("a weekly budget counts a purchase in the part of the week that spills into next month", async () => {
@@ -487,7 +487,7 @@ describe("budget periods and thresholds", () => {
       await spend(account.id, 20, week.end, "dining");
       const overview = await getFinanceOverview();
       const dining = overview.budgets.find((view) => view.budget.category === "dining")!;
-      expect(dining.spent).toBe(20);
+      expect(dining.spent).toBe(2000);
     } else {
       // Otherwise assert the equivalent invariant: the fetch window covers the
       // whole week regardless of where the month ends.
@@ -504,7 +504,7 @@ describe("budget periods and thresholds", () => {
 
     const overview = await getFinanceOverview();
     const view = overview.budgets[0];
-    expect(view).toMatchObject({ spent: 130, percent: 130, over: true, period: "monthly" });
+    expect(view).toMatchObject({ spent: 13000, percent: 130, over: true, period: "monthly" });
 
     const summary = await getFinanceSummary();
     expect(summary.budgets.overCount).toBe(1);
@@ -657,10 +657,15 @@ describe("task tags", () => {
     ]);
   });
 
-  it("deleting a task removes its links but not the shared tags", async () => {
+  it("deleting a task trashes it — links wait with it, shared tags stay", async () => {
     const id = await task("Temp", ["admin"]);
     await deleteTask(id);
-    expect(await prisma.taskTag.count({ where: { taskId: id } })).toBe(0);
+    // Soft delete: the task sits in the Trash with its tag links intact (a
+    // restore brings both back); the tag itself is untouched either way.
+    expect(await prisma.task.findFirst({ where: { id } })).toBeNull();
+    const trashed = await prismaIncludingTrashed.task.findUniqueOrThrow({ where: { id } });
+    expect(trashed.deletedAt).not.toBeNull();
+    expect(await prisma.taskTag.count({ where: { taskId: id } })).toBe(1);
     expect(await prisma.tag.count({ where: { userId: alice.id } })).toBe(1);
   });
 

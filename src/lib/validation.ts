@@ -129,6 +129,23 @@ export const templateApplySchema = z.object({
 });
 
 /**
+ * Copying one operational day's (or week's) planner layout onto another.
+ * `confirm` repeats a call whose first run reported conflicts.
+ */
+export const plannerCopySchema = z
+  .object({
+    from: dayKey,
+    to: dayKey,
+    confirm: z.boolean().default(false),
+  })
+  .refine((value) => value.from !== value.to, {
+    message: "Pick a different day to copy to",
+    path: ["to"],
+  });
+
+export type PlannerCopyInput = z.infer<typeof plannerCopySchema>;
+
+/**
  * How far an edit or a delete reaches on a recurring item: just this
  * occurrence, this one and everything after it, or the whole series.
  */
@@ -155,7 +172,19 @@ export const habitSchema = z.object({
   icon: z.string().max(40).default("Check"),
   startDate: dayKey,
   endDate: dayKey.nullable().optional(),
+  // The pause window — either bound may be open; both set must be in order.
+  pausedFrom: dayKey.nullable().optional(),
+  pausedUntil: dayKey.nullable().optional(),
   archived: z.boolean().default(false),
+});
+
+export const goalMilestoneSchema = z.object({
+  id: z.string().optional(),
+  goalId: z.string().min(1),
+  label: z.string().trim().max(120).nullable().optional(),
+  targetValue: z.number().finite("Must be a number"),
+  targetDate: dayKey.nullable().optional(),
+  reminderEnabled: z.boolean().default(false),
 });
 
 export const habitLogSchema = z.object({
@@ -528,6 +557,13 @@ export const financeAccountSchema = z.object({
   openingBalance: money.default(0),
   /** Remind when the balance drops below this; null = no low-balance alert. */
   lowBalanceThreshold: money.nullable().optional(),
+  /** Utilisation is measured against this; null = not tracked. */
+  creditLimit: money
+    .refine((value) => value > 0, "The credit limit must be above zero")
+    .nullable()
+    .optional(),
+  /** Day of month the statement payment is due; null = not tracked. */
+  statementDueDay: z.number().int().min(1).max(31).nullable().optional(),
   notes: z.string().max(2000).nullable().optional(),
 });
 
@@ -635,6 +671,40 @@ export const transferSchema = z
 
 export type TransferInput = z.infer<typeof transferSchema>;
 
+/** Candidate lookup for "Mark as transfer" — the window the UI can vary. */
+export const transferCandidatesSchema = z.object({
+  transactionId: z.string().min(1),
+  windowDays: z.number().int().min(1).max(31).optional(),
+});
+
+/** Link two existing rows as the two legs of one transfer. */
+export const transferLinkSchema = z
+  .object({
+    transactionId: z.string().min(1),
+    counterpartId: z.string().min(1),
+  })
+  .refine((value) => value.transactionId !== value.counterpartId, {
+    message: "Pick two different transactions",
+    path: ["counterpartId"],
+  });
+
+/** Create the missing leg of a one-sided row in a chosen account. */
+export const transferCounterpartSchema = z.object({
+  transactionId: z.string().min(1),
+  accountId: z.string().min(1, "Pick the counterpart account"),
+});
+
+/** Dismiss one suggested pair — it must never be offered again. */
+export const transferDismissSchema = z
+  .object({
+    aId: z.string().min(1),
+    bId: z.string().min(1),
+  })
+  .refine((value) => value.aId !== value.bId, {
+    message: "A pair needs two different transactions",
+    path: ["bId"],
+  });
+
 /** One budget per spending category, measured over a monthly or weekly window. */
 export const budgetSchema = z.object({
   id: z.string().optional(),
@@ -651,6 +721,8 @@ export const budgetSchema = z.object({
     ])
     .nullable()
     .optional(),
+  /** Opt-in: last period's unused amount carries into this one (capped). */
+  rollover: z.boolean().default(false),
 });
 
 export type BudgetInput = z.infer<typeof budgetSchema>;

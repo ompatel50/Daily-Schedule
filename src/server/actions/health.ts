@@ -3,6 +3,8 @@
 import { revalidatePath } from "next/cache";
 
 import { getCurrentUser, prisma } from "@/lib/db";
+import { prismaIncludingTrashed } from "@/lib/prisma";
+import { trashStamp } from "@/lib/soft-delete";
 import { displayUnitFor, HEALTH_METRIC_RULES, toCanonical } from "@/lib/logic/health";
 import { manualDailyFingerprint } from "@/lib/logic/health-import/rollup";
 import {
@@ -135,7 +137,10 @@ export async function saveGoal(input: unknown): Promise<ActionResult<{ id: strin
 
 export async function deleteGoal(id: string): Promise<ActionResult<null>> {
   const user = await getCurrentUser();
-  await prisma.goal.deleteMany({ where: { id, userId: user.id } });
+  await prisma.goal.updateMany({
+    where: { id, userId: user.id },
+    data: { deletedAt: trashStamp() },
+  });
   revalidateAll();
   return succeed(null);
 }
@@ -149,12 +154,24 @@ export async function saveJournalEntry(input: unknown): Promise<ActionResult<{ i
   const user = await getCurrentUser();
   const { date, title, content, mood, energy } = parsed.data;
 
-  // An emptied entry is a delete — avoids accumulating blank rows.
+  // An emptied entry is a delete — to the Trash, so a cleared page can come
+  // back for 30 days instead of vanishing on one misclick.
   if (!content.trim() && !title?.trim() && mood == null && energy == null) {
-    await prisma.journalEntry.deleteMany({ where: { userId: user.id, date } });
+    await prisma.journalEntry.updateMany({
+      where: { userId: user.id, date },
+      data: { deletedAt: trashStamp() },
+    });
     revalidateAll();
     return succeed({ id: "" });
   }
+
+  // A trashed entry still holds this date's unique key, and the upsert below
+  // is a unique-key operation the soft-delete guard cannot filter. Writing
+  // new content for the day supersedes the trashed page: purge it first
+  // (documented hard delete — see src/lib/soft-delete.ts).
+  await prismaIncludingTrashed.journalEntry.deleteMany({
+    where: { userId: user.id, date, deletedAt: { not: null } },
+  });
 
   const entry = await prisma.journalEntry.upsert({
     where: { userId_date: { userId: user.id, date } },
@@ -211,7 +228,10 @@ export async function saveReminder(input: unknown): Promise<ActionResult<{ id: s
 
 export async function deleteReminder(id: string): Promise<ActionResult<null>> {
   const user = await getCurrentUser();
-  await prisma.reminder.deleteMany({ where: { id, userId: user.id } });
+  await prisma.reminder.updateMany({
+    where: { id, userId: user.id },
+    data: { deletedAt: trashStamp() },
+  });
   revalidateAll();
   return succeed(null);
 }

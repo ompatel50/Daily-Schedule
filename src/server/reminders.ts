@@ -1,12 +1,8 @@
 import { getCurrentUser, prisma } from "@/lib/db";
 import { shiftDay, weekRange } from "@/lib/date";
 import { FINANCE_CATEGORY_META, type FinanceCategory } from "@/lib/enums";
-import {
-  budgetPeriodOf,
-  budgetPeriodWindow,
-  formatMoney,
-  moneyRound,
-} from "@/lib/logic/finance";
+import { budgetPeriodOf, budgetPeriodWindow } from "@/lib/logic/finance";
+import { centsOrLegacy, centsOrLegacyNullable, formatCents, toCents } from "@/lib/logic/money";
 import {
   budgetThresholdReminderKey,
   dueReminderKey,
@@ -62,10 +58,16 @@ export async function listReminders(limit = 100) {
  * exact logic so push and in-tab reminders can never disagree about what is
  * allowed to fire.
  */
+/** How many days ahead a milestone's target date starts reminding. */
+const MILESTONE_REMINDER_DAYS_BEFORE = 7;
+
 export async function getReminderFeedFor(user: {
   id: string;
   timezone: string;
   weekStartsOn: number;
+  /** Optional so older callers keep working; the runner passes it through so
+   *  a custom day reset shapes the same operational day here as in-tab. */
+  dayResetMinute?: number;
 }): Promise<ReminderOccurrence[]> {
   const settings = scheduleSettingsFor(user);
   const date = settings.today;
@@ -80,6 +82,7 @@ export async function getReminderFeedFor(user: {
     watchedAccounts,
     expiringDocuments,
     watchedBudgets,
+    dueMilestones,
   ] = await Promise.all([
     prisma.reminder.findMany({
       where: { userId: user.id, enabled: true },
@@ -105,7 +108,15 @@ export async function getReminderFeedFor(user: {
     // sum — fetched only for these accounts, and only when any exist.
     prisma.financeAccount.findMany({
       where: { userId: user.id, archivedAt: null, lowBalanceThreshold: { not: null } },
-      select: { id: true, name: true, currency: true, openingBalance: true, lowBalanceThreshold: true },
+      select: {
+        id: true,
+        name: true,
+        currency: true,
+        openingBalance: true,
+        openingBalanceCents: true,
+        lowBalanceThreshold: true,
+        lowBalanceThresholdCents: true,
+      },
       take: 100,
     }),
     // Documents whose expiry is inside the widest run-up any of them can ask
@@ -126,8 +137,25 @@ export async function getReminderFeedFor(user: {
       where: { userId: user.id, alertThresholdPercent: { not: null } },
       take: 100,
     }),
+    // Goal milestones that opted into a reminder, still unreached, with a
+    // target date inside the run-up window. The goal relation rides along so
+    // an inactive or archived goal silences its milestones.
+    prisma.goalMilestone.findMany({
+      where: {
+        userId: user.id,
+        reminderEnabled: true,
+        reachedAt: null,
+        targetDate: { gte: date, lte: shiftDay(date, DOCUMENT_REMINDER_HORIZON_DAYS) },
+      },
+      include: { goal: { select: { label: true, active: true, archivedAt: true, unit: true } } },
+      take: 200,
+    }),
   ]);
 
+  // Aggregates still read the dual-written FLOAT column (a sum of 2-decimal
+  // values is exact to the cent at any personal scale) and convert once at
+  // this boundary; they switch to the cents column when the cleanup
+  // migration retires the floats. All arithmetic below is integer cents.
   const balanceByAccount = new Map<string, number>();
   if (watchedAccounts.length > 0) {
     const totals = await prisma.financeTransaction.groupBy({
@@ -135,7 +163,7 @@ export async function getReminderFeedFor(user: {
       where: { userId: user.id, accountId: { in: watchedAccounts.map((account) => account.id) } },
       _sum: { amount: true },
     });
-    for (const row of totals) balanceByAccount.set(row.accountId, row._sum.amount ?? 0);
+    for (const row of totals) balanceByAccount.set(row.accountId, toCents(row._sum.amount ?? 0));
   }
 
   // Budget spending: at most ONE grouped query per period actually in use
@@ -172,7 +200,7 @@ export async function getReminderFeedFor(user: {
       });
       budgetSpentByPeriod.set(
         period,
-        new Map(totals.map((row) => [row.category, -(row._sum.amount ?? 0)])),
+        new Map(totals.map((row) => [row.category, toCents(-(row._sum.amount ?? 0))])),
       );
     }
   }
@@ -192,6 +220,10 @@ export async function getReminderFeedFor(user: {
     ...expiringDocuments.flatMap((document) => [
       dueReminderKey("document", document.id, document.expiryDate),
       dueReminderKey("document", document.id, document.expiryDate, true),
+    ]),
+    ...dueMilestones.flatMap((milestone) => [
+      dueReminderKey("milestone", milestone.id, milestone.targetDate!),
+      dueReminderKey("milestone", milestone.id, milestone.targetDate!, true),
     ]),
     ...watchedBudgets.map((budget) =>
       budgetThresholdReminderKey(
@@ -280,7 +312,7 @@ export async function getReminderFeedFor(user: {
       completed: bill.settledAt !== null,
       inactive: bill.archivedAt !== null,
       daysBefore: bill.reminderDaysBefore,
-      detail: formatMoney(bill.amount),
+      detail: formatCents(centsOrLegacy(bill.amountCents, bill.amount)),
       deliveredKeys,
     });
     if (resolved.ok) occurrences.push(resolved.occurrence);
@@ -323,6 +355,29 @@ export async function getReminderFeedFor(user: {
     if (resolved.ok) occurrences.push(resolved.occurrence);
   }
 
+  // Goal milestones — the same due-date resolver: an approaching target date
+  // on a still-unreached checkpoint. Reaching the milestone stamps it (see
+  // evaluateGoalsForDate), which silences the reminder by the `completed`
+  // flag rather than by deleting anything.
+  for (const milestone of dueMilestones) {
+    const resolved = resolveDueReminder({
+      kind: "milestone",
+      ownerId: milestone.id,
+      name: milestone.label
+        ? `${milestone.goal.label}: ${milestone.label}`
+        : `${milestone.goal.label} milestone`,
+      dueDate: milestone.targetDate!,
+      today: date,
+      enabled: milestone.reminderEnabled,
+      completed: milestone.reachedAt !== null,
+      inactive: !milestone.goal.active || milestone.goal.archivedAt !== null,
+      daysBefore: MILESTONE_REMINDER_DAYS_BEFORE,
+      detail: `Target ${milestone.targetValue}${milestone.goal.unit ? ` ${milestone.goal.unit}` : ""}`,
+      deliveredKeys,
+    });
+    if (resolved.ok) occurrences.push(resolved.occurrence);
+  }
+
   // Budget thresholds — once per budget per period per threshold, so crossing
   // 75 % says so on the day it happens and then stays quiet for the rest of
   // the window.
@@ -330,7 +385,8 @@ export async function getReminderFeedFor(user: {
     const period = budgetPeriodOf(budget.period);
     const window = budgetWindowByPeriod.get(period);
     if (!window) continue;
-    const spent = moneyRound(budgetSpentByPeriod.get(period)?.get(budget.category) ?? 0);
+    const spent = budgetSpentByPeriod.get(period)?.get(budget.category) ?? 0;
+    const target = centsOrLegacy(budget.amountCents, budget.amount);
     const label =
       FINANCE_CATEGORY_META[budget.category as FinanceCategory]?.label ?? budget.category;
     const resolved = resolveBudgetThresholdReminder({
@@ -338,10 +394,10 @@ export async function getReminderFeedFor(user: {
       label,
       periodStart: window.start,
       spent,
-      target: budget.amount,
+      target,
       threshold: budget.alertThresholdPercent,
       today: date,
-      detail: `${formatMoney(spent)} of ${formatMoney(budget.amount)} ${
+      detail: `${formatCents(spent)} of ${formatCents(target)} ${
         period === "weekly" ? "this week" : "this month"
       }`,
       deliveredKeys,
@@ -353,10 +409,13 @@ export async function getReminderFeedFor(user: {
   // per week per account (the key embeds the week), so a lingering low
   // balance never turns into a daily nag.
   for (const account of watchedAccounts) {
-    const balance = moneyRound(
-      account.openingBalance + (balanceByAccount.get(account.id) ?? 0),
+    const balance =
+      centsOrLegacy(account.openingBalanceCents, account.openingBalance) +
+      (balanceByAccount.get(account.id) ?? 0);
+    const threshold = centsOrLegacyNullable(
+      account.lowBalanceThresholdCents,
+      account.lowBalanceThreshold,
     );
-    const threshold = account.lowBalanceThreshold;
     const resolved = resolveLowBalanceReminder({
       accountId: account.id,
       accountName: account.name,
@@ -368,7 +427,7 @@ export async function getReminderFeedFor(user: {
       detail:
         threshold === null
           ? null
-          : `Balance ${formatMoney(balance, account.currency)} is below your ${formatMoney(threshold, account.currency)} alert level`,
+          : `Balance ${formatCents(balance, account.currency)} is below your ${formatCents(threshold, account.currency)} alert level`,
       deliveredKeys,
     });
     if (resolved.ok) occurrences.push(resolved.occurrence);
@@ -382,8 +441,16 @@ export async function getReminderFeedFor(user: {
  * Record a delivery and, for a classic reminder, advance or disable the row —
  * the same behaviour `markReminderFired` always had, now keyed so an
  * occurrence can never fire twice even across tabs and reloads.
+ *
+ * Returns whether THIS call claimed the occurrence. A false is the signal a
+ * caller needs to stay silent: another tab, device, or the push runner got
+ * there first, and showing the notification anyway would be the double
+ * delivery the ledger exists to prevent.
  */
-export async function recordReminderDelivery(key: string, reminderId: string | null): Promise<void> {
+export async function recordReminderDelivery(
+  key: string,
+  reminderId: string | null,
+): Promise<boolean> {
   const user = await getCurrentUser();
   return recordReminderDeliveryFor(user.id, key, reminderId);
 }
@@ -393,21 +460,21 @@ export async function recordReminderDeliveryFor(
   userId: string,
   key: string,
   reminderId: string | null,
-): Promise<void> {
+): Promise<boolean> {
   const user = { id: userId };
 
   try {
     await prisma.reminderDelivery.create({ data: { userId: user.id, key } });
   } catch {
     // Unique collision: another tab delivered it first. Nothing more to do.
-    return;
+    return false;
   }
 
   if (reminderId) {
     const reminder = await prisma.reminder.findFirst({
       where: { id: reminderId, userId: user.id },
     });
-    if (!reminder) return;
+    if (!reminder) return true;
     const next = nextOccurrence(reminder.remindAt, reminder.repeat);
     await prisma.reminder.update({
       where: { id: reminder.id },
@@ -424,6 +491,8 @@ export async function recordReminderDeliveryFor(
   await prisma.reminderDelivery
     .deleteMany({ where: { userId: user.id, deliveredAt: { lt: cutoff } } })
     .catch(() => {});
+
+  return true;
 }
 
 function nextOccurrence(from: Date, repeat: string): Date | null {

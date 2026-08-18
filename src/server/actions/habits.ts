@@ -3,6 +3,7 @@
 import { revalidatePath } from "next/cache";
 
 import { getCurrentUser, prisma } from "@/lib/db";
+import { trashStamp } from "@/lib/soft-delete";
 import { type DayKey } from "@/lib/date";
 import {
   fail,
@@ -12,7 +13,7 @@ import {
   succeed,
   type ActionResult,
 } from "@/lib/validation";
-import { deleteSchedule, scheduleSettingsFor, setScheduleEnabled, writeSchedule } from "@/server/schedule";
+import { scheduleSettingsFor, setScheduleEnabled, writeSchedule } from "@/server/schedule";
 import { recomputeDay } from "@/server/summaries";
 
 function revalidateAll() {
@@ -38,10 +39,17 @@ export async function saveHabit(input: unknown): Promise<ActionResult<{ id: stri
 
   const legacy = toLegacyRecurrence(schedule);
 
+  if (rest.pausedFrom && rest.pausedUntil && rest.pausedUntil < rest.pausedFrom) {
+    return fail("The pause must end on or after the day it starts");
+  }
+
   const data = {
     ...rest,
     description: rest.description ?? null,
     endDate: rest.endDate ?? null,
+    // Clearing either bound must write the column, not keep the old pause.
+    pausedFrom: rest.pausedFrom ?? null,
+    pausedUntil: rest.pausedUntil ?? null,
     timeOfDay: schedule.daypart,
     ...legacy,
     userId: user.id,
@@ -211,10 +219,11 @@ export async function deleteHabit(id: string): Promise<ActionResult<null>> {
   const habit = await prisma.habit.findFirst({ where: { id, userId: user.id } });
   if (!habit) return fail("Habit not found");
 
-  // Logs cascade with the habit; the schedule is polymorphic, so it is removed
-  // explicitly rather than relying on a foreign key.
-  await prisma.habit.delete({ where: { id } });
-  await deleteSchedule(user.id, "habit", id);
+  // To the Trash: logs stay put (they hide with the habit and cascade away
+  // on purge), and the polymorphic schedule is disabled rather than deleted
+  // so a restore can switch it back on.
+  await prisma.habit.update({ where: { id }, data: { deletedAt: trashStamp() } });
+  await setScheduleEnabled(user.id, "habit", id, false);
 
   await recomputeDay(user.id, scheduleSettingsFor(user).today);
   revalidateAll();

@@ -3,6 +3,7 @@
 import { revalidatePath } from "next/cache";
 
 import { getCurrentUser, prisma } from "@/lib/db";
+import { trashStamp } from "@/lib/soft-delete";
 import { parseTimeToMinute } from "@/lib/date";
 import { estimateCaloriesBurned, expandTemplateExercises, type TemplateExercise } from "@/lib/logic/workouts";
 import { lbToKg } from "@/lib/logic/nutrition";
@@ -162,9 +163,17 @@ export async function deleteWorkout(id: string): Promise<ActionResult<null>> {
   const workout = await prisma.workout.findFirst({ where: { id, userId: user.id } });
   if (!workout) return fail("Workout not found");
 
-  // Remove the mirrored planner item too, otherwise the day shows a ghost task.
-  await prisma.scheduleItem.deleteMany({ where: { workoutId: id, userId: user.id } });
-  await prisma.workout.delete({ where: { id } });
+  // The mirrored planner item goes to the Trash with it (one shared stamp),
+  // otherwise the day shows a ghost task; restoring the workout brings the
+  // block back too.
+  const stamp = trashStamp();
+  await prisma.$transaction([
+    prisma.scheduleItem.updateMany({
+      where: { workoutId: id, userId: user.id },
+      data: { deletedAt: stamp },
+    }),
+    prisma.workout.updateMany({ where: { id, userId: user.id }, data: { deletedAt: stamp } }),
+  ]);
 
   await recomputeDay(user.id, workout.date);
   revalidateAll();

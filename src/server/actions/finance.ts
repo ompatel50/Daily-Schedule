@@ -5,8 +5,11 @@ import { randomUUID } from "node:crypto";
 import { revalidatePath } from "next/cache";
 
 import { getCurrentUser, prisma } from "@/lib/db";
+import { prismaIncludingTrashed } from "@/lib/prisma";
+import { trashStamp } from "@/lib/soft-delete";
 import { FINANCE_CATEGORY_META, type FinanceCategory } from "@/lib/enums";
 import { advanceBillAfterPayment, moneyRound, transferLegs } from "@/lib/logic/finance";
+import { centsOrLegacy, centsToAmount, toCents } from "@/lib/logic/money";
 import { scheduleSettingsFor } from "@/server/schedule";
 import {
   billSchema,
@@ -44,6 +47,21 @@ export async function saveFinanceAccount(input: unknown): Promise<ActionResult<{
       data.lowBalanceThreshold === undefined || data.lowBalanceThreshold === null
         ? null
         : moneyRound(data.lowBalanceThreshold),
+    // Same convention for the credit-card depth fields.
+    creditLimit:
+      data.creditLimit === undefined || data.creditLimit === null
+        ? null
+        : moneyRound(data.creditLimit),
+    statementDueDay: data.statementDueDay ?? null,
+  };
+  // Dual-write: cents are what the app reads; the floats stay mirrored until
+  // the cleanup migration retires them.
+  const centsPayload = {
+    ...payload,
+    openingBalanceCents: toCents(payload.openingBalance),
+    lowBalanceThresholdCents:
+      payload.lowBalanceThreshold === null ? null : toCents(payload.lowBalanceThreshold),
+    creditLimitCents: payload.creditLimit === null ? null : toCents(payload.creditLimit),
   };
 
   if (id) {
@@ -51,14 +69,14 @@ export async function saveFinanceAccount(input: unknown): Promise<ActionResult<{
       where: { id, userId: user.id },
     });
     if (!existing) return fail("Account not found");
-    await prisma.financeAccount.update({ where: { id }, data: payload });
+    await prisma.financeAccount.update({ where: { id }, data: centsPayload });
     revalidateAll();
     return succeed({ id });
   }
 
   const created = await prisma.financeAccount.create({
     data: {
-      ...payload,
+      ...centsPayload,
       userId: user.id,
       sortOrder: await prisma.financeAccount.count({ where: { userId: user.id } }),
     },
@@ -85,9 +103,32 @@ export async function setFinanceAccountArchived(
  * Deleting an account deletes its ledger with it (bills merely lose their
  * default account). The UI confirms; archiving is the reversible path.
  */
+/**
+ * Move an account to the Trash, its transactions with it (children follow
+ * parents, sharing the stamp so restore brings back exactly this delete).
+ * Bills keep their accountId while the account is trashed and re-attach on
+ * restore; purging detaches them (schema `SetNull`). A transfer whose other
+ * leg lives in a different account keeps that leg live — the pair re-links
+ * when this account is restored.
+ */
 export async function deleteFinanceAccount(id: string): Promise<ActionResult<null>> {
   const user = await getCurrentUser();
-  await prisma.financeAccount.deleteMany({ where: { id, userId: user.id } });
+  const account = await prisma.financeAccount.findFirst({
+    where: { id, userId: user.id },
+    select: { id: true },
+  });
+  if (!account) return succeed(null);
+  const stamp = trashStamp();
+  await prisma.$transaction([
+    prisma.financeTransaction.updateMany({
+      where: { accountId: id, userId: user.id },
+      data: { deletedAt: stamp },
+    }),
+    prisma.financeAccount.updateMany({
+      where: { id, userId: user.id },
+      data: { deletedAt: stamp },
+    }),
+  ]);
   revalidateAll();
   return succeed(null);
 }
@@ -113,23 +154,28 @@ export async function setAccountBalance(
     where: { userId: user.id, accountId },
     _sum: { amount: true },
   });
-  const current = moneyRound(account.openingBalance + (total._sum.amount ?? 0));
-  const adjustment = moneyRound(balance - current);
-  if (adjustment === 0) return succeed({ adjustment: 0 });
+  // All in integer cents: the target balance is typed in dollars, the current
+  // balance derives from the (dual-written, exact) float sum converted once.
+  const currentCents =
+    centsOrLegacy(account.openingBalanceCents, account.openingBalance) +
+    toCents(total._sum.amount ?? 0);
+  const adjustmentCents = toCents(balance) - currentCents;
+  if (adjustmentCents === 0) return succeed({ adjustment: 0 });
 
   await prisma.financeTransaction.create({
     data: {
       userId: user.id,
       accountId,
       date,
-      amount: adjustment,
+      amount: centsToAmount(adjustmentCents),
+      amountCents: adjustmentCents,
       category: "adjustment",
       payee: null,
       notes: "Balance set by hand",
     },
   });
   revalidateAll();
-  return succeed({ adjustment });
+  return succeed({ adjustment: adjustmentCents });
 }
 
 // --- transactions ------------------------------------------------------------
@@ -157,11 +203,15 @@ export async function saveTransaction(input: unknown): Promise<ActionResult<{ id
     if (!bill) return fail("Bill not found");
   }
 
+  const amountCents = toCents(data.amount);
   const payload = {
     ...data,
     accountId,
     billId: billId ?? null,
-    amount: moneyRound(data.amount),
+    // Dual-write: cents are the value the app reads, the float mirrors them
+    // exactly until the cleanup migration.
+    amount: centsToAmount(amountCents),
+    amountCents,
     payee: data.payee ?? null,
     notes: data.notes ?? null,
   };
@@ -191,6 +241,12 @@ export async function saveTransaction(input: unknown): Promise<ActionResult<{ id
 /** Deleting one leg of a transfer removes the pair — never half a transfer.
  *  Like every scoped delete here, deleting a row that is not yours (or is
  *  already gone) is a silent no-op, not an error. */
+/**
+ * Move a transaction to the Trash. A transfer leg takes its counterpart with
+ * it (one shared stamp) — half a transfer is a lie in both balances — and
+ * restoring either leg restores the pair, or clearly detaches if the
+ * counterpart was purged meanwhile (see the trash actions).
+ */
 export async function deleteTransaction(id: string): Promise<ActionResult<null>> {
   const user = await getCurrentUser();
   const existing = await prisma.financeTransaction.findFirst({
@@ -198,10 +254,11 @@ export async function deleteTransaction(id: string): Promise<ActionResult<null>>
     select: { transferGroupId: true },
   });
   if (existing) {
-    await prisma.financeTransaction.deleteMany({
+    await prisma.financeTransaction.updateMany({
       where: existing.transferGroupId
         ? { userId: user.id, transferGroupId: existing.transferGroupId }
         : { id, userId: user.id },
+      data: { deletedAt: trashStamp() },
     });
   }
   revalidateAll();
@@ -243,23 +300,29 @@ export async function transferBetweenAccounts(
   }
 
   const transferGroupId = randomUUID();
+  // The legs are shaped in integer cents; the float column mirrors them.
   const legs = transferLegs({
     fromAccountId: from.id,
     toAccountId: to.id,
     fromAccountName: from.name,
     toAccountName: to.name,
-    amount,
+    amount: toCents(amount),
     date,
     notes: notes ?? null,
     transferGroupId,
   });
 
   await prisma.financeTransaction.createMany({
-    data: legs.map((leg) => ({ ...leg, userId: user.id })),
+    data: legs.map((leg) => ({
+      ...leg,
+      amount: centsToAmount(leg.amount),
+      amountCents: leg.amount,
+      userId: user.id,
+    })),
   });
 
   revalidateAll();
-  return succeed({ transferGroupId, amount: moneyRound(amount) });
+  return succeed({ transferGroupId, amount: toCents(amount) });
 }
 
 // --- budgets -----------------------------------------------------------------
@@ -272,6 +335,7 @@ export async function saveBudget(input: unknown): Promise<ActionResult<{ id: str
   const payload = {
     ...data,
     amount: moneyRound(data.amount),
+    amountCents: toCents(data.amount),
     // Explicit null rather than `undefined`: clearing the alert on an edit has
     // to write the column, not silently leave the old threshold in place.
     alertThresholdPercent: data.alertThresholdPercent ?? null,
@@ -288,6 +352,12 @@ export async function saveBudget(input: unknown): Promise<ActionResult<{ id: str
       return succeed({ id });
     }
 
+    // A trashed budget still holds its (user, category) unique key. Creating
+    // a replacement supersedes it: purge the trashed row first (documented
+    // hard delete — the new budget takes the slot; see src/lib/soft-delete.ts).
+    await prismaIncludingTrashed.budget.deleteMany({
+      where: { userId: user.id, category: data.category, deletedAt: { not: null } },
+    });
     const created = await prisma.budget.create({ data: { ...payload, userId: user.id } });
     revalidateAll();
     return succeed({ id: created.id });
@@ -302,12 +372,34 @@ export async function saveBudget(input: unknown): Promise<ActionResult<{ id: str
 
 export async function deleteBudget(id: string): Promise<ActionResult<null>> {
   const user = await getCurrentUser();
-  await prisma.budget.deleteMany({ where: { id, userId: user.id } });
+  await prisma.budget.updateMany({
+    where: { id, userId: user.id },
+    data: { deletedAt: trashStamp() },
+  });
   revalidateAll();
   return succeed(null);
 }
 
 // --- bills -------------------------------------------------------------------
+
+/**
+ * "Don't offer to track this payee as a bill again." Keyed on the normalised
+ * payee, so re-detection at any cadence stays suppressed. Idempotent.
+ */
+export async function dismissBillSuggestion(payee: string): Promise<ActionResult<null>> {
+  if (typeof payee !== "string" || payee.trim() === "" || payee.length > 200) {
+    return fail("Nothing to dismiss");
+  }
+  const user = await getCurrentUser();
+  const payeeKey = payee.trim().toLowerCase();
+  await prisma.billSuggestionDismissal.upsert({
+    where: { userId_payeeKey: { userId: user.id, payeeKey } },
+    create: { userId: user.id, payeeKey },
+    update: {},
+  });
+  revalidateAll();
+  return succeed(null);
+}
 
 export async function saveBill(input: unknown): Promise<ActionResult<{ id: string }>> {
   const parsed = billSchema.safeParse(input);
@@ -326,6 +418,7 @@ export async function saveBill(input: unknown): Promise<ActionResult<{ id: strin
     ...data,
     accountId: accountId ?? null,
     amount: moneyRound(data.amount),
+    amountCents: toCents(data.amount),
     notes: data.notes ?? null,
   };
 
@@ -385,7 +478,10 @@ export async function markBillPaid(input: unknown): Promise<ActionResult<MarkBil
   }
 
   const advance = advanceBillAfterPayment(bill);
-  const paidAmount = moneyRound(amount ?? bill.amount);
+  const paidCents =
+    amount !== undefined && amount !== null
+      ? toCents(amount)
+      : centsOrLegacy(bill.amountCents, bill.amount);
   const writeTransaction = recordTransaction && paidFromId !== null;
 
   await prisma.$transaction(async (db) => {
@@ -404,7 +500,8 @@ export async function markBillPaid(input: unknown): Promise<ActionResult<MarkBil
           accountId: paidFromId!,
           billId: bill.id,
           date,
-          amount: -paidAmount,
+          amount: centsToAmount(-paidCents),
+          amountCents: -paidCents,
           category: bill.category,
           payee: bill.name,
         },
@@ -433,7 +530,10 @@ export async function setBillArchived(id: string, archived: boolean): Promise<Ac
 
 export async function deleteBill(id: string): Promise<ActionResult<null>> {
   const user = await getCurrentUser();
-  await prisma.bill.deleteMany({ where: { id, userId: user.id } });
+  await prisma.bill.updateMany({
+    where: { id, userId: user.id },
+    data: { deletedAt: trashStamp() },
+  });
   revalidateAll();
   return succeed(null);
 }
@@ -448,7 +548,9 @@ export async function saveSavingsGoal(input: unknown): Promise<ActionResult<{ id
   const payload = {
     ...data,
     targetAmount: moneyRound(data.targetAmount),
+    targetAmountCents: toCents(data.targetAmount),
     currentAmount: moneyRound(data.currentAmount),
+    currentAmountCents: toCents(data.currentAmount),
     targetDate: data.targetDate ?? null,
     notes: data.notes ?? null,
   };
@@ -484,12 +586,15 @@ export async function adjustSavingsGoal(
   const goal = await prisma.savingsGoal.findFirst({ where: { id, userId: user.id } });
   if (!goal) return fail("Savings goal not found");
 
-  const next = moneyRound(goal.currentAmount + amount);
-  if (next < 0) return fail("That would take the goal below zero");
+  const nextCents = centsOrLegacy(goal.currentAmountCents, goal.currentAmount) + toCents(amount);
+  if (nextCents < 0) return fail("That would take the goal below zero");
 
-  await prisma.savingsGoal.update({ where: { id }, data: { currentAmount: next } });
+  await prisma.savingsGoal.update({
+    where: { id },
+    data: { currentAmount: centsToAmount(nextCents), currentAmountCents: nextCents },
+  });
   revalidateAll();
-  return succeed({ currentAmount: next });
+  return succeed({ currentAmount: nextCents });
 }
 
 export async function setSavingsGoalArchived(
@@ -508,7 +613,10 @@ export async function setSavingsGoalArchived(
 
 export async function deleteSavingsGoal(id: string): Promise<ActionResult<null>> {
   const user = await getCurrentUser();
-  await prisma.savingsGoal.deleteMany({ where: { id, userId: user.id } });
+  await prisma.savingsGoal.updateMany({
+    where: { id, userId: user.id },
+    data: { deletedAt: trashStamp() },
+  });
   revalidateAll();
   return succeed(null);
 }

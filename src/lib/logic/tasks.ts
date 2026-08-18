@@ -1,6 +1,7 @@
 import type { DayKey } from "@/lib/date";
 import { PRIORITY_META, REPEAT_UNIT_META, type Priority, type RepeatUnit } from "@/lib/enums";
 import { dueBucketOf, nextOccurrenceAfter, type Cadence } from "@/lib/logic/due";
+import { operationalDayOfRecord } from "@/lib/logic/operational-day";
 
 /**
  * Task views and recurrence — pure. The server fetches rows; the bucketing,
@@ -120,6 +121,45 @@ export function nextDueAfterCompletion(
   const anchor = task.repeatAnchor ?? task.dueDate;
   const after = task.dueDate > today ? task.dueDate : today;
   return nextOccurrenceAfter(anchor, cadence, after);
+}
+
+// --- planner links -----------------------------------------------------------
+
+/** The slice of a linked planner block the reflection rule needs. */
+export interface LinkedBlockLike {
+  id: string;
+  status: string;
+  /** Stored calendar date, `YYYY-MM-DD`. */
+  date: DayKey;
+  startMinute: number | null;
+}
+
+/**
+ * Which of a task's linked planner blocks completing the task should mark
+ * done. Only still-`planned` blocks are touched — a block already done keeps
+ * its own completion stamp, and `skipped` records a deliberate "didn't happen"
+ * that finishing the task elsewhere does not rewrite.
+ *
+ * When the completion CLOSES the task every planned block reflects, future
+ * ones included: a block is a reservation to work on the task, and a finished
+ * task has nothing left to reserve time for. When it merely ADVANCES a
+ * repeating task, only blocks up to today reflect — a future block is time
+ * set aside for the next occurrence, which is still coming.
+ *
+ * Days compare as OPERATIONAL days (an after-midnight session belongs to the
+ * evening before), the same boundary every other planner read uses.
+ */
+export function linkedBlocksToComplete<T extends LinkedBlockLike>(
+  blocks: readonly T[],
+  outcome: "completed" | "advanced",
+  today: DayKey,
+  resetMinute: number,
+): T[] {
+  return blocks.filter((block) => {
+    if (block.status !== "planned") return false;
+    if (outcome === "completed") return true;
+    return operationalDayOfRecord(block, resetMinute) <= today;
+  });
 }
 
 export function describeRepeat(repeat: string, every: number): string {

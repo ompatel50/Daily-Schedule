@@ -3,6 +3,7 @@
 import * as React from "react";
 import { useRouter } from "next/navigation";
 import { Loader2 } from "lucide-react";
+import { centsToAmount } from "@/lib/logic/money";
 import { toast } from "sonner";
 
 import { Button } from "@/components/ui/button";
@@ -98,7 +99,8 @@ function blankBill(today: string): BillForm {
 function formFrom(bill: BillRowView): BillForm {
   return {
     name: bill.name,
-    amount: String(bill.amount),
+    // Views carry integer cents; the input is typed in dollars.
+    amount: String(centsToAmount(bill.amount)),
     kind: bill.kind,
     category: bill.category,
     recurrence: bill.recurrence,
@@ -111,16 +113,29 @@ function formFrom(bill: BillRowView): BillForm {
   };
 }
 
+/** What a "track this as a bill" suggestion pre-fills for a NEW bill. */
+export interface BillPrefill {
+  name: string;
+  amount: number;
+  category: string;
+  recurrence: string;
+  dueDate: string;
+  accountId: string | null;
+}
+
 export function BillDialog({
   open,
   onOpenChange,
   bill,
+  initial,
   accounts,
   today,
 }: {
   open: boolean;
   onOpenChange: (open: boolean) => void;
   bill?: BillRowView | null;
+  /** Pre-filled values for a NEW bill (ignored when editing). */
+  initial?: BillPrefill | null;
   /** Unarchived accounts the bill can default to being paid from. */
   accounts: AccountView[];
   today: string;
@@ -133,9 +148,24 @@ export function BillDialog({
 
   React.useEffect(() => {
     if (!open) return;
-    setForm(bill ? formFrom(bill) : blankBill(today));
+    const blank = blankBill(today);
+    setForm(
+      bill
+        ? formFrom(bill)
+        : initial
+          ? {
+              ...blank,
+              name: initial.name,
+              amount: String(centsToAmount(initial.amount)),
+              category: initial.category,
+              recurrence: initial.recurrence,
+              dueDate: initial.dueDate,
+              accountId: initial.accountId ?? NO_ACCOUNT,
+            }
+          : blank,
+    );
     setErrors({});
-  }, [open, bill, today]);
+  }, [open, bill, initial, today]);
 
   function set<K extends keyof BillForm>(key: K, value: BillForm[K]) {
     setForm((current) => ({ ...current, [key]: value }));

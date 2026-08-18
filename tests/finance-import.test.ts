@@ -193,12 +193,12 @@ describe("parseFinanceCsv", () => {
     expect(result.rows).toHaveLength(2);
     expect(result.rows[0]).toMatchObject({
       date: "2026-07-01",
-      amount: -42.5,
+      amount: -4250, // integer cents
       payee: "Corner grocery",
       category: "groceries",
       notes: "weekly",
     });
-    expect(result.rows[1]).toMatchObject({ amount: 2500, category: "income", notes: null });
+    expect(result.rows[1]).toMatchObject({ amount: 250000, category: "income", notes: null });
   });
 
   it("reads debit/credit split files with positive magnitudes", () => {
@@ -206,7 +206,7 @@ describe("parseFinanceCsv", () => {
       csv(["date,withdrawal,deposit", "2026-07-01,42.50,", "2026-07-02,,100.00"]),
       OPTS,
     );
-    expect(result.rows.map((row) => row.amount)).toEqual([-42.5, 100]);
+    expect(result.rows.map((row) => row.amount)).toEqual([-4250, 10000]);
   });
 
   it("rejects NEGATIVE debit/credit magnitudes instead of sign-flipping them", () => {
@@ -221,7 +221,7 @@ describe("parseFinanceCsv", () => {
       ]),
       OPTS,
     );
-    expect(result.rows.map((row) => row.amount)).toEqual([50]);
+    expect(result.rows.map((row) => row.amount)).toEqual([5000]);
     expect(result.invalid).toHaveLength(2);
     expect(result.invalid[0].message).toContain("must be positive");
   });
@@ -237,7 +237,7 @@ describe("parseFinanceCsv", () => {
       OPTS,
     );
     expect(result.amountsSigned).toBe(false);
-    expect(result.rows.map((row) => row.amount)).toEqual([-42.5, 100]);
+    expect(result.rows.map((row) => row.amount)).toEqual([-4250, 10000]);
     expect(result.invalid).toHaveLength(1);
     expect(result.invalid[0].message).toContain("debit/credit marker");
   });
@@ -257,7 +257,7 @@ describe("parseFinanceCsv", () => {
         OPTS,
       );
       expect(result.amountsSigned).toBe(true);
-      expect(result.rows.map((row) => row.amount)).toEqual([-42.5, 300]);
+      expect(result.rows.map((row) => row.amount)).toEqual([-4250, 30000]);
       expect(result.rows.every((row) => row.signConflict === undefined)).toBe(true);
       expect(result.invalid).toEqual([]);
     });
@@ -272,7 +272,7 @@ describe("parseFinanceCsv", () => {
         ]),
         OPTS,
       );
-      expect(result.rows.map((row) => row.amount)).toEqual([-42.5, 10, -20]);
+      expect(result.rows.map((row) => row.amount)).toEqual([-4250, 1000, -2000]);
       expect(result.rows.map((row) => row.signConflict)).toEqual([undefined, "Sale", "Refund"]);
       expect(result.invalid).toEqual([]);
     });
@@ -297,7 +297,7 @@ describe("parseFinanceCsv", () => {
         csv(["date,amount,type", "2026-07-01,-42.50,Whatever", "2026-07-02,10.00,ACH_HOLD"]),
         OPTS,
       );
-      expect(result.rows.map((row) => row.amount)).toEqual([-42.5, 10]);
+      expect(result.rows.map((row) => row.amount)).toEqual([-4250, 1000]);
       expect(result.invalid).toEqual([]);
     });
   });
@@ -316,7 +316,7 @@ describe("parseFinanceCsv", () => {
         OPTS,
       );
       expect(result.amountsSigned).toBe(false);
-      expect(result.rows.map((row) => row.amount)).toEqual([-42.5, -95, -12, 15, 20]);
+      expect(result.rows.map((row) => row.amount)).toEqual([-4250, -9500, -1200, 1500, 2000]);
       expect(result.invalid).toEqual([]);
     });
 
@@ -325,7 +325,7 @@ describe("parseFinanceCsv", () => {
         csv(["date,amount,type", "2026-07-01,120.00,Payment"]),
         OPTS,
       );
-      expect(result.rows.map((row) => row.amount)).toEqual([-120]);
+      expect(result.rows.map((row) => row.amount)).toEqual([-12000]);
     });
 
     it("rejects an unsigned adjustment — its direction is unknowable", () => {
@@ -469,7 +469,7 @@ describe("parseFinanceCsv", () => {
       expect(result.errors).toEqual([]);
       expect(result.invalid).toEqual([]);
       expect(result.amountsSigned).toBe(true);
-      expect(result.rows.map((row) => row.amount)).toEqual([-42.5, 300, -95, 5, 15]);
+      expect(result.rows.map((row) => row.amount)).toEqual([-4250, 30000, -9500, 500, 1500]);
       expect(result.rows.every((row) => row.signConflict === undefined)).toBe(true);
       // The payment arrives as money IN — the inversion this fixture guards.
       expect(result.rows[1].amount).toBeGreaterThan(0);
@@ -509,7 +509,7 @@ describe("parseFinanceCsv", () => {
 
     it("without a mapping, the payment's category is offered for mapping", () => {
       const result = parseFinanceCsv(STATEMENT, OPTS);
-      expect(result.rows[1]).toMatchObject({ amount: 300, category: "other" });
+      expect(result.rows[1]).toMatchObject({ amount: 30000, category: "other" });
       expect(result.unmappedCategories).toEqual([{ value: "Payment", count: 1 }]);
       expect(result.appliedRules).toEqual([]);
     });
@@ -524,7 +524,7 @@ describe("parseFinanceCsv", () => {
       expect(result.appliedRules).toEqual([{ value: "Payment", category: "transfer", count: 1 }]);
 
       const payment = result.rows[1];
-      expect(payment.amount).toBe(300); // money in — the sign was trusted
+      expect(payment.amount).toBe(30000); // money in (cents) — the sign was trusted
       expect(payment.category).toBe("transfer"); // bookkeeping, by the rule
       expect(payment.categoryViaRule).toBe(true);
 
@@ -533,7 +533,7 @@ describe("parseFinanceCsv", () => {
         result.rows.map((row) => ({ amount: row.amount, category: row.category })),
       );
       expect(summary.income).toBe(0);
-      expect(summary.spending).toBe(120);
+      expect(summary.spending).toBe(12000);
       expect(summary.count).toBe(1);
     });
   });
@@ -616,7 +616,7 @@ describe("import undo classification", () => {
       id: "t1",
       accountId: "acc1",
       date: "2026-07-15",
-      amount: -42.5,
+      amount: -4250, // integer cents
       payee: "Corner Market",
     };
     return {
@@ -655,7 +655,7 @@ describe("import undo classification", () => {
   });
 
   it("editing the amount, date, payee or account keeps the row", () => {
-    expect(classifyImportUndoRow(imported({ amount: -43.5 }))).toBe("keep_edited");
+    expect(classifyImportUndoRow(imported({ amount: -4350 }))).toBe("keep_edited");
     expect(classifyImportUndoRow(imported({ date: "2026-07-16" }))).toBe("keep_edited");
     expect(classifyImportUndoRow(imported({ payee: "Corner Market #2" }))).toBe("keep_edited");
     expect(classifyImportUndoRow(imported({ accountId: "acc2" }))).toBe("keep_edited");
@@ -683,16 +683,16 @@ describe("import undo classification", () => {
       id: "t9",
       accountId: "acc1",
       date: "2026-07-15",
-      amount: -12,
+      amount: -1200, // integer cents
       payee: "A|B|3",
     };
     const row = { ...base, importKey: buildImportKey(base, 2), billId: null, transferGroupId: null };
     expect(classifyImportUndoRow(row)).toBe("remove");
-    expect(classifyImportUndoRow({ ...row, amount: -13 })).toBe("keep_edited");
+    expect(classifyImportUndoRow({ ...row, amount: -1300 })).toBe("keep_edited");
   });
 
   it("duplicate rows in one file undo independently by occurrence", () => {
-    const base = { accountId: "acc1", date: "2026-07-15", amount: -9, payee: "Coffee" };
+    const base = { accountId: "acc1", date: "2026-07-15", amount: -900, payee: "Coffee" };
     const first = { ...base, id: "a", importKey: buildImportKey(base, 0), billId: null, transferGroupId: null };
     const second = { ...base, id: "b", importKey: buildImportKey(base, 1), billId: null, transferGroupId: null };
     const plan = planImportUndo([first, second]);
@@ -703,7 +703,7 @@ describe("import undo classification", () => {
     const plan = planImportUndo([
       imported({ id: "a" }),
       imported({ id: "b" }),
-      imported({ id: "c", amount: -1 }),
+      imported({ id: "c", amount: -100 }),
       imported({ id: "d", billId: "bill1" }),
     ]);
     expect(plan.removeIds).toEqual(["a", "b"]);

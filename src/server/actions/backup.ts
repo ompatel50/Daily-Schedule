@@ -49,6 +49,7 @@ export async function exportBackup(): Promise<ActionResult<BackupFile>> {
     healthRecords,
     goals,
     goalEntries,
+    goalMilestones,
     scheduleRules,
     scheduleRuleDays,
     scheduleOverrides,
@@ -64,9 +65,11 @@ export async function exportBackup(): Promise<ActionResult<BackupFile>> {
     financeImportBatches,
     bills,
     financeTransactions,
+    transferDismissals,
     savingsGoals,
     budgets,
     financeCategoryRules,
+    billSuggestionDismissals,
     inboxItems,
     documents,
     seedBatches,
@@ -109,6 +112,7 @@ export async function exportBackup(): Promise<ActionResult<BackupFile>> {
     prisma.healthRecord.findMany({ where: { userId: user.id } }),
     prisma.goal.findMany({ where: { userId: user.id } }),
     prisma.goalEntry.findMany({ where: { userId: user.id } }),
+    prisma.goalMilestone.findMany({ where: { userId: user.id } }),
     // The scheduling tables are what make a goal or habit mean anything. A
     // backup without them would restore records that apply on no date at all.
     prisma.scheduleRule.findMany({ where: { userId: user.id } }),
@@ -126,9 +130,11 @@ export async function exportBackup(): Promise<ActionResult<BackupFile>> {
     prisma.financeImportBatch.findMany({ where: { userId: user.id } }),
     prisma.bill.findMany({ where: { userId: user.id } }),
     prisma.financeTransaction.findMany({ where: { userId: user.id } }),
+    prisma.transferDismissal.findMany({ where: { userId: user.id } }),
     prisma.savingsGoal.findMany({ where: { userId: user.id } }),
     prisma.budget.findMany({ where: { userId: user.id } }),
     prisma.financeCategoryRule.findMany({ where: { userId: user.id } }),
+    prisma.billSuggestionDismissal.findMany({ where: { userId: user.id } }),
     prisma.inboxItem.findMany({ where: { userId: user.id } }),
     prisma.lifeDocument.findMany({ where: { userId: user.id } }),
     prisma.seedBatch.findMany({ where: { userId: user.id } }),
@@ -187,6 +193,7 @@ export async function exportBackup(): Promise<ActionResult<BackupFile>> {
     healthRecords,
     goals,
     goalEntries,
+    goalMilestones,
     scheduleRules,
     scheduleRuleDays,
     scheduleOverrides,
@@ -201,9 +208,11 @@ export async function exportBackup(): Promise<ActionResult<BackupFile>> {
     financeImportBatches,
     bills,
     financeTransactions,
+    transferDismissals,
     savingsGoals,
     budgets,
     financeCategoryRules,
+    billSuggestionDismissals,
     inboxItems,
     documents,
     seedBatches,
@@ -214,6 +223,12 @@ export async function exportBackup(): Promise<ActionResult<BackupFile>> {
     Object.entries(data).map(([table, rows]) => [table, rows.length]),
   );
   const exportedAt = new Date().toISOString();
+
+  // The Settings data page's "backup recency" line. Best-effort — a failed
+  // stamp must not cost the user their export file.
+  await prisma.user
+    .update({ where: { id: user.id }, data: { lastBackupExportAt: new Date(exportedAt) } })
+    .catch(() => {});
 
   return succeed({
     version: BACKUP_VERSION,

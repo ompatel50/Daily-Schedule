@@ -139,10 +139,14 @@ function safeFileName(raw: unknown): string {
  * deployment's ceiling here so a doomed upload is refused in one round trip
  * rather than after several minutes of parts.
  */
+export type UploadKind = "health" | "backup";
+
 export async function openUpload(
   userId: string,
   input: { fileName: unknown; fileSize: unknown },
   limit: UploadLimit = resolveUploadLimit(),
+  /** What the staged bytes are — each finalize asserts the kind it expects. */
+  kind: UploadKind = "health",
 ): Promise<UploadResult<OpenedUpload>> {
   const declared = Number(input.fileSize);
   if (!Number.isFinite(declared) || !Number.isInteger(declared) || declared <= 0) {
@@ -186,6 +190,7 @@ export async function openUpload(
   const session = await prisma.healthUploadSession.create({
     data: {
       userId,
+      kind,
       status: "receiving",
       fileName: safeFileName(input.fileName),
       declaredSize: declared,
@@ -349,11 +354,14 @@ export async function assembleUpload(
   userId: string,
   uploadId: unknown,
   limit: UploadLimit = resolveUploadLimit(),
+  /** A session of another kind does not exist to this caller — a backup can
+   *  never be fed to the health parser, or vice versa. */
+  kind: UploadKind = "health",
 ): Promise<UploadResult<AssembledUpload>> {
   if (typeof uploadId !== "string" || uploadId.length === 0) return fail("Unknown upload.", 404);
 
   const session = await prisma.healthUploadSession.findFirst({
-    where: { id: uploadId, userId },
+    where: { id: uploadId, userId, kind },
     select: { id: true, fileName: true, totalParts: true, expiresAt: true },
   });
   if (!session) return fail("That upload has expired. Choose the file again.", 404);
@@ -430,6 +438,23 @@ async function* readParts(sessionId: string, totalParts: number): AsyncGenerator
       yield part.data;
     }
   }
+}
+
+/**
+ * Un-claim a session after a read that must NOT consume it — the backup
+ * preview assembles the file to inspect it, answers, and hands the parts
+ * back so the confirm step can assemble them again. Owner-scoped; refreshes
+ * the expiry so a preview the user is still looking at cannot expire under
+ * the confirm click.
+ */
+export async function releaseUpload(userId: string, uploadId: unknown): Promise<void> {
+  if (typeof uploadId !== "string" || uploadId.length === 0) return;
+  await prisma.healthUploadSession
+    .updateMany({
+      where: { id: uploadId, userId, status: "parsing" },
+      data: { status: "receiving", expiresAt: new Date(Date.now() + UPLOAD_TTL_MS) },
+    })
+    .catch(() => {});
 }
 
 // --- cleanup ------------------------------------------------------------------

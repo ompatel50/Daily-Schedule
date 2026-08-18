@@ -111,3 +111,14 @@ describe("ledger sweep", () => {
     expect(remaining).toContainEqual({ userId: bob.id, key: "habit:old:2026-07-01" });
   });
 });
+
+describe("the fresh-claim signal", () => {
+  it("the first recorder is told it won; every later one is told to stay silent", async () => {
+    expect(await recordReminderDelivery(KEY, null)).toBe(true);
+    expect(await recordReminderDelivery(KEY, null)).toBe(false);
+    // The loser being another surface for the same account changes nothing.
+    expect(await recordReminderDeliveryFor(alice.id, KEY, null)).toBe(false);
+    // A different account's identical key is its own occurrence.
+    expect(await recordReminderDeliveryFor(bob.id, KEY, null)).toBe(true);
+  });
+});

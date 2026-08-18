@@ -24,9 +24,10 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import { SectionCard } from "@/components/shared/section-card";
+import { Progress } from "@/components/ui/progress";
 import type { BackupCompatibility, CsvTable } from "@/lib/backup-format";
 import { toDayKey } from "@/lib/date";
-import { formatNumber } from "@/lib/utils";
+import { formatBytes, formatNumber } from "@/lib/utils";
 import {
   exportBackup,
   exportCsv,
@@ -34,6 +35,20 @@ import {
   previewBackup,
   resetAllData,
 } from "@/server/actions/backup";
+import {
+  abandonStagedBackup,
+  importStagedBackup,
+  stageBackupFile,
+} from "@/lib/backup/staged-upload";
+
+/**
+ * Files at or below this travel as one server-action body, the fast path a
+ * hosted platform accepts. Anything larger is STAGED: sliced into parts and
+ * reassembled server-side — the health importer's transport, reused — so a
+ * large backup imports on hosted deployments instead of dying at the edge
+ * with an opaque 413.
+ */
+const DIRECT_IMPORT_MAX_BYTES = 3 * 1024 * 1024;
 
 const CSV_TABLES: Array<{ value: CsvTable; label: string }> = [
   { value: "schedule", label: "Schedule items" },
@@ -98,11 +113,28 @@ export function BackupPanel() {
     }
   }
 
+  // Bytes-on-the-server progress while a large file stages in parts; null
+  // outside an upload. Rendered as a live region so the multi-minute case
+  // (a big backup over cellular) is never a bare spinner.
+  const [uploadProgress, setUploadProgress] = React.useState<{
+    sent: number;
+    total: number;
+  } | null>(null);
+
   const [pending, setPending] = React.useState<{
-    parsed: unknown;
+    /** The parsed file, when it was small enough to travel as one body. */
+    parsed?: unknown;
+    /** The staged upload's id, when the file went up in parts instead. */
+    uploadId?: string;
     inspection: BackupCompatibility;
     fileName: string;
   } | null>(null);
+
+  /** Dismissing a staged preview frees its parts on the server too. */
+  function dismissPending() {
+    if (pending?.uploadId) void abandonStagedBackup(pending.uploadId);
+    setPending(null);
+  }
 
   // Step 1: parse and inspect — nothing is written until the preview is
   // confirmed, and the preview says exactly what the file contains.
@@ -113,6 +145,28 @@ export function BackupPanel() {
 
     setBusy("import");
     try {
+      if (file.size > DIRECT_IMPORT_MAX_BYTES) {
+        // Too big for one request body — stage it in parts. The preview the
+        // dialog shows is the server's inspection of the reassembled file.
+        const staged = await stageBackupFile(file, (progress) =>
+          setUploadProgress({ sent: progress.sent, total: progress.total }),
+        );
+        if (!staged.ok) {
+          toast.error(staged.error);
+          return;
+        }
+        if (!staged.preview.inspection.ok) {
+          toast.error(staged.preview.inspection.error ?? "That file cannot be imported");
+          return;
+        }
+        setPending({
+          uploadId: staged.preview.uploadId,
+          inspection: staged.preview.inspection,
+          fileName: staged.preview.fileName,
+        });
+        return;
+      }
+
       const text = await file.text();
       const parsed = JSON.parse(text);
       const result = await previewBackup(parsed);
@@ -125,6 +179,7 @@ export function BackupPanel() {
       toast.error("That file isn't valid JSON");
     } finally {
       setBusy(null);
+      setUploadProgress(null);
     }
   }
 
@@ -134,18 +189,34 @@ export function BackupPanel() {
     if (!pending) return;
     setBusy("import");
     try {
+      // The dialog promises this download twice; if it cannot be produced,
+      // proceeding (especially in replace mode, which wipes first) would be
+      // an unannounced broken promise — stop instead, import nothing.
       const safety = await exportBackup();
-      if (safety.ok) {
-        download(
-          `pre-import-backup-${toDayKey(new Date())}.json`,
-          JSON.stringify(safety.data),
-          "application/json",
+      if (!safety.ok) {
+        toast.error(
+          `Couldn't back up your current data first (${safety.error}) — nothing was imported. Try again.`,
         );
+        return;
       }
+      download(
+        `pre-import-backup-${toDayKey(new Date())}.json`,
+        JSON.stringify(safety.data),
+        "application/json",
+      );
 
-      const result = await importBackup(pending.parsed, mode);
-      if (result.ok) {
-        const report = result.data;
+      // A staged file finalizes server-side (the finalize runs the same
+      // importBackup and returns its result verbatim); a small file takes the
+      // one-request action directly. Either way `outcome` is importBackup's.
+      const outcome = pending.uploadId
+        ? await (async () => {
+            const staged = await importStagedBackup(pending.uploadId!, mode);
+            if (!staged.ok) return { ok: false as const, error: staged.error };
+            return staged.report as Awaited<ReturnType<typeof importBackup>>;
+          })()
+        : await importBackup(pending.parsed, mode);
+      if (outcome.ok) {
+        const report = outcome.data;
         const skippedNote = report.totalSkipped > 0 ? `, ${report.totalSkipped} already present` : "";
         const droppedNote = report.totalDropped > 0 ? `, ${report.totalDropped} unusable rows skipped` : "";
         toast.success(`Imported ${report.totalCreated} records${skippedNote}${droppedNote}`, {
@@ -161,7 +232,7 @@ export function BackupPanel() {
         setPending(null);
         router.refresh();
       } else {
-        toast.error(result.error);
+        toast.error(outcome.error);
       }
     } finally {
       setBusy(null);
@@ -258,6 +329,27 @@ export function BackupPanel() {
           </Button>
           <input ref={fileRef} type="file" accept="application/json,.json" hidden onChange={onFile} />
         </div>
+
+        {uploadProgress && (
+          // The multi-part staging of a large file, announced as it goes —
+          // the same presentation the health importer gives this transport.
+          <div role="status" aria-live="polite" className="mt-3 space-y-1.5">
+            <Progress
+              value={
+                uploadProgress.total > 0
+                  ? Math.round((uploadProgress.sent / uploadProgress.total) * 100)
+                  : 0
+              }
+              className="h-1.5"
+            />
+            <p className="text-xs text-muted-foreground">
+              Uploading {formatBytes(uploadProgress.sent)} of {formatBytes(uploadProgress.total)}
+              {uploadProgress.total > 0
+                ? ` · ${Math.round((uploadProgress.sent / uploadProgress.total) * 100)}%`
+                : ""}
+            </p>
+          </div>
+        )}
         <p className="mt-3 text-xs text-muted-foreground">
           You&apos;ll see what the file contains before anything is written, and a backup of your
           current data downloads automatically first. Records are matched by id, so importing the
@@ -265,8 +357,8 @@ export function BackupPanel() {
           failure rolls everything back — and day summaries are recomputed afterwards.
         </p>
 
-        <Dialog open={pending !== null} onOpenChange={(open) => !open && setPending(null)}>
-          <DialogContent className="max-h-[85vh] max-w-lg overflow-y-auto">
+        <Dialog open={pending !== null} onOpenChange={(open) => !open && dismissPending()}>
+          <DialogContent className="max-h-[calc(100dvh-2rem)] max-w-lg overflow-y-auto">
             {pending && (
               <>
                 <DialogHeader>
@@ -306,7 +398,7 @@ export function BackupPanel() {
                 </p>
 
                 <DialogFooter className="gap-2">
-                  <Button variant="outline" onClick={() => setPending(null)} disabled={busy !== null}>
+                  <Button variant="outline" onClick={dismissPending} disabled={busy !== null}>
                     Cancel — import nothing
                   </Button>
                   <Button

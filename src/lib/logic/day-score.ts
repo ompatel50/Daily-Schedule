@@ -78,6 +78,7 @@ export interface ScoreExclusion {
 
 export const EXCLUSION_REASONS = [
   "rest_day",
+  "paused",
   "not_scheduled",
   "future",
   "cancelled",
@@ -90,6 +91,7 @@ export type ExclusionReason = (typeof EXCLUSION_REASONS)[number];
 
 export const EXCLUSION_LABELS: Record<ExclusionReason, string> = {
   rest_day: "Rest day",
+  paused: "Paused",
   not_scheduled: "Not scheduled",
   future: "Upcoming",
   cancelled: "Cancelled",

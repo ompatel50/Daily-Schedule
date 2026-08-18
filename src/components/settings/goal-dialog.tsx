@@ -2,6 +2,9 @@
 
 import * as React from "react";
 import { useRouter } from "next/navigation";
+
+import { GoalMilestonesEditor } from "@/components/settings/goal-milestones-editor";
+import type { GoalMilestoneRow } from "@/components/settings/goals-panel";
 import { Loader2 } from "lucide-react";
 import { toast } from "sonner";
 
@@ -96,12 +99,15 @@ export function GoalDialog({
   goal,
   weekStartsOn = 1,
   habits = [],
+  milestones = [],
 }: {
   open: boolean;
   onOpenChange: (open: boolean) => void;
   goal?: GoalDraft | null;
   weekStartsOn?: 0 | 1;
   habits?: Array<{ id: string; name: string }>;
+  /** The goal's saved milestones — the editor renders in edit mode only. */
+  milestones?: GoalMilestoneRow[];
 }) {
   const router = useRouter();
   const [draft, setDraft] = React.useState<GoalDraft>(goal ?? emptyGoalDraft(todayValue()));
@@ -416,6 +422,10 @@ export function GoalDialog({
                 onCheckedChange={(checked) => patch({ active: checked })}
               />
             </div>
+
+            {isEditing && goal?.id && (
+              <GoalMilestonesEditor goalId={goal.id} milestones={milestones} unit={draft.unit} />
+            )}
 
             {isEditing && (
               <div className="space-y-1.5 rounded-lg border border-amber-500/30 bg-amber-500/5 p-3">

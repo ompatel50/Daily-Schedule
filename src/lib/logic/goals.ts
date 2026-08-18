@@ -385,3 +385,70 @@ export function buildGoalEvaluation(params: {
     summary: describeGoalProgress(goal, measurement, outcome, status, weekly),
   };
 }
+
+// ---------------------------------------------------------------------------
+// Milestones
+// ---------------------------------------------------------------------------
+
+/** One ordered checkpoint on a goal's way to (or past) its target. */
+export interface MilestoneLike {
+  id: string;
+  label: string | null;
+  targetValue: number;
+  /** Optional deadline, `YYYY-MM-DD`. */
+  targetDate: string | null;
+  ordinal: number;
+  reachedAt: Date | string | null;
+}
+
+/**
+ * Milestones in PROGRESS order: explicit ordinal first, then the target value
+ * walking in the goal's own direction — ascending for "at least" goals,
+ * descending for "at most" goals (a weight-loss goal's first checkpoint is
+ * the highest number). Ties keep insertion (id) order.
+ */
+export function orderMilestones<T extends MilestoneLike>(
+  milestones: readonly T[],
+  direction: string,
+): T[] {
+  const sign = direction === "lte" ? -1 : 1;
+  return [...milestones].sort(
+    (a, b) =>
+      a.ordinal - b.ordinal ||
+      sign * (a.targetValue - b.targetValue) ||
+      a.id.localeCompare(b.id),
+  );
+}
+
+/** Whether a measured value satisfies a milestone under the goal's direction. */
+export function milestoneMet(
+  milestone: Pick<MilestoneLike, "targetValue">,
+  direction: string,
+  value: number | null,
+): boolean {
+  if (value === null) return false;
+  return direction === "lte" ? value <= milestone.targetValue : value >= milestone.targetValue;
+}
+
+/** The next checkpoint to aim for: the first unreached one in progress order. */
+export function nextMilestone<T extends MilestoneLike>(
+  milestones: readonly T[],
+  direction: string,
+): T | null {
+  return orderMilestones(milestones, direction).find((milestone) => !milestone.reachedAt) ?? null;
+}
+
+/**
+ * Which unreached milestones a fresh measurement now satisfies — the caller
+ * stamps `reachedAt` on exactly these, so a value that blows through several
+ * checkpoints at once records them all.
+ */
+export function newlyReachedMilestones<T extends MilestoneLike>(
+  milestones: readonly T[],
+  direction: string,
+  value: number | null,
+): T[] {
+  return milestones.filter(
+    (milestone) => !milestone.reachedAt && milestoneMet(milestone, direction, value),
+  );
+}

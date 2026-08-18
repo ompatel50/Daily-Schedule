@@ -47,8 +47,23 @@
  *      "when an import's category cell says X, import it as Y". Small, but a
  *      restore that dropped them would silently re-corrupt the next CSV
  *      import's categories — which is why they are backed up at all.
+ * v10 — adds transfer reconciliation and credit-card depth: dismissed
+ *      transfer suggestions (`transferDismissals` — pairs the user said NO to
+ *      must stay said-no-to after a restore), dismissed track-as-bill
+ *      suggestions (`billSuggestionDismissals`), the `preTransferCategory`
+ *      column on transactions (what unlinking a linked transfer restores),
+ *      `creditLimit`/`statementDueDay` on accounts, and `rollover` on
+ *      budgets.
+ * v11 — money as integer cents: every money field gains a `*Cents` sibling
+ *      column (`amountCents`, `openingBalanceCents`, …) that the app reads;
+ *      the float columns stay dual-written until a later cleanup migration.
+ *      A v10-or-older file (floats only) restores by deriving the cents on
+ *      import; a v11 file carries both.
+ * v12 — goal milestones (`goalMilestones`, remapped under their goal) and the
+ *      habit pause window (`pausedFrom`/`pausedUntil` riding the existing
+ *      habits table). An older file simply has neither.
  *
- * A v1–v8 file restores into a v9 app unchanged: the missing tables simply
+ * A v1–v11 file restores into a v12 app unchanged: the missing tables simply
  * have no rows, the new columns take their defaults (a v7 health batch arrives
  * with `protectedRows = 0` and `formatVersion = 1` — which is exactly true of
  * it, because the importer that wrote it protected nothing and was version 1),
@@ -57,11 +72,19 @@
  * one from the same migration — which is how those records behaved when the
  * older backup was taken.
  *
- * A v9 file restored by an older app loses only the new table, which is
+ * A v12 file restored by an older app loses only the new parts, which is
  * why the version was bumped rather than left alone: `inspectBackup` refuses a
  * file newer than the app reading it, and that refusal is the honest answer.
+ *
+ * SOFT-DELETED ROWS ARE NOT EXPORTED. The export reads through the guarded
+ * client (src/lib/soft-delete.ts), so anything sitting in Settings → Trash is
+ * simply absent from the file — a backup captures your data, not your trash
+ * can. No format change was needed for this, so the version stays. Restoring
+ * a backup also clears the Trash for the restored tables first: a trashed row
+ * still holds its unique keys (import keys, budget categories, journal
+ * dates…) and would otherwise block the very rows being restored.
  */
-export const BACKUP_VERSION = 9;
+export const BACKUP_VERSION = 12;
 
 export interface BackupMetadata {
   /** Schema version of the backup format itself. */
@@ -115,6 +138,7 @@ export const BACKUP_TABLES = [
   "healthRecords",
   "goals",
   "goalEntries",
+  "goalMilestones",
   "scheduleRules",
   "scheduleRuleDays",
   "scheduleOverrides",
@@ -126,9 +150,11 @@ export const BACKUP_TABLES = [
   "financeImportBatches",
   "bills",
   "financeTransactions",
+  "transferDismissals",
   "savingsGoals",
   "budgets",
   "financeCategoryRules",
+  "billSuggestionDismissals",
   "inboxItems",
   "documents",
   "seedBatches",

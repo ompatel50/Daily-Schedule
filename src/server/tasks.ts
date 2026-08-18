@@ -17,22 +17,35 @@ import { scheduleSettingsFor } from "@/server/schedule";
 const OPEN_TASKS_CAP = 500;
 
 async function openTasksImpl(userId: string, today: DayKey) {
-  return prisma.task.findMany({
+  const rows = await prisma.task.findMany({
     where: { userId, status: "open" },
     include: {
-      project: { select: { id: true, name: true, color: true, status: true } },
+      // `deletedAt` rides along because Prisma cannot filter a to-one
+      // include; the map below nulls a project that sits in the Trash
+      // (src/lib/soft-delete.ts documents this boundary). The task renders
+      // standalone until the project is restored.
+      project: {
+        select: { id: true, name: true, color: true, status: true, deletedAt: true },
+      },
       subtasks: {
         select: { id: true, title: true, status: true, sortOrder: true },
         orderBy: [{ sortOrder: "asc" }, { createdAt: "asc" }],
       },
       // Upcoming planner blocks created from this task ("add to planner") —
-      // enough to show a "scheduled" chip. Filtered here, not client-side:
-      // an unfiltered take-3 would fill up with past blocks and hide a real
-      // upcoming one.
+      // enough to show "scheduled" chips with their day and time. Filtered
+      // here, not client-side: an unfiltered take-3 would fill up with past
+      // blocks and hide a real upcoming one.
       scheduleItems: {
         where: { status: "planned", date: { gte: today } },
-        select: { id: true, date: true, status: true },
-        orderBy: { date: "asc" },
+        select: {
+          id: true,
+          date: true,
+          status: true,
+          startMinute: true,
+          endMinute: true,
+          allDay: true,
+        },
+        orderBy: [{ date: "asc" }, { startMinute: { sort: "asc", nulls: "first" } }],
         take: 3,
       },
       // Tags are capped per task in the action layer, so this include can
@@ -44,6 +57,7 @@ async function openTasksImpl(userId: string, today: DayKey) {
     orderBy: [{ dueDate: { sort: "asc", nulls: "last" } }, { sortOrder: "asc" }],
     take: OPEN_TASKS_CAP,
   });
+  return rows.map((task) => (task.project?.deletedAt ? { ...task, project: null } : task));
 }
 
 const openTasksMemo = cache(openTasksImpl);
@@ -81,7 +95,10 @@ export async function getTaskBoard() {
         status: "done",
         completedAt: { gte: new Date(`${doneSince}T00:00:00`) },
       },
-      include: { project: { select: { id: true, name: true, color: true } } },
+      // deletedAt: the to-one Trash boundary again — mapped away below.
+      include: {
+        project: { select: { id: true, name: true, color: true, deletedAt: true } },
+      },
       orderBy: { completedAt: "desc" },
       take: 30,
     }),
@@ -103,7 +120,9 @@ export async function getTaskBoard() {
       ...project,
       progress: projectProgress(countsByProject.get(project.id) ?? []),
     })),
-    recentlyDone,
+    recentlyDone: recentlyDone.map((task) =>
+      task.project?.deletedAt ? { ...task, project: null } : task,
+    ),
     // The tag filter offers exactly the tags the open list actually carries —
     // computed from rows already in hand, so no extra query.
     tags: tagUsage(openTasks.map((task) => ({ tags: task.tags.map((row) => row.tag.name) }))),

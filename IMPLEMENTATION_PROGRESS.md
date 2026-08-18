@@ -5071,16 +5071,16 @@ those cells lean.
 |----|---------------------------------------------------|--------|
 | 1  | Finance import correctness (1a–1d)                | ✅ done |
 | 2  | Split finance-board.tsx                           | ✅ done |
-| 3  | Transfers: reconciliation & auto-detection        | ⏳ next |
-| 4  | Credit card depth + recurring + insights          | not started |
-| 5  | Money as integer cents                            | not started |
-| 6  | Task ↔ Planner linking                            | not started |
-| 7  | Global undo: soft-delete + Trash                  | not started |
-| 8  | Planner & habit quality features                  | not started |
-| 9  | Weekly review + data transparency                 | not started |
-| 10 | Dependency & platform hygiene                     | not started |
-| 11 | Reminders/cron improvements                       | not started |
-| 12 | UI/UX redesign pass                               | not started |
+| 3  | Transfers: reconciliation & auto-detection        | ✅ done |
+| 4  | Credit card depth + recurring + insights          | ✅ done |
+| 5  | Money as integer cents                            | ✅ done |
+| 6  | Task ↔ Planner linking                            | ✅ done |
+| 7  | Global undo: soft-delete + Trash                  | ✅ done |
+| 8  | Planner & habit quality features                  | ✅ done |
+| 9  | Weekly review + data transparency                 | ✅ done |
+| 10 | Dependency & platform hygiene                     | ✅ done |
+| 11 | Reminders/cron improvements                       | ✅ done |
+| 12 | UI/UX redesign pass                               | ✅ done |
 
 ## Phase 1 — finance import correctness
 
@@ -5233,3 +5233,925 @@ consecutively. (One `planner-recurrence` and one `assistant` spec failure
 appeared in single earlier runs under 2-worker load and passed on every
 re-run — pre-existing load flakiness, not the refactor: the finance specs
 were green in those same runs.)
+
+> **Branch note.** PR #24 (Phases 1–2) was merged into `main` by the user
+> mid-update. Per the session's branch rules the designated branch was
+> restarted from the merged `main` (same name, fresh history) and Phases 3+
+> continue on it as a new PR. Because v9 of the backup format shipped with
+> that merge, Phase 3's backup additions are **v10**, not folded into v9.
+
+## Phase 3 — transfers: reconciliation and auto-detection
+
+Imported rows arrive one-sided (a card export only sees the card). This
+phase links them.
+
+### The one matching authority: `src/lib/logic/transfer-match.ts`
+
+Pure. A candidate pair is always: same absolute amount to the cent, opposite
+signs, two different unarchived same-currency accounts, neither row already
+a leg, dates within a window (default 5 days; UI choices 3/5/7/14).
+`scoreTransferPair` grades on top: same/near day, transfer-ish payee wording
+(payment/transfer/autopay/deposit/…), asset→debt direction raise; recurring
+round amounts and — above all — multiple plausible counterparts lower.
+`detectTransferPairs` splits into `autoLinks` (single unambiguous
+counterpart on BOTH sides and score ≥ 0.75) and `suggestions`, honours a
+dismissed-pair set (canonical orderless `lowId|highId` keys via
+`transferPairKey`), and is idempotent — linked rows leave the pool.
+
+### 3a — mark as transfer / unlink
+
+* Schema (additive migration `20260818043721_transfer_reconciliation`):
+  `FinanceTransaction.preTransferCategory` — the category a LINKED leg had
+  before, what unlink restores — and the `TransferDismissal` table
+  (`userId`, canonical `aId` < `bId`, unique per user+pair, cascades with
+  either row).
+* Actions (`src/server/actions/transfers.ts`): `getTransferLinkCandidates`
+  (row + same-currency counterpart accounts + scored candidates),
+  `linkTransactionsAsTransfer` (validates ownership, different accounts,
+  same currency, equal-and-opposite amounts, neither already a leg; writes
+  groupId + category `transfer` + `preTransferCategory` in a guarded
+  transaction — a raced row rolls the pair back), `createTransferCounterpart`
+  (writes the missing leg — same date, opposite amount, `Transfer from/to X`
+  payee — and links), `unlinkTransfer` (both legs restored to their
+  pre-link category; legs born as transfers — the Transfer flow's or a
+  created missing leg — restore to `other`, documented in the action).
+  Linking never rewrites date/amount/payee/account, so import identities
+  survive.
+* UI: "Mark as transfer…" in the transaction row menu (non-legs, when a
+  second account exists) opens `mark-transfer-dialog.tsx` — counterpart
+  account + window selects, scored candidate radio list ("likely match"
+  badge), link selected, or create the missing leg. Transfer legs get an
+  "Unlink transfer" menu item (their menus previously had no items).
+
+### 3b — auto-detection
+
+`src/server/transfers.ts`: `loadTransferMatchData` (newest 5,000 unlinked
+rows of unarchived accounts + dismissals, all under one userId),
+`computeTransferSuggestions` (READ-ONLY — the finance page shows the capped
+top 8 on every load; would-be auto-links are listed too, because a page
+load must not write), `runTransferDetection` (the writing pass: links every
+single-unambiguous-confident pair in its own `transferGroupId: null`-guarded
+transaction — concurrency-safe and idempotent — and counts the rest).
+Runs after every `commitFinanceCsvImport` (best-effort, AFTER the import's
+transaction: a detection hiccup can never take the import down) with the
+outcome shown in the import report ("N transfers … linked automatically /
+M possible transfers waiting"), and on demand from the suggestions card's
+"Run detection". `transfer-suggestions-section.tsx` renders out → in with
+reason badges and Accept (= the same validated link action) / Dismiss.
+Dismissals persist per user, suppress the pair everywhere including
+auto-link, and an explicit manual link still overrides one.
+
+### 3c — import undo
+
+Verified by integration test: an auto-linked imported row classifies as
+`keep_linked` (the existing `classifyImportUndoRow` path — transferGroupId
+is set), undo removes only unlinked rows and reports the kept leg, and the
+linked row's imported source fields (date/amount/payee/importKey) are
+untouched by linking.
+
+### Backup format v10
+
+`transferDismissals` in `BACKUP_TABLES` (after the transactions it cites),
+export, restore (both row ids remapped, pair re-canonicalised — remapping
+can flip lexical order — dropped if either row is missing), replace-mode
+delete, verification counts; `preTransferCategory` rides the schema-driven
+row sanitiser automatically.
+
+### Verification
+
+* Unit **1,210 → 1,228**: `tests/transfer-match.test.ts` — pair predicate
+  (magnitude/sign/account/currency/window/linked), scoring (card payment
+  confident; bare coincidence not; recurring-round and ambiguity penalties;
+  orientation from signs), candidates (ordering, account narrowing),
+  detection (auto vs suggestion split, ambiguity forbids auto, dismissals
+  suppress auto-links, idempotency, cross-currency, greedy one-link-per-row).
+* Integration **405 → 415**: `tests/integration/transfer-reconciliation.test.ts`
+  — link with candidates + summary exclusion, refusal matrix (same account,
+  wrong amount, same direction, cross-currency, cross-user), missing-leg
+  creation, unlink restores (incl. classic Transfer legs → `other`),
+  post-import auto-link + report + **undo keeps both legs (3c)**, ambiguous
+  → suggestion only, cross-user isolation of detection, dismissal
+  persistence + explicit-link override, dismissal ownership refusal, backup
+  round trip of dismissals (canonical after remap, still suppressive).
+* E2E: new permanent `tests/e2e/transfers.spec.ts` — suggest → link →
+  unlink → mark-as-transfer round trip through the real UI, self-healing
+  cleanup. Full suite **123 passed / 2 skipped** against the production
+  build. Typecheck, lint, build green.
+
+## Phase 4 — credit-card depth, recurring detection, finance insights
+
+One additive migration (`20260818045252_credit_depth_recurring_rollover`):
+`FinanceAccount.creditLimit` + `statementDueDay`, `Budget.rollover`, and the
+`BillSuggestionDismissal` table (unique per user + normalised payee). All
+folded into backup **v10** (unshipped until this PR merges), with
+`billSuggestionDismissals` in export/restore and the columns riding the
+schema-driven sanitiser.
+
+### 4a — credit card depth
+
+Pure logic in `finance.ts`: `creditUtilization` (owed ÷ limit; tones ok <30%
+· elevated 30–69% · high ≥70%; a positive balance owes 0%; over-limit stays
+honest at >100%) and `nextStatementDueDate` (day-of-month → next occurrence,
+today inclusive, clamped to short months — 31 → Feb 28/29). The account
+dialog shows both fields for credit-card accounts only (cleared to null when
+the type changes or fields empty); the account card grows a utilisation bar
++ "N% used · $owed of $limit" and a statement line speaking the bills' own
+due language (`describeDueDistance` + the same urgency classes).
+
+### 4b — recurring detection → "track as bill"
+
+`src/lib/logic/recurring-detect.ts` (pure): groups money-out rows by
+normalised payee (skipping bill-linked rows, transfer legs, bookkeeping,
+payee-less rows), keeps amounts within ±15% (floor $2) of the payee's
+median, collapses same-day double charges, and accepts a cadence only when
+EVERY gap fits one tolerance band (weekly 5–9, monthly 26–36, yearly
+350–380 days) with ≥3 occurrences (yearly: 2). Suggests the median amount,
+the most common category, the latest row's account, and a next due date
+stepped forward until it is ≥ today — a suggestion is never born overdue.
+`computeBillSuggestions` (server) runs it over a bounded ~13-month window,
+subtracts dismissed payees (`dismissBillSuggestion` action, upsert,
+idempotent) and payees an active bill already covers by name, caps at 5.
+The Bills section shows them as a dashed "Looks recurring" block:
+"Track as bill" opens the existing BillDialog **pre-filled** (new optional
+`initial` prop — name/amount/category/recurrence/first due date/account,
+with forbidden categories falling back to `other`), dismiss buries the
+payee for good. Known soft edge (documented): the created bill suppresses
+by NAME equality; renaming the bill away from the payee re-surfaces the
+suggestion until dismissed.
+
+### 4c — month over month
+
+`compareSpendingByCategory` (pure): union of both windows' spending by
+category, bookkeeping excluded, sorted by |delta| so `slice(0, n)` IS "top
+movers". `financeWindows` extends the one ledger fetch back through the
+previous calendar month (which also covers weekly rollover); the overview
+adds `previousMonth` totals + `monthOverMonth` deltas. New
+`monthly-report-section.tsx` on the finance page (left column, under
+Bills): spending and income tiles with last-month comparison (spending up =
+red, down = green; income mirrored) and the top five movers with
+before → after amounts and delta chips. A section, not a route.
+
+### 4d — budget rollover
+
+`BudgetLike.rollover` (opt-in, per budget). `budgetProgress` — still the one
+place consumption maths lives — computes `carry = clamp(target −
+previousPeriodSpent, 0, target)` from `previousBudgetWindow` (weekly −7
+days; monthly = previous calendar month) and measures spent/remaining/
+percent/over/threshold against `effectiveAmount = target + carry`. An
+overspent previous period carries zero — a budget is a ceiling, never a
+debt. The budget dialog gains the switch; the row shows `spent /
+effectiveAmount` and "includes $X rolled over" (or "rollover on").
+*Documented asymmetry:* the daily budget-threshold REMINDER still measures
+against the base target (its evaluation path never loads the previous
+window) — it can only warn early for a rollover budget, never late.
+
+### Verification
+
+* Unit **1,228 → 1,249**: utilisation (bands, over-limit, owed-nothing,
+  no-limit), statement dates (ahead/behind/today, short-month + leap-year
+  clamps), category deltas (union, ordering, bookkeeping exclusion),
+  previous windows, rollover (carry/cap/floor/opt-out/weekly), and the new
+  `tests/recurring-detect.test.ts` (10 cases: monthly detection +
+  pre-fill, stale-history future due date, drift + variance tolerance,
+  occurrence minimums per cadence, irregular/one-off/dissimilar refusals,
+  bill-linked/transfer/income exclusions, same-day dedupe,
+  case-insensitive keys, ordering).
+* Integration **415 → 422** (`finance-depth.test.ts`): field persistence +
+  clearing + validation refusals, rollover through the real overview,
+  suggestion → per-user isolation → dismissal persistence → bill-name
+  suppression, month-over-month overview data, backup round trip of the
+  new columns and dismissals.
+* E2E: new permanent `tests/e2e/finance-depth.spec.ts` — utilisation bar
+  moving with spending, statement line, three monthly charges → suggestion
+  → pre-filled bill dialog → created bill suppresses the suggestion,
+  rollover budget row, report section; self-healing cleanup. Full suite
+  **124 passed / 2 skipped**. Typecheck, lint, build green.
+
+## Phase 5 — money as integer cents
+
+Monetary storage migrated Float → integer cents, staged exactly as asked.
+
+### The unit and its one module
+
+`src/lib/logic/money.ts` owns the unit: `toCents` (Math.round(×100) — the
+same half-up rounding `moneyRound` applied on every write, asserted
+property-wise in tests), `centsToAmount`, `centsOrLegacy` /
+`centsOrLegacyNullable` (the transition read fallback), and `formatCents`
+(the ONLY place cents become a displayed dollar string; the pinned-locale
+behaviour of the old `formatMoney`, which was **deleted** so the compiler
+enumerated all 58 call sites — no formatter can be handed the wrong unit
+silently). Everywhere else money is an integer: sums, balances, budget/
+utilisation ratios, matching, detection.
+
+### The staged migration
+
+* **Columns** (`20260818052025_money_integer_cents`, additive): `amountCents`
+  on transactions; `openingBalanceCents` / `lowBalanceThresholdCents` /
+  `creditLimitCents` on accounts; `amountCents` on bills and budgets;
+  `targetAmountCents` / `currentAmountCents` on savings goals. The audit
+  found no other money Float — everything else (health, nutrition, workouts)
+  is measurements, not money.
+* **Backfill**: in the SAME migration as SQL
+  (`ROUND(CAST(float AS numeric) × 100)` — the float was moneyRound-ed on
+  every write, so its numeric form is its exact 2-decimal value and ties
+  cannot occur; `WHERE cents IS NULL` keeps it idempotent), so `migrate
+  deploy` covers every deployment. Belt-and-braces:
+  `prisma/migrations-data/004-money-cents.ts` re-fills anything that arrived
+  outside the migration AND **verifies every account's computed balance is
+  identical to the cent, float-computed vs cents-computed, failing loudly on
+  mismatch** — the verification step the task demanded, also exercised as an
+  integration test.
+* **Reversibility**: the float columns are the snapshot. Every write path
+  dual-writes (`amount: centsToAmount(cents), amountCents: cents` — mirrored
+  exactly), so dropping the cents columns restores the pre-migration world.
+* **Switched reads**: every server fetch converts at the boundary
+  (`centsOrLegacy`) — `server/finance.ts` (balances, ledger windows, bills,
+  budgets, goals), `server/reminders.ts`, `server/transfers.ts`,
+  `server/queries.ts` (search), import undo candidates. SQL AGGREGATES
+  (`_sum`, `groupBy`) still read the dual-written float column — a sum of
+  2-decimal values is exact to the cent at any personal scale — converting
+  once at the boundary; they move to the cents column when the floats retire.
+* **Retirement**: deliberately a LATER cleanup migration, exactly per the
+  plan — not in this PR.
+
+### Boundaries
+
+* **Dialogs** type dollars: form initial values convert `centsToAmount`,
+  submissions stay dollars on the wire (zod `money` unchanged), actions
+  convert once with `toCents`.
+* **CSV import**: `parseMoneyValue` still parses dollar text; one conversion
+  point makes `FinanceImportRow.amount` integer cents. `buildImportKey`
+  spells the amount segment in the HISTORICAL dollar form via
+  `centsToAmount` — every stored key keeps deduplicating its own re-imports,
+  asserted (`v1|…|-19.99|streaming|0` byte-identical).
+* **Assistant tools** read and write dollars (its `create_transaction`
+  proposal always was dollars) — outputs convert `centsToAmount` at the tool
+  boundary only.
+* **Backup v12? No — v11**: exports carry both columns; restore derives
+  cents for any money row missing them, so a **v10-or-older, floats-only
+  file restores byte-correctly** (the required integration test builds a
+  literal pre-migration file and proves cents, balances and overview after
+  restore). An older app refuses a v11 file, as ever.
+* **Unit-dependent logic** re-based: transfer-match round-amounts (multiples
+  of 1,000 cents), exact equal-and-opposite integer check, recurring-detect
+  tolerance floor 200 cents.
+
+### Verification
+
+* Unit **1,249 → 1,253**, all green: new cents-boundary suite (toCents ≡
+  moneyRound property over awkward floats incl. 0.1+0.2, fallbacks,
+  formatCents rendering incl. unknown-currency fallback); finance-import /
+  transfer-match / recurring-detect / search fixtures converted to cents
+  with import-key spellings asserted unchanged.
+* Integration **422 → 428**: new `money-cents.test.ts` — dual-write
+  mirroring on every write path (manual, CSV import, adjustment), exact
+  cents arithmetic where float sums drift (10+20+30−40 = 20 cents, integer),
+  legacy float-only rows reading identically through the fallback, the 004
+  backfill filling + verifying + idempotent, **the pre-migration v10 backup
+  restoring correctly after the migration**, and a post-switch v11 export
+  round-tripping into another account. Existing money assertions updated to
+  cents (the float-column assertions deliberately kept, proving the mirror).
+* E2E: the full suite passes **unmodified — 124 passed / 2 skipped** against
+  the production build: every "$300", "−$42.50", "$300 of $1,000" the specs
+  assert renders identically from cents, the strongest proof no double or
+  half conversion slipped into any surface. Typecheck, lint, build green.
+
+### Deliberately deferred (documented, not forgotten)
+
+* The cleanup migration retiring the float columns (and moving SQL
+  aggregates to `amountCents`) — a later, separate migration per the plan.
+* The reminder threshold path measures against the base budget target (see
+  Phase 4's note) — unchanged by this phase; it converts to cents at its own
+  boundary.
+
+## Phase 6 — Task ↔ Planner linking
+
+Tasks and planner blocks were already connected by a one-way informational
+link (`ScheduleItem.taskId` + `scheduleTaskOnPlanner`, from the earlier
+work); this phase made the link live in both directions without making it
+destructive, and exposed it read-only to the assistant. **No migration** —
+the column already existed; only its meaning grew.
+
+### The model decision: the additive `taskId` column, not a join model
+
+Documented on the schema field itself. The join model was considered and
+rejected against the recurrence architecture:
+
+* The FK direction (many blocks → one task) already covers "a task can have
+  several blocks" — that is time-blocking one task across days. A join model
+  is only needed if one BLOCK could serve several tasks, which has no UI
+  meaning here.
+* Recurrence MATERIALISES every occurrence as a real row
+  (`src/server/series.ts`). A series-level link is therefore the parent's
+  `taskId` copied at materialisation — exactly how `habitId` already
+  propagates. A join model would need one join row per materialised
+  occurrence anyway: same cardinality, extra indirection.
+* The one/future/all scope mechanics (exception detach, series split,
+  parent promotion) copy or preserve row columns; a column rides every scope
+  correctly by construction, and the new integration tests prove it.
+
+### Block → task: an OFFER, never automatic
+
+`toggleScheduleItem` / `setScheduleItemStatus` return a
+`ScheduleStatusOutcome` whose `taskOffer` names the linked, still-open task
+when the block just became done. The planner row shows a toast — "Also
+complete the task …?" with a **Complete task** action — because one block
+can be one of several work sessions and only the user knows whether this
+one finished the task. No offer on skip, on un-check, for a closed task, or
+for an unlinked block.
+
+### Task → blocks: completion reflects
+
+`completeTask` now reflects inside the same transaction
+(`reflectCompletionOnBlocks`), with the rule pure and unit-tested in
+`src/lib/logic/tasks.ts` (`linkedBlocksToComplete`):
+
+* **Closing** the task marks EVERY still-planned linked block done — a block
+  is a reservation to work on the task, and a finished task has nothing left
+  to reserve time for.
+* **Advancing** a repeating task marks only blocks up to today (operational
+  days, the planner's own boundary) — future blocks are time set aside for
+  the next occurrence, which is still coming.
+* `done` keeps its own stamp; `skipped` records a deliberate "didn't happen"
+  and is never rewritten. Reopening a task does NOT un-complete blocks (the
+  sessions happened). Affected day summaries are recomputed; the outcome's
+  `blocksCompleted` count surfaces in the board toast and the assistant's
+  `complete_task` execution summary — "from anywhere" is literal, since the
+  assistant executor routes through the same action.
+
+### Deletes detach, never cascade
+
+Already structural (`onDelete: SetNull` task→block; block deletion never
+touches the task) — now asserted by integration tests in both directions,
+including that a detached block stops offering.
+
+### Recurring blocks respect the scope model
+
+`materializeSeriesWindow` copies `taskId` to generated occurrences (the one
+real change); everything else holds by construction and is tested: a linked
+block made recurring links the whole series, a scope-`one` exception keeps
+its link, a raw-deleted slot regenerates WITH the link, and closing the task
+sweeps every planned occurrence.
+
+### Surfaces
+
+* Planner rows (`schedule-row.tsx`) show a task chip (name, struck through
+  once the task is done) via the central `SCHEDULE_ITEM_INCLUDE` +
+  serializer, so Planner, Today and every other consumer agree.
+* Task cards list their upcoming planned blocks ("Planned · Aug 20 9:00 AM",
+  up to 3, soonest first) — date AND time, from the widened
+  `openTasksImpl` select.
+* `schedule-task-dialog` copy rewritten (it promised the old decoupling).
+* Assistant read tools, read-only per the plan: `get_schedule` items carry
+  `task {id,title,status}` when linked; `list_tasks` tasks carry
+  `scheduled` blocks with date/time. No new write tools.
+
+### Verification
+
+* Unit **1,253 → 1,257**: `linkedBlocksToComplete` — close-vs-advance,
+  done/skipped immunity, operational-day comparison at the reset boundary.
+* Integration **428 → 440**: new `task-planner-links.test.ts` (12) — the
+  offer (present, absent, withdrawn), reflection (close all / advance ≤
+  today / reopen keeps / cross-user guard on a corrupted foreign row),
+  detach both ways, series inheritance + regeneration re-stamping, and both
+  assistant tools through `runTool`.
+* E2E **124 → 126**: new `task-planner-links.spec.ts` — the full offer loop
+  through real toasts (schedule → check off → accept → task leaves the
+  board) and board-side completion reflecting on the planner block; full
+  suite green against the production build (126 passed / 2 skipped).
+  Typecheck, lint, build green.
+
+### Notes
+
+* The test derives "today" via `scheduleSettingsFor`, not the clock — the
+  operational day is yesterday's calendar date between midnight and the
+  daily reset, and the reflection rule compares operational days.
+* Linking an EXISTING block to a task has no UI (links are born from "Add to
+  planner"); if a later phase adds one, the scope semantics are already
+  consistent because the link is a row column.
+
+## Phase 7 — global undo: soft-delete + Trash
+
+One misclick no longer destroys data. `deletedAt` (additive migration, plus
+`(userId, deletedAt)` indexes) on the 16 user-facing primary models:
+ScheduleItem, Task, Project, Habit, Meal, Workout, FinanceTransaction,
+FinanceAccount, Bill, SavingsGoal, Budget, Reminder, JournalEntry, Goal,
+InboxItem, LifeDocument.
+
+### The centralised filter: a Prisma client extension, not a helper to call
+
+`src/lib/soft-delete.ts` is the SINGLE place that builds `deletedAt: null` —
+no query call site anywhere spells the condition. It exports a client
+extension applied once in `src/lib/prisma.ts`:
+
+* top-level `findMany`/`findFirst(+OrThrow)`/`count`/`aggregate`/`groupBy`/
+  `updateMany`/`deleteMany` on the 16 models get the filter AND-merged into
+  `where`;
+* include/select trees are walked recursively (relation graph from the
+  DMMF): every to-MANY relation targeting a guarded model gets the filter,
+  filtered relation `_count` selects included — a live parent never lists
+  trashed children, even from an unguarded parent model's read.
+
+Deliberately not guarded, and why it is safe: unique-key operations
+(`findUnique`, `update`, `delete`, `upsert` — Prisma cannot attach
+non-unique conditions), covered by the action layer's universal
+guarded-`findFirst`-first pattern; and to-ONE includes (unfilterable), where
+the three real link surfaces select `deletedAt` and null the link at the
+boundary (planner block → task in the serializer + `get_schedule`, task →
+project in `server/tasks.ts`). Each site points back to the module.
+
+`prismaIncludingTrashed` (same connection, no guard) exists for the
+documented raw paths only: Trash list/restore/purge, the retention sweep,
+backup-restore's transaction, demo removal, both import undos, and identity
+reads (below).
+
+### Semantics
+
+* **Children follow parents, by stamp.** A delete writes one `trashStamp()`
+  onto the row and its dependents — task→subtasks, account→its ledger,
+  workout→its mirror block, planner rows→their reminders. Restore clears
+  exactly the rows carrying that stamp, so something trashed separately
+  stays trashed.
+* **Series stay coherent.** `one` still records the skip tombstone (restore
+  gives the slot back); trashing the FIRST occurrence promotes the next
+  parent and stores the old row as a detached exception (no rule to
+  resurrect); `future` truncates the rule and stamps the tail; `all` stamps
+  the series. Regeneration cannot refill any of it.
+* **Identity keys stay occupied until purge.** A trashed row still owns its
+  import key / routine sourceKey / Apple-Health externalId: the dedup reads
+  deliberately use the raw client, so re-importing dedups against the Trash
+  instead of resurrecting or colliding (finance-workflows test updated to
+  this contract). Where re-creating must win, the trashed holder is purged
+  explicitly: `saveBudget` on its `(user, category)` unique, journal saves
+  on `(user, date)`, routine "replace".
+* **Restore is link-aware.** A transfer restores as a pair — or clearly
+  detaches (transferGroupId null, preTransferCategory back) when the
+  counterpart was purged; a transaction revives its trashed account; a
+  subtask revives its trashed parent; a habit/goal re-enables its
+  polymorphic schedule.
+
+### Trash surface + retention
+
+`src/server/trash.ts` (list, per-module labels, counts) + Settings → Trash
+(`/settings/trash`, restore / delete-forever per item, empty-trash) + a
+Settings card with the live count. 30-day purge (`TRASH_RETENTION_DAYS`)
+folded into `/api/reminders/run` next to `sweepExpiredUploads`, never fatal;
+purge relies on the existing FK cascades for dependents.
+
+### Backup
+
+Exports read the guarded client → trashed rows are simply absent
+(documented in backup-format.ts; NO version bump — the format is
+unchanged). The restore transaction runs on the raw client and first purges
+the user's trashed rows for the tables being restored, so held unique keys
+cannot block the insert.
+
+### Documented hard-delete exceptions
+
+Account deletion (DB cascade from User), demo-data removal, finance/health
+import "remove" (undo must free identity keys), routine "replace", the
+purge paths themselves, and housekeeping deletes of empty shells (a meal
+whose last entry was removed; a journal upsert superseding a trashed date).
+Non-primary models (tags, templates, logs, sets, entries…) keep their old
+hard deletes.
+
+### Verification
+
+* Typecheck, lint, build clean. Unit **1,257** green (backup source-shape
+  test updated to the raw-client transaction).
+* Integration **440 → 452**: new `trash.test.ts` (12) — guard hides rows
+  from finds/counts/nested includes + `_count`, trash page listing +
+  cross-user emptiness, stamp-scoped task restore, transfer pair
+  restore/detach round trip, account+ledger restore, series slot give-back,
+  cross-user restore/purge denial, per-item purge finality, retention-window
+  sweep, per-user empty-trash, export-exclusion + restore-clears-trash. Six
+  existing tests updated from hard- to soft-delete contracts (each comments
+  the new semantics).
+* E2E **126 → 128**, full suite green against the production build: new
+  `trash.spec.ts` rounds a task and a finance transaction through delete →
+  Settings → Trash → restore, then purges; every pre-existing delete flow in
+  every spec now exercises soft delete unmodified.
+
+## Phase 8 — planner & habit quality features
+
+Four additive features; one migration (`habit_pause_goal_milestones`) adds
+`Habit.pausedFrom`/`pausedUntil` and the `GoalMilestone` model.
+
+### 8a — copy day / copy week
+
+`planDayCopy` (pure, `src/lib/logic/planner.ts`): only ONE-OFF blocks copy —
+series parents and occurrences are counted in `skippedRecurring` and the UI
+says so plainly ("they already repeat"). A copy is a fresh planned block:
+completion stamps and template identity never travel; links that describe
+the block's MEANING (task, habit, tags) do; links that name another day's
+RECORD (logged workout/meal — unique per row) cannot. Conflicts use the
+planner's one `isSchedulingConflict` rule (tolerance included, before-reset
+copies compared on their real calendar date) and warn-then-confirm exactly
+like a move. `copyPlannerDay` / `copyPlannerWeek` (weekday-for-weekday,
+weeks normalised to the user's week start, one merged confirm) +
+`CopyPlannerDialog` behind a "Copy day…/Copy week…" button by the view tabs.
+
+### 8b — utilisation view
+
+`weekUtilization` (pure, `src/lib/logic/utilization.ts`) over rows the week
+grid already renders — no new fetch. Honest bounds, stated in the UI: only
+timed blocks carry minutes (all-day/untimed counted, never summed), skipped
+blocks count nowhere, "available" is the user's own waking window × 7 so
+"free" means free waking time. Renders as a summary card under the Week
+grid (least-new-surface): planned vs free bar, per-category bars with done
+minutes, completion percentage.
+
+### 8c — habit pause
+
+Additive `pausedFrom`/`pausedUntil` (inclusive, either side open) flow to
+the ONE schedule engine: `SchedulableItem` carries the window and
+`getOccurrenceForDate` answers a new `paused` state with the same neutral
+flags as rest/excused — so streaks, completion rates, the day score
+(`paused` exclusion reason), insights and the calendar all skip paused days
+without any of them re-deriving the rule. The pause outranks per-date
+overrides and ends by itself when the range does. Habit dialog gets the
+range inputs (inverted range refused), the habit card a "Paused until"
+badge, the 28-day strip a violet dot.
+
+### 8d — goal milestones
+
+`GoalMilestone` (user-scoped + goal-cascade): label, target value, optional
+target date, per-milestone reminder opt-in, `reachedAt`. Pure helpers in
+`src/lib/logic/goals.ts` (`orderMilestones` walks the goal's own direction —
+a weight-loss goal's first checkpoint is the highest number; `nextMilestone`;
+`newlyReachedMilestones`). Reaching one records it: `evaluateGoalsForDate` —
+the one place every source's measured value flows through — stamps newly met
+milestones when evaluating TODAY (never when replaying history; best-effort
+so a failed write cannot cost a render). Editing a milestone's target clears
+its stamp — a moved checkpoint is a different checkpoint. The reminder rides
+the existing ledger through the generic due-date resolver (new `milestone`
+kind, 7-day run-up, silenced by reach, inactive/archived goals mute it).
+Editor lives in the goal dialog; the goals panel shows reached/total and the
+next checkpoint.
+
+### Backup v12
+
+`goalMilestones` exported and restored (remapped under their goal, foreign
+goals dropped — the `goalEntries` pattern); the pause fields ride the
+existing habits table. Older files simply have neither.
+
+### Verification
+
+* Unit **1,257 → 1,275**: planDayCopy (recurring skip, link travel,
+  tolerance conflicts, before-reset alignment), weekUtilization (per-category
+  sums, free-time floor, skipped/untimed handling, cross-midnight),
+  engine pause (window bounds, open ends, streak bridging, denominator
+  exit), milestone helpers (direction ordering, next, multi-stamp).
+* Integration **452 → 465**: new `phase8.test.ts` (13) — copy day/week
+  through the actions (fresh planned copies, series not duplicated,
+  conflict-then-confirm, same-week refusal), habit pause through
+  `getHabitViews` + the day score (excluded, never missed, auto-end,
+  inverted range refused), milestone actions (user-scoped, stamp-clearing
+  edit), automatic reach-stamping via evaluation, the milestone reminder in
+  the feed (cross-user clean), and the v12 backup round trip.
+* E2E **128 → 129**: new `planner-copy.spec.ts` — copy day through the real
+  dialog and the utilisation card summing the week; full suite green
+  against the production build (129 passed / 2 skipped). Typecheck, lint,
+  build clean.
+
+## Phase 9 — weekly review + data transparency
+
+One migration (`backup_recency`): `User.lastBackupExportAt`, stamped
+best-effort by `exportBackup`.
+
+### 9a — the weekly review page (`/review`)
+
+`src/server/review.ts` assembles the page from the computations that
+already exist — `getWeeklyReview` (the SAME engine behind the assistant's
+`get_week_review` and the insights page) plus a new lean
+`getBudgetSnapshot` (the finance page's own `budgetProgress` reduced to
+what a review needs) — and adds the two review-specific slices: the week's
+unfinished OPEN tasks (due on or before the week's end) and the journal
+entry the reflection saves into.
+
+* **Score recap** (average, scored/rest days, the factual focus sentence),
+  planner and habit completion, strongest / most-missed areas, workouts and
+  nutrition — all `getWeeklyReview` verbatim.
+* **Roll-forward**: `rollTaskForward(id, toDate)` moves an open task's due
+  date to the next week's start (a repeating task re-anchors, exactly as an
+  edit would); per-task buttons + "Roll all".
+* **Money snapshot**: this month's totals + per-budget progress bars, all
+  integer cents.
+* **Reflection**: saves through the ordinary `saveJournalEntry` under
+  today's date (a past week reviews under its own last day), PREFILLED with
+  that day's existing entry so saving can never overwrite a page unseen.
+* Entry points: the direct route with `?date=` week navigation, and a
+  dashboard banner in the week's last two days.
+
+### 9b — the Settings data page (`/settings/data`)
+
+`getDataOverview` — the `get_backup_status` computation surfaced for
+humans, read-only: per-module record counts through the GUARDED client
+(your data, not your trash — the Trash count rides as its own line), oldest
+/ newest natural dates where the module has them, the last finance and
+health imports, backup recency and format version. `get_backup_status`
+itself now reports `lastBackupExportAt` too, so the tool and the page can
+never disagree. Linked from a Settings card.
+
+### Verification
+
+* Integration **465 → 473**: new `phase9.test.ts` — the page model
+  (unfinished-task filtering, cents-exact money, reflection prefill +
+  round-trip on one journal row, past-week anchoring, cross-user
+  emptiness), roll-forward (re-anchoring, refusals), the data overview
+  (guarded counts vs the trash line, date bounds, never→stamped backup
+  recency, per-account isolation).
+* E2E **129 → 131**: new `review-data.spec.ts` — rolling a task into next
+  week through the real page, and the data page's read-only table +
+  Settings entry point. Full suite green (131 passed / 2 skipped).
+* Unit 1,275 unchanged (the phase reuses existing pure logic). Typecheck,
+  lint, build clean.
+* Fixed en route: `finance-depth.spec.ts`'s cleanup counted bill menus
+  before the finance page's streamed sections settled — reading 0, skipping
+  cleanup, and letting a leftover bill suppress the recurring suggestion.
+  The cleanup now waits for network idle first (a latent race, surfaced by
+  accumulated seed data).
+
+## Phase 10 — dependency & platform hygiene
+
+Three isolated steps, each its own commit range: the audit pass, the staged
+backup import, and the Next.js 16 migration.
+
+### 10a — the audit pass
+
+`npm audit fix` took the non-breaking set only: nanoid, js-yaml,
+brace-expansion. **Deferred, deliberately:** the deepmerge-ts high
+(GHSA-ggr8-5vv4-36mx, stack exhaustion on recursive object graphs) is
+reachable only through `@prisma/config` → `prisma` — a build-time config
+reader, not request-path code — and npm's only offered "fix" *downgrades*
+prisma 6.19.3 → 6.12.0, a real regression to silence a theoretical one.
+It stays until prisma ships a patched chain; `npm audit` counts the one
+root cause as 3 highs. The postcss and sharp advisories were pinned on
+Next 15 and expected to clear with the framework — 10c confirmed both gone.
+
+### 10b — staged backup import
+
+A backup used to travel as ONE server-action body, which a hosted platform
+caps near 4 MB before any code runs. Now the health importer's transport is
+reused verbatim under `HealthUploadSession.kind = "backup"` (kind checked at
+every resolve, so neither consumer can be fed the other's bytes):
+`src/server/backup-upload.ts` wraps open/receive/finalize with a 64 MB
+ceiling (`BACKUP_MAX_UPLOAD_BYTES` — the finalize must hold decoded JSON in
+memory, unlike the streaming health parser), `/api/backup/import{,/part,/finalize}`
+mirror the health routes (auth-first, `maxDuration` literals), and the
+finalize is two-phase to preserve the panel's preview-then-confirm contract:
+**preview** assembles, parses, `inspectBackup`s, then *releases* the session
+(new `releaseUpload` — parsing → receiving, expiry refreshed) so the parts
+survive for the confirm; **import** assembles again and runs the ordinary
+`importBackup`, then discards. Bad JSON discards immediately — deterministic
+failures don't hold disk. The panel stages any file over 3 MB
+(`DIRECT_IMPORT_MAX_BYTES`) through `src/lib/backup/staged-upload.ts`
+(sequential parts, per-part retry with backoff, abandon on walk-away) and
+keeps the small-file single-request path unchanged. Integration
+**473 → 479**: preview-without-writing + session-survives + import-consumes,
+multi-part byte fidelity (9 MB padded), bad-JSON frees parts, 413 oversize,
+health-kind invisible to backup finalize, cross-user 404s.
+
+### 10c — Next.js 15 → 16, its own isolated step
+
+`next` 15.5.22 → 16.3.1, `eslint-config-next` → 16.3.1; React stays 19.2.
+Breaking changes resolved, in the order the toolchain surfaced them:
+
+* **middleware → proxy.** Next 16 no longer accepts
+  `export const { auth: middleware } = NextAuth(...)` (the destructured
+  export isn't statically recognized as a function export). `src/middleware.ts`
+  became `src/proxy.ts` with an explicit default-export function invoking
+  the same edge-safe `auth` — same matcher, same policy.
+* **Sign-out could be silently undone — found by E2E, fixed in the proxy.**
+  Auth.js re-issues the session cookie on every proxied response (sliding
+  expiration). Next 16 prefetches the sidebar aggressively AND strips every
+  prefetch marker (`Next-Router-Prefetch`, `RSC`, `_rsc`) before the proxy
+  runs, so a prefetch issued while signed in that lands *after* the
+  sign-out action cleared the cookie re-installs a valid session — and the
+  proxy cannot even tell such a response apart from a navigation. Observed
+  deterministically (signup.spec's fence assertion; reproduced at the
+  cookie level with a scripted browser: the straggler `?_rsc=` responses
+  carried fresh `Set-Cookie` after the `Max-Age=0` clear). The proxy now
+  strips the session-token `Set-Cookie` from EVERY response it returns:
+  signing in and out set/clear the cookie through their server-action
+  responses, which don't pass through the proxy's response object, so the
+  only thing lost is proxy-driven sliding expiration — a session lasts
+  Auth.js's `maxAge` from sign-in rather than from last activity. Probed
+  3× clean; the full suite agrees.
+* **ESLint.** eslint-config-next 16 ships native flat configs, so the
+  `FlatCompat` bridge (which now crashes in `@eslint/eslintrc`) is gone —
+  `eslint.config.mjs` spreads `eslint-config-next/core-web-vitals` and
+  `/typescript` directly. The bundled eslint-plugin-react-hooks v7
+  introduces `set-state-in-effect` and `refs`, which flag ~50 pre-existing
+  sites (almost all the "reset dialog form state when it opens" effect).
+  Rewriting 45 components is not a framework migration, so exactly those
+  two rules are set to **warn** — deliberately not "off": new code still
+  sees them, and the burn-down is a natural Phase 12 companion.
+* **next.config.mjs** lost its now-unsupported `eslint` key (lint hasn't
+  run in builds here since Next 15; the CI step is `npm run lint`).
+* **tsconfig.json** — Next 16 rewrites it on first build (`jsx:
+  "react-jsx"`, `.next/dev/types` include, reformat); kept as-is.
+* **finance-depth cleanup hardened.** Deleting a leftover through the UI
+  kicks off a router refresh that re-streams the finance sections; the next
+  family's existence check, made ~45 ms later, read the mid-refresh page as
+  empty and skipped real leftovers (trace-verified). Next 15 usually won
+  that race, Next 16 deterministically lost it. The cleanup now reloads and
+  settles after any family of deletions before reading the next.
+
+Advisories after the upgrade: postcss and sharp **cleared**; the
+deepmerge-ts chain remains as documented in 10a.
+
+### Verification
+
+Typecheck clean; lint 0 errors (58 warnings, all the two documented
+react-hooks v7 rules); production build clean — no config warnings, proxy
+registered. Unit **1,275**, integration **479**, E2E **131 passed / 2
+skipped** — all against the Next 16 production build, before and after
+states compared (same totals on 15.5.22 immediately pre-upgrade). Browser
+verification: sign-in → prefetch-heavy dashboard → sign-out → fence probed
+at the cookie level; uncookied protected routes 307 to `/signin`.
+
+## Phase 11 — reminders/cron, within platform limits
+
+The hosted cron fires once a day; the phase makes that honest instead of
+pretending otherwise. No migrations — everything rides the existing
+`ReminderDelivery` ledger.
+
+### The daily digest
+
+A once-daily run can almost never hit a reminder's ±30-minute precise
+window, so it now does what a single run CAN do: send one push summarizing
+everything still ahead in the user's coming operational day.
+`src/lib/logic/digest.ts` is the pure half — agenda lines with clock times
+for timed kinds (habits, goals, classic reminders), the occurrence's own
+phrasing for due items and alerts, 6 lines then an honest fold, empty day →
+null (silence, not an empty notification). Classic reminders are windowed
+(still-deliverable now, or within 24 h) because the feed deliberately
+carries future instants; every wall-clock occurrence belongs by
+construction — the feed is already day-scoped, including small-hours items
+whose fireAt carries the next calendar date. The runner claims
+`digest:<operational day>` on the ledger BEFORE sending (collision = already
+digested today), releases the claim if no subscription accepts, and leaves
+each occurrence's own key untouched — an open tab still delivers the exact
+minute. Occurrences the same run pushed precisely are left out of the
+digest. A frequent external scheduler therefore gets: first run of the day
+digests, every run pushes what is due right then, nothing ever twice. The
+runner also now selects `dayResetMinute`, fixing a quiet gap where a custom
+day reset shaped the in-tab feed but not the push runner's.
+
+### Claim-first in-tab delivery + PWA-correct notifications
+
+The watcher used to toast first and record after — two tabs could both show
+the same occurrence, and a push that had already delivered didn't silence
+an open tab within the same minute. `recordReminderDelivery(For)` now
+returns whether THIS call claimed the key; `deliverReminderAction` passes
+that through, and the watcher claims first, showing the toast and system
+notification only on a fresh claim (offline degrades to delivering anyway —
+a rare duplicate beats a silent miss, and the OS-level `tag` still collapses
+same-key duplicates). The system notification goes through
+`registration.showNotification` when a service-worker registration exists —
+the only path an installed PWA supports; `new Notification` throws there —
+falling back to the bare constructor in plain tabs. No platform currently
+lets a web app schedule a notification for later with nothing running, so
+there is no pretend-scheduling: precise minutes need the app open or the
+push path, and the copy says so.
+
+### Honest settings copy + docs
+
+The Reminders panel states that exact minutes fire while the app is open;
+the Background reminders panel states the deployment reality — default
+hosted schedule = one daily digest, exact-time pushes only with a
+frequent external scheduler — instead of implying precision the platform
+does not have. `docs/web-push-setup.md` reframes the built-in daily run
+from "safety net, nothing more" to the digest it now sends, and keeps the
+full CRON_SECRET external-scheduler walkthrough (cron-job.org / GitHub
+Actions) as the exact-time path; `docs/deployment-guide.md` step 8 matches.
+
+### Verification
+
+* Unit **1,275 → 1,285**: `tests/digest.test.ts` — empty-day null, agenda
+  vs phrasing lines, clock ordering, small-hours inclusion, instant
+  windowing on the user's clock, the cap and fold, line clipping, singular
+  title, broken-timezone degradation, key shape.
+* Integration **479 → 485**: digest exactly-once per operational day with
+  the occurrence keys left unconsumed, precise-push exclusion, silent empty
+  day, per-account isolation of digest contents, failed-send claim release
+  and retry; the fresh-claim signal (winner true, every later surface false,
+  per-account key scoping).
+* E2E: full suite green (131 passed / 2 skipped) against the production
+  build — the watcher runs on every page of every spec with console-error
+  tracking, so the claim-first rewrite is exercised broadly. Browser
+  verification: the four new copy statements render on /settings (push
+  configured and not), no console errors beyond the known local
+  `_vercel/insights` noise. Typecheck, lint, build clean.
+
+## Phase 12 — UI/UX polish, last
+
+No functional changes mixed in; every edit is presentation, honesty, or
+access. The phase ran as a CSP hardening step plus three systematic audits
+(mobile/consistency, accessibility, toast coverage) of every surface this
+update added, with each verified finding fixed or explicitly deferred.
+
+### CSP: nonce-based script-src, `'unsafe-inline'` dropped
+
+The policy moved from next.config.mjs's static headers into the proxy,
+which is the only place a fresh per-request nonce can exist: it builds
+`script-src 'self' 'nonce-…'`, rebuilds the pass-through response so the
+policy rides the REQUEST headers (how Next stamps its own hydration
+scripts), and forwards the nonce as `x-nonce` for the root layout to hand
+to next-themes' theme bootstrap. Styles keep `'unsafe-inline'` (Tailwind /
+Radix / charts set inline styles; none carry script-injection risk); dev
+builds relax script-src for HMR — the nonce policy is a production
+property. Verified live: hydration interactive, all recharts surfaces
+rendered, theme applied before paint, zero CSP refusals (the only console
+noise is the local-dev `_vercel/insights` 404 that every spec already
+filters). The a11y spec's axe injection now needs `bypassCSP: true` — a
+property of the test harness, noted in the spec. next.config keeps the
+other security headers; docs/security-and-privacy.md updated.
+
+### Access and consistency
+
+* `/review` was unreachable on a phone: it was in no NAV_ITEMS entry, no
+  drawer group, and not the command palette — only a dashboard banner shown
+  two days a week. It is now a first-class surface (`g r`, Review drawer
+  group) and `/insights` stops claiming "Weekly review" as its description.
+  The review page's week links moved into the PageHeader as real Buttons
+  (focus ring, touch targets) — deliberately NOT the shared DateNav, whose
+  free two-way stepping would reach future weeks and write reflections
+  under future journal dates.
+* The Settings data table gets the established two-shape treatment: a card
+  list on phones, `min-w` + `overflow-x-auto` + `scope="col"` at md-and-up
+  (before, `w-full` never overflowed — it silently crushed the date
+  columns).
+* Shared primitives replace hand-rolled copies where the same data already
+  has a canonical form elsewhere: EmptyState in the Trash and both review
+  empty cases (the "Unfinished tasks" card no longer renders a titled but
+  bodyless shell on a clean week), Progress for the review budget bars and
+  utilisation category bars, the Checkbox component for the milestone
+  reminder opt-in (the repo's only raw checkbox input), full Badge padding
+  in the Trash.
+* `/review` got a page-shaped loading.tsx; new surfaces already used
+  PageHeader + SectionCard throughout (audit-verified).
+
+### Accessibility
+
+* schedule-item-dialog: the three unnamed Selects (Category, Priority,
+  Status) and the Repeat select are Label/htmlFor-paired; the weekday
+  toggles carry `aria-pressed`, full-day-name accessible names and a focus
+  ring; the async double-booking warning announces via `role="status"`.
+* mark-transfer-dialog: the hand-rolled radiogroup now honours its
+  contract — roving tabIndex, arrow-key movement, focus ring, and a check
+  glyph so selection isn't color-only; the disabled "Create missing leg"
+  explains itself in visible text instead of an unreachable `title`.
+* Milestones editor: Enter adds the milestone instead of implicitly
+  submitting (and closing) the whole goal dialog; status icons carry
+  `role="img"`; both row buttons gained `touch-target`.
+* review-board: per-row roll buttons are row-scoped ("Roll “X” to next
+  week"); over-budget is stated in text ("· over by $120"), not color
+  alone. habit-dialog: the pause error is `aria-describedby`-paired.
+  transfer suggestions: the Link button names its pair; account spans got
+  flex bases so a phone wrap keeps "A → B" readable.
+* The Trash purge deadline is visible text ("deleted Aug 12 · gone
+  Sep 11"), not a hover-only title; the copy-planner conflict toast holds
+  10 s (sonner's ~4 s default was unreachable for AT users).
+* The axe floor now audits `/finance`, `/review`, `/settings/data` and
+  `/settings/trash` (135 E2E, up 4) — all clean at phone width.
+
+### Toasts: the Trash became visible at the moment of deletion
+
+Every soft delete's toast said "deleted" as if it were permanent — two
+were outright wrong ("Account and its ledger deleted", "Habit and its
+logs deleted"). A shared `toastMovedToTrash` helper now names the Trash
+and carries a one-click Undo that runs the REAL `restoreTrashItem` (the
+Settings → Trash action) — wired for tasks, inbox items, documents, and
+all five finance deletes. Planner deletes name the Trash without the
+one-click undo, deliberately: restoring a series or skipped occurrence has
+follow-on questions the Trash page presents properly. Also: the pre-import
+safety backup can no longer fail silently — if it cannot be produced the
+import (crucially replace mode) refuses to run, keeping the promise the
+dialog makes twice; staged backup uploads show live progress
+(`role="status"` + Progress + byte counts — the transport's callback was
+simply never consumed); milestone removal is two-step confirmed and
+announced; per-item Trash purge is two-step (matching Empty trash, which
+now also reports its count and offers Cancel); a failing roll-all stops at
+the first error instead of stacking one toast per task.
+
+### Deliberately not done (documented, not forgotten)
+
+* backup-panel's "Reset everything" keeps its two stacked `window.confirm`s
+  — natively accessible, just unstyled; converting it buys polish only.
+* Milestone add / reminder-toggle stay success-silent: additive,
+  self-evident row changes (the audits agreed).
+* The react-hooks v7 warn-level burn-down (58 sites) remains open — it is
+  a behaviour-preserving refactor pass of its own, not polish.
+
+### Verification
+
+Typecheck clean; lint 0 errors (the 58 documented v7 warnings); production
+build clean. Unit **1,285**, integration **485**, E2E **135 passed / 2
+skipped** (spec selectors updated where accessible names deliberately
+changed: weekday full names, "Repeat" label pairing, the Link button's
+row-scoped name, two-step purge, the topbar/page heading collision on
+/review). Browser verification: nonce CSP live-probed (hydration, charts,
+theme, cookie headers), 390 px overflow sweep clean on /review,
+/settings/trash, /settings/data, /finance, /planner.

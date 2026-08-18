@@ -19,6 +19,9 @@ import {
   evaluateGoal,
   isWeeklyGoal,
   measureGoal,
+  newlyReachedMilestones,
+  nextMilestone,
+  orderMilestones,
   type GoalEvaluation,
   type GoalFacts,
   type GoalLike,
@@ -115,6 +118,12 @@ export interface GoalDayResult extends GoalEvaluation {
   scheduleSummary: string;
   streak: number;
   streakUnit: "occurrences" | "weeks";
+  /** Ordered checkpoints; `next` is the first unreached one to aim for. */
+  milestones: {
+    total: number;
+    reached: number;
+    next: { id: string; label: string | null; targetValue: number; targetDate: string | null } | null;
+  };
 }
 
 /**
@@ -169,7 +178,7 @@ async function evaluateGoalsForDateImpl(
   // measured, even when only one date was asked for.
   const from = week.start < date ? week.start : date;
   const to = week.end > date ? week.end : date;
-  const [factsByDay, entries] = await Promise.all([
+  const [factsByDay, entries, milestoneRows] = await Promise.all([
     measureFactsByDay(userId, from, to, { scoreOptionalTasks: options.scoreOptionalTasks }),
     prisma.goalEntry.findMany({
       // Bounded: streaks and rates never look further back than this window
@@ -182,7 +191,17 @@ async function evaluateGoalsForDateImpl(
       },
       orderBy: { date: "asc" },
     }),
+    prisma.goalMilestone.findMany({
+      where: { userId, goalId: { in: goals.map((goal) => goal.id) } },
+    }),
   ]);
+
+  const milestonesByGoal = new Map<string, typeof milestoneRows>();
+  for (const milestone of milestoneRows) {
+    const list = milestonesByGoal.get(milestone.goalId) ?? [];
+    list.push(milestone);
+    milestonesByGoal.set(milestone.goalId, list);
+  }
 
   const entriesByGoal = new Map<string, CompletionLike[]>();
   for (const entry of entries) {
@@ -240,6 +259,30 @@ async function evaluateGoalsForDateImpl(
 
     const streak = calculateScheduledStreak(item, date, completions, settings);
 
+    const goalMilestones = orderMilestones(milestonesByGoal.get(goal.id) ?? [], like.direction);
+    // Reaching a checkpoint records it. Stamped lazily here — the one place
+    // every source's measured value flows through — and only when evaluating
+    // TODAY, so replaying history never back-stamps. Best-effort: a failed
+    // stamp must not cost the page its render; the next look retries.
+    if (date === settings.today && evaluation.measurement.hasData) {
+      const reached = newlyReachedMilestones(
+        goalMilestones,
+        like.direction,
+        evaluation.measurement.value,
+      );
+      if (reached.length > 0) {
+        const stamp = new Date();
+        for (const milestone of reached) milestone.reachedAt = stamp;
+        void prisma.goalMilestone
+          .updateMany({
+            where: { id: { in: reached.map((milestone) => milestone.id) }, userId },
+            data: { reachedAt: stamp },
+          })
+          .catch(() => {});
+      }
+    }
+    const next = nextMilestone(goalMilestones, like.direction);
+
     return {
       ...evaluation,
       status,
@@ -247,6 +290,18 @@ async function evaluateGoalsForDateImpl(
       scheduleSummary: describeSchedule(resolveEffectiveSchedule(item, date)),
       streak: streak.current,
       streakUnit: streak.unit,
+      milestones: {
+        total: goalMilestones.length,
+        reached: goalMilestones.filter((milestone) => milestone.reachedAt).length,
+        next: next
+          ? {
+              id: next.id,
+              label: next.label,
+              targetValue: next.targetValue,
+              targetDate: next.targetDate,
+            }
+          : null,
+      },
     };
   });
 }

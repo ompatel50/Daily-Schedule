@@ -25,7 +25,7 @@ import {
 } from "@/components/ui/select";
 import { Textarea } from "@/components/ui/textarea";
 import type { AccountView } from "@/components/finance/account-dialog";
-import { formatMoney } from "@/lib/logic/finance";
+import { formatCents } from "@/lib/logic/money";
 import { transferBetweenAccounts } from "@/server/actions/finance";
 
 interface TransferForm {
@@ -113,7 +113,7 @@ export function TransferDialog({
 
       if (result.ok) {
         toast.success(
-          `Moved ${formatMoney(result.data.amount, from?.currency)} to ${to?.name ?? "the other account"}`,
+          `Moved ${formatCents(result.data.amount, from?.currency)} to ${to?.name ?? "the other account"}`,
         );
         onOpenChange(false);
         router.refresh();
@@ -157,7 +157,7 @@ export function TransferDialog({
                 </Select>
                 {from && (
                   <p className="text-xs text-muted-foreground">
-                    {formatMoney(from.balance, from.currency)} available
+                    {formatCents(from.balance, from.currency)} available
                   </p>
                 )}
               </div>
@@ -195,7 +195,7 @@ export function TransferDialog({
                 ) : (
                   to && (
                     <p className="text-xs text-muted-foreground">
-                      {formatMoney(to.balance, to.currency)} now
+                      {formatCents(to.balance, to.currency)} now
                     </p>
                   )
                 )}

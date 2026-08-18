@@ -10,6 +10,7 @@ import {
   Clock,
   Dumbbell,
   GripVertical,
+  ListTodo,
   MoreHorizontal,
   Pencil,
   Repeat,
@@ -42,6 +43,7 @@ import {
   setScheduleItemStatus,
   toggleScheduleItem,
 } from "@/server/actions/planner";
+import { completeTask } from "@/server/actions/tasks";
 
 export interface ScheduleRowItem {
   id: string;
@@ -68,6 +70,8 @@ export interface ScheduleRowItem {
   /** The parent's rule when this row is an occurrence of a series. */
   seriesRule?: string | null;
   workoutId: string | null;
+  /** The task this block was scheduled from ("add to planner"), if any. */
+  task?: { id: string; title: string; status: string } | null;
   tags: Array<{ tag: { id: string; name: string } }>;
 }
 
@@ -126,6 +130,41 @@ export function ScheduleRow({
       }
     });
 
+  // The checkbox on a block scheduled from a task: marking it done OFFERS to
+  // complete the task too — an explicit toast action, never automatic, because
+  // one block can be one of several work sessions on the same task.
+  const toggleDone = () =>
+    startTransition(async () => {
+      const result = await toggleScheduleItem(item.id);
+      if (!result.ok) {
+        toast.error(result.error ?? "Something went wrong");
+        return;
+      }
+      router.refresh();
+      const offer = result.data.taskOffer;
+      if (offer) {
+        toast(`Also complete the task “${offer.title}”?`, {
+          action: {
+            label: "Complete task",
+            onClick: () =>
+              startTransition(async () => {
+                const completed = await completeTask(offer.id);
+                if (!completed.ok) {
+                  toast.error(completed.error);
+                  return;
+                }
+                toast.success(
+                  completed.data.status === "advanced" && completed.data.nextDue
+                    ? `Task done — next on ${formatDay(completed.data.nextDue)}`
+                    : "Task completed",
+                );
+                router.refresh();
+              }),
+          },
+        });
+      }
+    });
+
   // "Push to tomorrow" can land on an occupied slot. The action reports the
   // clash without writing; the toast's "Move anyway" repeats it confirmed.
   // "Tomorrow" is the next OPERATIONAL day — a 1:00 AM block pushes to the
@@ -177,7 +216,7 @@ export function ScheduleRow({
         checked={done}
         className="touch-target mt-0.5"
         aria-label={done ? "Mark as not done" : "Mark as done"}
-        onCheckedChange={() => act(() => toggleScheduleItem(item.id))}
+        onCheckedChange={toggleDone}
       />
 
       <div className="min-w-0 flex-1">
@@ -213,6 +252,23 @@ export function ScheduleRow({
           <Badge variant="outline" className={cn("px-1.5 py-0 text-[10px]", meta.chip)}>
             {meta.label}
           </Badge>
+          {item.task && (
+            <button
+              type="button"
+              onClick={() => router.push("/tasks")}
+              title={
+                item.task.status === "open"
+                  ? `Scheduled from the task “${item.task.title}”`
+                  : `Scheduled from the task “${item.task.title}” (${item.task.status})`
+              }
+              className="inline-flex max-w-48 items-center gap-1 rounded text-domain-task transition-colors hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+            >
+              <ListTodo className="h-3 w-3 shrink-0" aria-hidden="true" />
+              <span className={cn("truncate", item.task.status === "done" && "line-through")}>
+                {item.task.title}
+              </span>
+            </button>
+          )}
           {item.tags.map(({ tag }) => (
             <span key={tag.id} className="text-[11px]">
               #{tag.name}
@@ -278,7 +334,7 @@ export function ScheduleRow({
           ) : (
             <DropdownMenuItem
               destructive
-              onClick={() => act(() => deleteScheduleItem(item.id, "one"), "Item deleted")}
+              onClick={() => act(() => deleteScheduleItem(item.id, "one"), "Item moved to Trash")}
             >
               <Trash2 /> Delete
             </DropdownMenuItem>
@@ -298,7 +354,7 @@ export function ScheduleRow({
             setDeleteChooserOpen(false);
             act(
               () => deleteScheduleItem(item.id, scope),
-              scope === "one" ? "Occurrence deleted" : "Deleted",
+              scope === "one" ? "Occurrence moved to Trash" : "Series moved to Trash",
             );
           }}
         />

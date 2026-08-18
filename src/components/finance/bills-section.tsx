@@ -1,7 +1,7 @@
 "use client";
 
 import * as React from "react";
-import { Archive, CalendarClock, Pencil, Plus } from "lucide-react";
+import { Archive, CalendarClock, Pencil, Plus, Repeat, X } from "lucide-react";
 
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -12,7 +12,9 @@ import type { BillRowView } from "@/components/finance/bill-dialog";
 import { formatDay } from "@/lib/date";
 import { BILL_RECURRENCE_META, type BillRecurrence } from "@/lib/enums";
 import { describeDueDistance } from "@/lib/logic/due";
-import { formatMoney } from "@/lib/logic/finance";
+import { formatCents } from "@/lib/logic/money";
+import type { RecurringSuggestion } from "@/lib/logic/recurring-detect";
+import { pluralize } from "@/lib/utils";
 
 /** How urgent a due date reads: overdue red, this fortnight amber, later quiet. */
 const DUE_CLASSES: Record<BillRowView["bucket"], string> = {
@@ -25,20 +27,31 @@ const DUE_CLASSES: Record<BillRowView["bucket"], string> = {
 /** Bills & subscriptions, most urgent first. */
 export function BillsSection({
   bills,
+  suggestions,
+  currency,
   today,
   onNew,
   onMarkPaid,
   onEdit,
   onArchive,
   onDelete,
+  onTrackSuggestion,
+  onDismissSuggestion,
 }: {
   bills: BillRowView[];
+  /** Recurring-cost patterns worth tracking as bills — accept or dismiss. */
+  suggestions: RecurringSuggestion[];
+  currency: string;
   today: string;
   onNew: () => void;
   onMarkPaid: (bill: BillRowView) => void;
   onEdit: (bill: BillRowView) => void;
   onArchive: (bill: BillRowView) => void;
   onDelete: (bill: BillRowView) => void;
+  /** Open the bill dialog pre-filled from this suggestion. */
+  onTrackSuggestion: (suggestion: RecurringSuggestion) => void;
+  /** Never offer this payee again. */
+  onDismissSuggestion: (suggestion: RecurringSuggestion) => void;
 }) {
   return (
     <SectionCard
@@ -75,6 +88,48 @@ export function BillsSection({
               onArchive={() => onArchive(bill)}
               onDelete={() => onDelete(bill)}
             />
+          ))}
+        </div>
+      )}
+
+      {suggestions.length > 0 && (
+        <div className="mt-3 space-y-2 border-t pt-3">
+          <p className="flex items-center gap-1.5 text-xs font-medium uppercase tracking-wide text-muted-foreground">
+            <Repeat className="h-3 w-3" aria-hidden="true" /> Looks recurring
+          </p>
+          {suggestions.map((suggestion) => (
+            <div
+              key={suggestion.payeeKey}
+              className="flex flex-wrap items-center gap-x-3 gap-y-1 rounded-lg border border-dashed px-3 py-2"
+            >
+              <div className="min-w-0 flex-[1_1_10rem]">
+                <p className="truncate text-sm font-medium">{suggestion.payee}</p>
+                <p className="mt-0.5 text-xs text-muted-foreground">
+                  {formatCents(suggestion.amount, currency)}{" "}
+                  {suggestion.cadence === "weekly"
+                    ? "every week"
+                    : suggestion.cadence === "monthly"
+                      ? "every month"
+                      : "every year"}{" "}
+                  · seen {suggestion.count} {pluralize(suggestion.count, "time")} · next around{" "}
+                  {formatDay(suggestion.nextDueDate, "MMM d")}
+                </p>
+              </div>
+              <div className="ml-auto flex items-center gap-1">
+                <Button size="sm" variant="outline" onClick={() => onTrackSuggestion(suggestion)}>
+                  <Plus /> Track as bill
+                </Button>
+                <Button
+                  size="icon-sm"
+                  variant="ghost"
+                  className="touch-target"
+                  aria-label={`Don't suggest tracking ${suggestion.payee}`}
+                  onClick={() => onDismissSuggestion(suggestion)}
+                >
+                  <X />
+                </Button>
+              </div>
+            </div>
           ))}
         </div>
       )}
@@ -130,7 +185,7 @@ function BillRow({
       </div>
       <div className="ml-auto flex items-center gap-3">
         <span className="tabular text-sm font-semibold">
-          {formatMoney(bill.amount, bill.currency)}
+          {formatCents(bill.amount, bill.currency)}
         </span>
         <Button size="sm" variant="outline" className="shrink-0" onClick={onMarkPaid}>
           Mark paid

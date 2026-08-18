@@ -17,9 +17,13 @@ export async function getReminderFeedAction(): Promise<ActionResult<ReminderOccu
 export async function deliverReminderAction(input: {
   key: string;
   reminderId: string | null;
-}): Promise<ActionResult<null>> {
+}): Promise<ActionResult<{ fresh: boolean }>> {
+  // `fresh` says whether THIS call claimed the occurrence — the watcher only
+  // shows the notification when it did, so a push (or another tab) that got
+  // there first keeps this tab silent.
   if (typeof input?.key === "string" && input.key.length > 0 && input.key.length <= 200) {
-    await recordReminderDelivery(input.key, input.reminderId ?? null);
+    const fresh = await recordReminderDelivery(input.key, input.reminderId ?? null);
+    return succeed({ fresh });
   }
-  return succeed(null);
+  return succeed({ fresh: false });
 }

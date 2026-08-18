@@ -51,6 +51,9 @@ export interface HabitView {
   archived: boolean;
   startDate: DayKey;
   endDate: string | null;
+  /** Pause window — days inside are neither due nor missed. */
+  pausedFrom: string | null;
+  pausedUntil: string | null;
 
   /** Resolved state for the requested date. */
   occurrence: Occurrence;
@@ -179,6 +182,8 @@ async function getHabitViewsImpl(
         startDate: habit.startDate,
         endDate: habit.endDate,
         enabled: !habit.archived,
+        pausedFrom: habit.pausedFrom,
+        pausedUntil: habit.pausedUntil,
       },
       schedules.get(habit.id),
     );
@@ -215,6 +220,8 @@ async function getHabitViewsImpl(
       archived: habit.archived,
       startDate: habit.startDate,
       endDate: habit.endDate,
+      pausedFrom: habit.pausedFrom,
+      pausedUntil: habit.pausedUntil,
 
       occurrence,
       status: resolved.status,
@@ -279,7 +286,14 @@ export async function getHabitDayTotals(
 ): Promise<HabitDayTotals> {
   const habits = await prisma.habit.findMany({
     where: { userId, archived: false },
-    select: { id: true, startDate: true, endDate: true, archived: true },
+    select: {
+      id: true,
+      startDate: true,
+      endDate: true,
+      archived: true,
+      pausedFrom: true,
+      pausedUntil: true,
+    },
   });
 
   const totals: HabitDayTotals = {
@@ -314,6 +328,8 @@ export async function getHabitDayTotals(
         startDate: habit.startDate,
         endDate: habit.endDate,
         enabled: !habit.archived,
+        pausedFrom: habit.pausedFrom,
+        pausedUntil: habit.pausedUntil,
       },
       schedules.get(habit.id),
     );

@@ -28,8 +28,9 @@ export interface ScheduleSource {
 
 /**
  * "Add to planner": creates an ordinary planner block for the task on a chosen
- * day — all-day unless a time is given. The block links back to the task but
- * behaves exactly like one typed into the planner.
+ * day — all-day unless a time is given. The block links back to the task:
+ * checking it off offers to complete the task, and completing the task marks
+ * its planned blocks done. Deleting either side only detaches the link.
  */
 export function ScheduleTaskDialog({
   task,
@@ -99,8 +100,8 @@ export function ScheduleTaskDialog({
           <DialogHeader>
             <DialogTitle>Add to planner</DialogTitle>
             <DialogDescription>
-              Blocks a day for “{task?.title}”. The planner block and the task stay separate —
-              completing one never completes the other.
+              Blocks a day for “{task?.title}”. Checking the block off offers to complete the
+              task; completing the task marks its planned blocks done.
             </DialogDescription>
           </DialogHeader>
 

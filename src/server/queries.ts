@@ -1,5 +1,7 @@
 import "server-only";
 
+import { centsOrLegacy } from "@/lib/logic/money";
+
 import { getCurrentUser, prisma } from "@/lib/db";
 import {
   type DayKey,
@@ -16,7 +18,7 @@ import {
   MEAL_TYPE_META,
   type MealType,
 } from "@/lib/enums";
-import { describeGoalTarget } from "@/lib/logic/goals";
+import { describeGoalTarget, orderMilestones } from "@/lib/logic/goals";
 import { aggregateDay, aggregateDayAll, toDisplay, type HealthRowLike } from "@/lib/logic/health";
 import { emptySearchRows, type SearchRows } from "@/lib/logic/search";
 import { operationalDayWhere } from "@/lib/logic/operational-day";
@@ -70,6 +72,12 @@ const SCHEDULE_ITEM_INCLUDE = {
   tags: { include: { tag: true } },
   workout: { select: { id: true, type: true, durationMin: true } },
   habit: { select: { id: true, name: true, color: true } },
+  // The linked task ("add to planner"): the block shows what it schedules,
+  // and the done-checkbox offer needs to know the task is still open.
+  // `deletedAt` rides along because Prisma cannot filter a to-one include —
+  // consumers null the link when the task sits in the Trash
+  // (src/lib/soft-delete.ts documents this boundary).
+  task: { select: { id: true, title: true, status: true, deletedAt: true } },
   // An occurrence's own recurrenceRule is null; the SERIES' rule lives on the
   // parent. The edit dialog pre-fills its recurrence controls from it, which
   // is what makes a "this and future" edit inherit the pattern and end date
@@ -152,6 +160,9 @@ export interface HabitWithStats {
   icon: string;
   startDate: string;
   endDate: string | null;
+  /** Pause window — days inside are neither due nor missed. */
+  pausedFrom: string | null;
+  pausedUntil: string | null;
   archived: boolean;
   sortOrder: number;
 
@@ -221,6 +232,8 @@ export async function getHabitsWithStats(
     icon: view.icon,
     startDate: view.startDate,
     endDate: view.endDate,
+    pausedFrom: view.pausedFrom,
+    pausedUntil: view.pausedUntil,
     archived: view.archived,
     sortOrder: view.sortOrder,
 
@@ -477,6 +490,7 @@ export async function getGoalRows() {
   const goals = await prisma.goal.findMany({
     where: { userId: user.id },
     orderBy: [{ sortOrder: "asc" }, { createdAt: "asc" }],
+    include: { milestones: { orderBy: [{ ordinal: "asc" }, { targetValue: "asc" }] } },
   });
 
   const schedules = await loadSchedules(
@@ -514,6 +528,16 @@ export async function getGoalRows() {
       archived: goal.archivedAt !== null,
       scheduleSummary: describeSchedule(rule),
       targetSummary: describeGoalTarget(like),
+      // In progress order — the panel shows the next unreached one first.
+      milestones: orderMilestones(goal.milestones, goal.direction).map((milestone) => ({
+        id: milestone.id,
+        label: milestone.label,
+        targetValue: milestone.targetValue,
+        targetDate: milestone.targetDate,
+        ordinal: milestone.ordinal,
+        reminderEnabled: milestone.reminderEnabled,
+        reachedAt: milestone.reachedAt ? milestone.reachedAt.toISOString() : null,
+      })),
       schedule: {
         mode: (rule?.mode ?? "every_day") as ScheduleMode,
         weekdays: rule?.weekdays ?? [],
@@ -839,13 +863,25 @@ export async function searchEverything(query: string, limit = 8): Promise<Search
       ...account,
       archived: account.archivedAt !== null,
     })),
+    // Money leaves the server as integer cents, search hits included.
     transactions: transactionRows.map((transaction) => ({
       ...transaction,
+      amount: centsOrLegacy(transaction.amountCents, transaction.amount),
       currency: transaction.account.currency,
     })),
-    bills,
-    budgets,
-    savingsGoals,
+    bills: bills.map((bill) => ({
+      ...bill,
+      amount: centsOrLegacy(bill.amountCents, bill.amount),
+    })),
+    budgets: budgets.map((budget) => ({
+      ...budget,
+      amount: centsOrLegacy(budget.amountCents, budget.amount),
+    })),
+    savingsGoals: savingsGoals.map((goal) => ({
+      ...goal,
+      targetAmount: centsOrLegacy(goal.targetAmountCents, goal.targetAmount),
+      currentAmount: centsOrLegacy(goal.currentAmountCents, goal.currentAmount),
+    })),
     documents,
     healthMetrics,
     healthRecords: healthRecords.map((record) => ({ ...record, date: record.date as DayKey })),

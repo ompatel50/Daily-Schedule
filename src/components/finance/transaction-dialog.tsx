@@ -27,6 +27,7 @@ import { Textarea } from "@/components/ui/textarea";
 import type { AccountView } from "@/components/finance/account-dialog";
 import { FINANCE_CATEGORIES, FINANCE_CATEGORY_META, type FinanceCategory } from "@/lib/enums";
 import { cn } from "@/lib/utils";
+import { centsToAmount } from "@/lib/logic/money";
 import { saveTransaction } from "@/server/actions/finance";
 
 /** A ledger entry as the page serialises it — plain fields only. */
@@ -76,7 +77,8 @@ function formFrom(transaction: TransactionView): TransactionForm {
   return {
     accountId: transaction.accountId,
     date: transaction.date,
-    amount: String(Math.abs(transaction.amount)),
+    // Views carry integer cents; the input is typed in dollars.
+    amount: String(centsToAmount(Math.abs(transaction.amount))),
     direction: transaction.amount >= 0 ? "received" : "spent",
     category: transaction.category,
     payee: transaction.payee ?? "",
