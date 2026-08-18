@@ -70,8 +70,8 @@ test("the Settings data page lists modules read-only", async ({ page }) => {
   await page.goto("/settings/data");
   await expect(page.getByRole("heading", { name: "Your data" })).toBeVisible();
   // The table names the core modules with their counts.
-  for (const module of ["Planner blocks", "Tasks", "Transactions", "Journal entries"]) {
-    await expect(page.getByRole("cell", { name: module, exact: true })).toBeVisible();
+  for (const moduleName of ["Planner blocks", "Tasks", "Transactions", "Journal entries"]) {
+    await expect(page.getByRole("cell", { name: moduleName, exact: true })).toBeVisible();
   }
   await expect(page.getByText("Last backup export")).toBeVisible();
   await expect(page.getByText(/Backup format/)).toBeVisible();
