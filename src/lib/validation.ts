@@ -686,6 +686,20 @@ export const financeCsvImportSchema = z.object({
 
 export type FinanceCsvImportInput = z.infer<typeof financeCsvImportSchema>;
 
+/**
+ * One persisted CSV category mapping: "when the file's category cell says
+ * `value`, import as `category`". The value is normalised (trimmed,
+ * lowercased) in the action layer; any category is a legal target — mapping a
+ * card issuer's "Payment" onto `transfer` is the point, and `other` means
+ * "keep as Other and stop offering to map this value".
+ */
+export const financeCategoryRuleSchema = z.object({
+  value: z.string().trim().min(1, "The value to map is empty").max(120),
+  category: z.enum(FINANCE_CATEGORIES),
+});
+
+export type FinanceCategoryRuleInput = z.infer<typeof financeCategoryRuleSchema>;
+
 // --- inbox -------------------------------------------------------------------
 
 export const inboxItemSchema = z.object({

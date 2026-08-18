@@ -43,8 +43,12 @@
  *      (`protectedRows`: readings a re-import deliberately left alone because
  *      the user had edited them) and `formatVersion`, which says **which
  *      version of the importer wrote the batch**. No new tables.
+ * v9 — adds the persisted CSV category mappings (`financeCategoryRules`):
+ *      "when an import's category cell says X, import it as Y". Small, but a
+ *      restore that dropped them would silently re-corrupt the next CSV
+ *      import's categories — which is why they are backed up at all.
  *
- * A v1–v7 file restores into a v8 app unchanged: the missing tables simply
+ * A v1–v8 file restores into a v9 app unchanged: the missing tables simply
  * have no rows, the new columns take their defaults (a v7 health batch arrives
  * with `protectedRows = 0` and `formatVersion = 1` — which is exactly true of
  * it, because the importer that wrote it protected nothing and was version 1),
@@ -53,11 +57,11 @@
  * one from the same migration — which is how those records behaved when the
  * older backup was taken.
  *
- * A v8 file restored by an older app loses only those two columns, which is
+ * A v9 file restored by an older app loses only the new table, which is
  * why the version was bumped rather than left alone: `inspectBackup` refuses a
  * file newer than the app reading it, and that refusal is the honest answer.
  */
-export const BACKUP_VERSION = 8;
+export const BACKUP_VERSION = 9;
 
 export interface BackupMetadata {
   /** Schema version of the backup format itself. */
@@ -124,6 +128,7 @@ export const BACKUP_TABLES = [
   "financeTransactions",
   "savingsGoals",
   "budgets",
+  "financeCategoryRules",
   "inboxItems",
   "documents",
   "seedBatches",

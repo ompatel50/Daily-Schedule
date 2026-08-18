@@ -3,15 +3,18 @@
 import { revalidatePath } from "next/cache";
 
 import { getCurrentUser, prisma } from "@/lib/db";
+import { FINANCE_CATEGORIES, isBookkeepingCategory, type FinanceCategory } from "@/lib/enums";
 import {
   parseFinanceCsv,
   planImportUndo,
+  type CsvCategoryRules,
   type CsvDateOrder,
   type FinanceCsvMapping,
   type FinanceImportRow,
 } from "@/lib/logic/finance-import";
 import {
   fail,
+  financeCategoryRuleSchema,
   financeCsvImportSchema,
   fromZod,
   succeed,
@@ -45,6 +48,25 @@ async function findExistingImportKeys(userId: string, keys: string[]): Promise<S
   return existing;
 }
 
+/**
+ * The user's persisted category mappings, in the shape the parser takes.
+ * A stored category no longer in FINANCE_CATEGORIES (it cannot happen through
+ * the validated action, but a database is forever) is skipped, not applied.
+ */
+async function loadCategoryRules(userId: string): Promise<CsvCategoryRules> {
+  const rows = await prisma.financeCategoryRule.findMany({
+    where: { userId },
+    select: { value: true, category: true },
+  });
+  const rules: Record<string, FinanceCategory> = {};
+  for (const row of rows) {
+    if ((FINANCE_CATEGORIES as readonly string[]).includes(row.category)) {
+      rules[row.value] = row.category as FinanceCategory;
+    }
+  }
+  return rules;
+}
+
 interface ParsedImport {
   accountName: string;
   accountCurrency: string;
@@ -68,6 +90,7 @@ async function parseForUser(
     accountId: account.id,
     accountCurrency: account.currency,
     dateOrder: input.dateOrder,
+    categoryRules: await loadCategoryRules(userId),
   });
   if (parse.errors.length > 0) return { ok: false, error: parse.errors[0] };
 
@@ -97,6 +120,10 @@ export interface ImportPreviewRow {
   category: string;
   /** `new` imports; `duplicate` is already in the ledger and will be skipped. */
   status: "new" | "duplicate";
+  /** True for transfer/adjustment rows — they change balances, not income/spending. */
+  bookkeeping: boolean;
+  /** The type cell's text when it contradicts the signed amount (the sign wins). */
+  signConflict: string | null;
 }
 
 export interface FinanceImportPreview {
@@ -105,6 +132,8 @@ export interface FinanceImportPreview {
   mapping: FinanceCsvMapping;
   dateOrder: CsvDateOrder;
   dateOrderAmbiguous: boolean;
+  /** True when the file's amounts carry signs (type column cross-checks only). */
+  amountsSigned: boolean;
   rowCount: number;
   newCount: number;
   duplicateCount: number;
@@ -112,9 +141,28 @@ export interface FinanceImportPreview {
   /** The first rows, annotated — enough to sanity-check the column mapping. */
   sample: ImportPreviewRow[];
   invalidShown: Array<{ line: number; message: string }>;
+  /** Rows (among those to be imported) mapped to transfer/adjustment … */
+  bookkeepingCount: number;
+  /** … and the first few of them, so the scope is visible beyond the sample. */
+  bookkeepingShown: Array<{
+    line: number;
+    date: string;
+    amount: number;
+    payee: string | null;
+    category: string;
+  }>;
+  /** Rows whose type column contradicts their signed amount (flag, not rewrite) … */
+  signConflictCount: number;
+  /** … and the first few, with what disagreed. */
+  signConflictShown: Array<{ line: number; type: string; amount: number }>;
+  /** Category values that matched nothing and fell back to "other". */
+  unmappedCategories: Array<{ value: string; count: number }>;
+  /** The user's persisted mappings that decided rows in this file. */
+  appliedRules: Array<{ value: string; category: string; count: number }>;
 }
 
 const PREVIEW_SAMPLE_SIZE = 8;
+const PREVIEW_DETAIL_SIZE = 6;
 
 /** Parse and report — writes nothing, whatever the file contains. */
 export async function previewFinanceCsvImport(
@@ -129,12 +177,17 @@ export async function previewFinanceCsvImport(
   const { accountName, accountCurrency, parse, newRows, duplicateCount } = result.value;
 
   const newKeys = new Set(newRows.map((row) => row.importKey));
+  // Bookkeeping and sign-conflict visibility covers what will actually be
+  // written — duplicate rows are skipped at commit, so they are not counted.
+  const bookkeepingRows = newRows.filter((row) => isBookkeepingCategory(row.category));
+  const signConflictRows = newRows.filter((row) => row.signConflict !== undefined);
   return succeed({
     accountName,
     accountCurrency,
     mapping: parse.mapping,
     dateOrder: parse.dateOrder,
     dateOrderAmbiguous: parse.dateOrderAmbiguous,
+    amountsSigned: parse.amountsSigned,
     rowCount: parse.examined,
     newCount: newRows.length,
     duplicateCount,
@@ -146,9 +199,65 @@ export async function previewFinanceCsvImport(
       payee: row.payee,
       category: row.category,
       status: newKeys.has(row.importKey) ? "new" : "duplicate",
+      bookkeeping: isBookkeepingCategory(row.category),
+      signConflict: row.signConflict ?? null,
     })),
     invalidShown: parse.invalidShown,
+    bookkeepingCount: bookkeepingRows.length,
+    bookkeepingShown: bookkeepingRows.slice(0, PREVIEW_DETAIL_SIZE).map((row) => ({
+      line: row.line,
+      date: row.date,
+      amount: row.amount,
+      payee: row.payee,
+      category: row.category,
+    })),
+    signConflictCount: signConflictRows.length,
+    signConflictShown: signConflictRows.slice(0, PREVIEW_DETAIL_SIZE).map((row) => ({
+      line: row.line,
+      type: row.signConflict ?? "",
+      amount: row.amount,
+    })),
+    unmappedCategories: parse.unmappedCategories,
+    appliedRules: parse.appliedRules,
   });
+}
+
+// --- persisted category mappings --------------------------------------------
+
+/**
+ * Save (or change) one category mapping. Upsert on `(userId, value)` — the
+ * preview's quick-map selector calls this, then re-previews, so what the user
+ * sees is always the parse the persisted rules produce. No revalidate: the
+ * rules surface only inside the import dialog's own preview round-trip.
+ */
+export async function saveFinanceCategoryRule(
+  input: unknown,
+): Promise<ActionResult<{ value: string; category: string }>> {
+  const parsed = financeCategoryRuleSchema.safeParse(input);
+  if (!parsed.success) return fromZod(parsed.error);
+  const user = await getCurrentUser();
+
+  const value = parsed.data.value.toLowerCase();
+  const rule = await prisma.financeCategoryRule.upsert({
+    where: { userId_value: { userId: user.id, value } },
+    create: { userId: user.id, value, category: parsed.data.category },
+    update: { category: parsed.data.category },
+  });
+  return succeed({ value: rule.value, category: rule.category });
+}
+
+/** Remove one mapping — its value goes back to "other" (and to being offered). */
+export async function deleteFinanceCategoryRule(
+  input: unknown,
+): Promise<ActionResult<{ removed: boolean }>> {
+  if (typeof input !== "string" || input.trim() === "" || input.length > 120) {
+    return fail("Nothing to remove");
+  }
+  const user = await getCurrentUser();
+  const result = await prisma.financeCategoryRule.deleteMany({
+    where: { userId: user.id, value: input.trim().toLowerCase() },
+  });
+  return succeed({ removed: result.count > 0 });
 }
 
 export interface FinanceImportReport {

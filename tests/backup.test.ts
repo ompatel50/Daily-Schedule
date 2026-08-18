@@ -117,10 +117,21 @@ describe("backup validation", () => {
     // The bump exists so an older app refuses a newer file rather than
     // silently dropping `protectedRows` and `formatVersion` on restore. No
     // table moved, so nothing about restore ORDER changed with it.
-    expect(BACKUP_VERSION).toBe(8);
     expect(BACKUP_TABLES.indexOf("healthImportBatches")).toBeLessThan(
       BACKUP_TABLES.indexOf("healthMetrics"),
     );
+  });
+
+  it("v9 carries the persisted CSV category mappings", () => {
+    expect(BACKUP_VERSION).toBe(9);
+    expect(BACKUP_TABLES).toContain("financeCategoryRules");
+
+    const result = inspectBackup(
+      backup({ data: { financeCategoryRules: [{ id: "cr1", value: "payment" }] } }),
+    );
+    expect(result.ok).toBe(true);
+    expect(result.counts.financeCategoryRules).toBe(1);
+    expect(result.warnings.join(" ")).not.toContain("unrecognised");
   });
 
   it("a v7 file (no smart-merge accounting) still inspects cleanly", () => {

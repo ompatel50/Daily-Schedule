@@ -26,7 +26,9 @@ import {
 } from "@/server/actions/finance";
 import {
   commitFinanceCsvImport,
+  deleteFinanceCategoryRule,
   previewFinanceCsvImport,
+  saveFinanceCategoryRule,
 } from "@/server/actions/finance-import";
 import { exportBackup, importBackup } from "@/server/actions/backup";
 import { convertInboxItemToTask } from "@/server/actions/inbox";
@@ -245,6 +247,156 @@ describe("CSV import", () => {
       content: CSV,
     });
     expect(refused.ok).toBe(false);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// CSV category mappings (the quick-map loop) & card-payment correctness
+// ---------------------------------------------------------------------------
+
+/** A Chase-shaped card statement: signed amounts, issuer Type vocabulary. */
+const CARD_CSV = [
+  "Transaction Date,Post Date,Description,Category,Type,Amount,Memo",
+  `07/01/2026,07/02/2026,GROCERY STORE,Groceries,Sale,-120.00,`,
+  `07/03/2026,07/03/2026,Payment Thank You-Mobile,Payment,Payment,300.00,`,
+].join("\n");
+
+describe("CSV category mappings", () => {
+  it("preview offers unmapped values; a saved mapping applies on re-preview and commit", async () => {
+    const account = await makeAccount(alice.id, { type: "credit_card" });
+
+    const first = await previewFinanceCsvImport({
+      accountId: account.id,
+      fileName: "card.csv",
+      content: CARD_CSV,
+    });
+    expect(first.ok).toBe(true);
+    if (!first.ok) return;
+    expect(first.data.amountsSigned).toBe(true);
+    expect(first.data.unmappedCategories).toEqual([{ value: "Payment", count: 1 }]);
+    expect(first.data.bookkeepingCount).toBe(0);
+
+    const saved = await saveFinanceCategoryRule({ value: "Payment", category: "transfer" });
+    expect(saved).toMatchObject({ ok: true, data: { value: "payment", category: "transfer" } });
+
+    const second = await previewFinanceCsvImport({
+      accountId: account.id,
+      fileName: "card.csv",
+      content: CARD_CSV,
+    });
+    expect(second.ok).toBe(true);
+    if (!second.ok) return;
+    expect(second.data.unmappedCategories).toEqual([]);
+    expect(second.data.appliedRules).toEqual([
+      { value: "Payment", category: "transfer", count: 1 },
+    ]);
+    // The guard: bookkeeping-bound rows are visible before anything commits.
+    expect(second.data.bookkeepingCount).toBe(1);
+    expect(second.data.bookkeepingShown).toEqual([
+      {
+        line: 3,
+        date: "2026-07-03",
+        amount: 300,
+        payee: "Payment Thank You-Mobile",
+        category: "transfer",
+      },
+    ]);
+
+    const committed = await commitFinanceCsvImport({
+      accountId: account.id,
+      fileName: "card.csv",
+      content: CARD_CSV,
+    });
+    expect(committed.ok).toBe(true);
+
+    // The payment landed money-IN, category transfer — not income, not spend.
+    const payment = await prisma.financeTransaction.findFirstOrThrow({
+      where: { userId: alice.id, payee: "Payment Thank You-Mobile" },
+    });
+    expect(payment.amount).toBe(300);
+    expect(payment.category).toBe("transfer");
+    const purchase = await prisma.financeTransaction.findFirstOrThrow({
+      where: { userId: alice.id, payee: "GROCERY STORE" },
+    });
+    expect(purchase).toMatchObject({ amount: -120, category: "groceries" });
+  });
+
+  it("re-mapping a value updates in place; deleting re-offers it", async () => {
+    const account = await makeAccount(alice.id);
+    await saveFinanceCategoryRule({ value: "Payment", category: "transfer" });
+    await saveFinanceCategoryRule({ value: "payment", category: "debt" });
+    const rules = await prisma.financeCategoryRule.findMany({ where: { userId: alice.id } });
+    expect(rules).toHaveLength(1);
+    expect(rules[0]).toMatchObject({ value: "payment", category: "debt" });
+
+    const removed = await deleteFinanceCategoryRule("Payment");
+    expect(removed).toMatchObject({ ok: true, data: { removed: true } });
+    expect(await prisma.financeCategoryRule.count({ where: { userId: alice.id } })).toBe(0);
+
+    const preview = await previewFinanceCsvImport({
+      accountId: account.id,
+      fileName: "card.csv",
+      content: CARD_CSV,
+    });
+    expect(preview.ok).toBe(true);
+    if (preview.ok) {
+      expect(preview.data.unmappedCategories).toEqual([{ value: "Payment", count: 1 }]);
+    }
+  });
+
+  it("rejects a category outside the vocabulary", async () => {
+    const refused = await saveFinanceCategoryRule({ value: "Payment", category: "not-a-thing" });
+    expect(refused.ok).toBe(false);
+    expect(await prisma.financeCategoryRule.count()).toBe(0);
+  });
+
+  it("mappings are per user — one user's rule never shapes another's import", async () => {
+    const aliceAccount = await makeAccount(alice.id);
+    await saveFinanceCategoryRule({ value: "Payment", category: "transfer" });
+
+    actAs(bob);
+    const bobAccount = await makeAccount(bob.id);
+    const bobPreview = await previewFinanceCsvImport({
+      accountId: bobAccount.id,
+      fileName: "card.csv",
+      content: CARD_CSV,
+    });
+    expect(bobPreview.ok).toBe(true);
+    if (bobPreview.ok) {
+      // Alice's mapping does not apply — Bob is offered the value himself.
+      expect(bobPreview.data.unmappedCategories).toEqual([{ value: "Payment", count: 1 }]);
+      expect(bobPreview.data.appliedRules).toEqual([]);
+    }
+
+    // And Bob can hold the same value with a different meaning.
+    await saveFinanceCategoryRule({ value: "Payment", category: "debt" });
+    actAs(alice);
+    const alicePreview = await previewFinanceCsvImport({
+      accountId: aliceAccount.id,
+      fileName: "card.csv",
+      content: CARD_CSV,
+    });
+    expect(alicePreview.ok).toBe(true);
+    if (alicePreview.ok) {
+      expect(alicePreview.data.appliedRules).toEqual([
+        { value: "Payment", category: "transfer", count: 1 },
+      ]);
+    }
+  });
+
+  it("mappings survive a backup round trip", async () => {
+    await saveFinanceCategoryRule({ value: "Food & Drink", category: "dining" });
+    const exported = await exportBackup();
+    expect(exported.ok).toBe(true);
+    if (!exported.ok) return;
+    expect(exported.data.data.financeCategoryRules).toHaveLength(1);
+
+    await prisma.financeCategoryRule.deleteMany({ where: { userId: alice.id } });
+    const restored = await importBackup(exported.data, "merge");
+    expect(restored.ok).toBe(true);
+    const rules = await prisma.financeCategoryRule.findMany({ where: { userId: alice.id } });
+    expect(rules).toHaveLength(1);
+    expect(rules[0]).toMatchObject({ value: "food & drink", category: "dining" });
   });
 });
 
