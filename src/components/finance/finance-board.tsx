@@ -7,7 +7,11 @@ import { toast } from "sonner";
 import { AccountDialog, type AccountView } from "@/components/finance/account-dialog";
 import { AccountsSection } from "@/components/finance/accounts-section";
 import { AdjustGoalDialog } from "@/components/finance/adjust-goal-dialog";
-import { BillDialog, type BillRowView } from "@/components/finance/bill-dialog";
+import {
+  BillDialog,
+  type BillPrefill,
+  type BillRowView,
+} from "@/components/finance/bill-dialog";
 import { BillsSection } from "@/components/finance/bills-section";
 import { BudgetDialog, type BudgetView } from "@/components/finance/budget-dialog";
 import { BudgetsSection } from "@/components/finance/budgets-section";
@@ -21,6 +25,10 @@ import {
   type ImportBatchView,
 } from "@/components/finance/import-batches-section";
 import { MarkTransferDialog } from "@/components/finance/mark-transfer-dialog";
+import {
+  MonthlyReportSection,
+  type MonthTotalsView,
+} from "@/components/finance/monthly-report-section";
 import {
   SavingsGoalDialog,
   type SavingsGoalView,
@@ -36,6 +44,10 @@ import { TransferDialog } from "@/components/finance/transfer-dialog";
 import { TransferSuggestionsSection } from "@/components/finance/transfer-suggestions-section";
 import { UndoImportDialog } from "@/components/finance/undo-import-dialog";
 import { formatDay } from "@/lib/date";
+import { BILL_RECURRENCES, isBookkeepingCategory } from "@/lib/enums";
+import type { CategoryDelta } from "@/lib/logic/finance";
+import type { RecurringSuggestion } from "@/lib/logic/recurring-detect";
+import { dismissBillSuggestion } from "@/server/actions/finance";
 import { unlinkTransfer } from "@/server/actions/transfers";
 import type { TransferSuggestionView } from "@/server/transfers";
 import {
@@ -68,6 +80,10 @@ export function FinanceBoard({
   importBatches,
   byCategory,
   transferSuggestions,
+  billSuggestions,
+  month,
+  previousMonth,
+  monthOverMonth,
   today,
   primaryCurrency,
 }: {
@@ -79,6 +95,10 @@ export function FinanceBoard({
   importBatches: ImportBatchView[];
   byCategory: CategoryTotalView[];
   transferSuggestions: TransferSuggestionView[];
+  billSuggestions: RecurringSuggestion[];
+  month: MonthTotalsView;
+  previousMonth: MonthTotalsView;
+  monthOverMonth: CategoryDelta[];
   today: string;
   /** Currency of the largest account group — used where no account is linked. */
   primaryCurrency: string;
@@ -102,8 +122,31 @@ export function FinanceBoard({
   const [balanceAccount, setBalanceAccount] = React.useState<AccountView | null>(null);
   const [adjustingGoal, setAdjustingGoal] = React.useState<SavingsGoalView | null>(null);
   const [markingTransfer, setMarkingTransfer] = React.useState<TransactionView | null>(null);
+  const [billPrefill, setBillPrefill] = React.useState<BillPrefill | null>(null);
 
   const activeAccounts = accounts.filter((account) => !account.archived);
+
+  /** "Track as bill": open the bill dialog pre-filled from the suggestion. */
+  function trackSuggestion(suggestion: RecurringSuggestion) {
+    setBillEditing(null);
+    setBillPrefill({
+      name: suggestion.payee,
+      amount: suggestion.amount,
+      // The bill dialog forbids income/bookkeeping categories — fall back.
+      category:
+        suggestion.category === "income" || isBookkeepingCategory(suggestion.category)
+          ? "other"
+          : suggestion.category,
+      recurrence: (BILL_RECURRENCES as readonly string[]).includes(suggestion.cadence)
+        ? suggestion.cadence
+        : "monthly",
+      dueDate: suggestion.nextDueDate,
+      accountId: activeAccounts.some((account) => account.id === suggestion.accountId)
+        ? suggestion.accountId
+        : null,
+    });
+    setBillOpen(true);
+  }
 
   function run(fn: () => Promise<{ ok: boolean; error?: string }>, message: string) {
     startTransition(async () => {
@@ -172,9 +215,12 @@ export function FinanceBoard({
 
         <BillsSection
           bills={bills}
+          suggestions={billSuggestions}
+          currency={primaryCurrency}
           today={today}
           onNew={() => {
             setBillEditing(null);
+            setBillPrefill(null);
             setBillOpen(true);
           }}
           onMarkPaid={markPaid}
@@ -184,12 +230,27 @@ export function FinanceBoard({
           }}
           onArchive={(bill) => run(() => setBillArchived(bill.id, true), "Bill archived")}
           onDelete={(bill) => run(() => deleteBill(bill.id), "Bill deleted")}
+          onTrackSuggestion={trackSuggestion}
+          onDismissSuggestion={(suggestion) =>
+            run(
+              () => dismissBillSuggestion(suggestion.payee),
+              `Got it — ${suggestion.payee} won't be suggested again`,
+            )
+          }
+        />
+
+        <MonthlyReportSection
+          month={month}
+          previousMonth={previousMonth}
+          deltas={monthOverMonth}
+          currency={primaryCurrency}
         />
       </div>
 
       <div className="space-y-6">
         <AccountsSection
           accounts={accounts}
+          today={today}
           onNew={() => {
             setAccountEditing(null);
             setAccountOpen(true);
@@ -255,8 +316,12 @@ export function FinanceBoard({
       <AccountDialog open={accountOpen} onOpenChange={setAccountOpen} account={accountEditing} />
       <BillDialog
         open={billOpen}
-        onOpenChange={setBillOpen}
+        onOpenChange={(open) => {
+          setBillOpen(open);
+          if (!open) setBillPrefill(null);
+        }}
         bill={billEditing}
+        initial={billPrefill}
         accounts={activeAccounts}
         today={today}
       />

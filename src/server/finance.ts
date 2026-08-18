@@ -11,7 +11,9 @@ import {
   budgetWindows,
   billsByUrgency,
   budgetProgress,
+  compareSpendingByCategory,
   moneyRound,
+  previousBudgetWindow,
   savingsProgress,
   spendingByCategory,
   summarizeTransactions,
@@ -19,6 +21,7 @@ import {
   type AccountBalance,
   type BudgetWindow,
 } from "@/lib/logic/finance";
+import { detectRecurringCosts } from "@/lib/logic/recurring-detect";
 import { scheduleSettingsFor } from "@/server/schedule";
 
 /**
@@ -206,16 +209,21 @@ export type SavingsGoalWithProgress = Awaited<ReturnType<typeof getSavingsGoals>
  */
 function financeWindows(today: DayKey, weekStartsOn: 0 | 1) {
   const month = monthRange(today);
+  // The previous calendar month rides along for the month-over-month report
+  // and for monthly budget rollover; the previous WEEK (for weekly rollover)
+  // always sits inside it or inside the current month.
+  const previousMonth = previousBudgetWindow("monthly", month);
   const windows = budgetWindows(today, weekStartsOn);
   const rollingWeekStart = shiftDay(today, -6);
   const budgetRange = budgetFetchRange(windows) ?? month;
+  const previousWeek = previousBudgetWindow("weekly", windows.weekly);
   const fetch: BudgetWindow = {
-    start: [month.start, budgetRange.start, rollingWeekStart].reduce((min, day) =>
-      day < min ? day : min,
+    start: [month.start, previousMonth.start, previousWeek.start, budgetRange.start, rollingWeekStart].reduce(
+      (min, day) => (day < min ? day : min),
     ),
     end: [month.end, budgetRange.end].reduce((max, day) => (day > max ? day : max)),
   };
-  return { month, windows, rollingWeekStart, fetch };
+  return { month, previousMonth, windows, rollingWeekStart, fetch };
 }
 
 /** Rows inside `[start, end]` — every slice below comes from the one fetch. */
@@ -223,12 +231,61 @@ function slice<T extends { date: DayKey }>(rows: T[], window: BudgetWindow): T[]
   return rows.filter((row) => row.date >= window.start && row.date <= window.end);
 }
 
+/** ~13 months — enough history for yearly cadences to show two occurrences. */
+const RECURRING_LOOKBACK_DAYS = 395;
+const RECURRING_ROW_CAP = 4000;
+const BILL_SUGGESTION_CAP = 5;
+
+/**
+ * "Track this as a bill" suggestions: recurring same-payee spending patterns
+ * (src/lib/logic/recurring-detect.ts), minus payees the user dismissed and
+ * payees an active bill already covers by name. Read-only and bounded.
+ */
+async function computeBillSuggestions(userId: string, today: DayKey) {
+  const [rows, dismissals, activeBills] = await Promise.all([
+    prisma.financeTransaction.findMany({
+      where: {
+        userId,
+        amount: { lt: 0 },
+        billId: null,
+        transferGroupId: null,
+        date: { gte: shiftDay(today, -RECURRING_LOOKBACK_DAYS) },
+      },
+      select: {
+        accountId: true,
+        date: true,
+        amount: true,
+        payee: true,
+        category: true,
+        billId: true,
+        transferGroupId: true,
+      },
+      orderBy: { date: "desc" },
+      take: RECURRING_ROW_CAP,
+    }),
+    prisma.billSuggestionDismissal.findMany({ where: { userId }, select: { payeeKey: true } }),
+    prisma.bill.findMany({ where: { userId, archivedAt: null }, select: { name: true } }),
+  ]);
+  const dismissed = new Set(dismissals.map((row) => row.payeeKey));
+  const covered = new Set(activeBills.map((bill) => bill.name.trim().toLowerCase()));
+  return detectRecurringCosts(rows, today)
+    .filter(
+      (suggestion) => !dismissed.has(suggestion.payeeKey) && !covered.has(suggestion.payeeKey),
+    )
+    .slice(0, BILL_SUGGESTION_CAP);
+}
+
+export type BillSuggestionView = Awaited<ReturnType<typeof computeBillSuggestions>>[number];
+
 /** Everything the finance page renders, in one round of bounded queries. */
 export async function getFinanceOverview() {
   const user = await getCurrentUser();
   const settings = scheduleSettingsFor(user);
   const today = settings.today;
-  const { month, windows, rollingWeekStart, fetch } = financeWindows(today, settings.weekStartsOn);
+  const { month, previousMonth, windows, rollingWeekStart, fetch } = financeWindows(
+    today,
+    settings.weekStartsOn,
+  );
 
   const [
     balances,
@@ -239,6 +296,7 @@ export async function getFinanceOverview() {
     budgets,
     importBatches,
     transferSuggestions,
+    billSuggestions,
   ] = await Promise.all([
     accountBalancesMemo(user.id),
     billViewsMemo(user.id, today),
@@ -250,9 +308,11 @@ export async function getFinanceOverview() {
     // A read-only pass — would-be auto-links show as suggestions too; only
     // an import or the explicit "run detection" action ever links unattended.
     computeTransferSuggestions(user.id),
+    computeBillSuggestions(user.id, today),
   ]);
 
   const monthTransactions = slice(ledger, month);
+  const previousMonthTransactions = slice(ledger, previousMonth);
   // Bounded on BOTH sides so a future-dated entry (rent typed in ahead of
   // time) cannot inflate "the last 7 days".
   const weekTransactions = slice(ledger, { start: rollingWeekStart, end: today });
@@ -267,6 +327,11 @@ export async function getFinanceOverview() {
       ...summarizeTransactions(monthTransactions),
       byCategory: spendingByCategory(monthTransactions),
     },
+    previousMonth: {
+      ...summarizeTransactions(previousMonthTransactions),
+      window: previousMonth,
+    },
+    monthOverMonth: compareSpendingByCategory(monthTransactions, previousMonthTransactions),
     week: summarizeTransactions(weekTransactions),
     recentTransactions,
     savingsGoals,
@@ -276,6 +341,7 @@ export async function getFinanceOverview() {
     budgetWindows: windows,
     importBatches,
     transferSuggestions,
+    billSuggestions,
   };
 }
 

@@ -41,6 +41,8 @@ export default async function FinancePage() {
     currency: account.currency,
     openingBalance: account.openingBalance,
     lowBalanceThreshold: account.lowBalanceThreshold,
+    creditLimit: account.creditLimit,
+    statementDueDay: account.statementDueDay,
     notes: account.notes,
     archived: account.archivedAt !== null,
     balance,
@@ -75,6 +77,9 @@ export default async function FinancePage() {
     remaining: view.remaining,
     percent: view.percent,
     over: view.over,
+    rollover: view.budget.rollover ?? false,
+    carry: view.carry,
+    effectiveAmount: view.effectiveAmount,
     windowStart: view.window.start,
     windowEnd: view.window.end,
   }));
@@ -201,6 +206,20 @@ export default async function FinancePage() {
           importBatches={importBatches}
           byCategory={byCategory}
           transferSuggestions={overview.transferSuggestions}
+          billSuggestions={overview.billSuggestions}
+          month={{
+            income: overview.month.income,
+            spending: overview.month.spending,
+            net: overview.month.net,
+            count: overview.month.count,
+          }}
+          previousMonth={{
+            income: overview.previousMonth.income,
+            spending: overview.previousMonth.spending,
+            net: overview.previousMonth.net,
+            count: overview.previousMonth.count,
+          }}
+          monthOverMonth={overview.monthOverMonth}
           today={overview.today}
           primaryCurrency={primaryCurrency}
         />

@@ -87,6 +87,7 @@ const MODEL_BY_TABLE: Record<BackupTable, string> = {
   savingsGoals: "SavingsGoal",
   budgets: "Budget",
   financeCategoryRules: "FinanceCategoryRule",
+  billSuggestionDismissals: "BillSuggestionDismissal",
   inboxItems: "InboxItem",
   documents: "LifeDocument",
   seedBatches: "SeedBatch",
@@ -712,6 +713,11 @@ export async function restoreBackupForUser(
     return mapped ? own(mapped) : null;
   });
 
+  prepare("billSuggestionDismissals", (row) => {
+    const mapped = withId(row);
+    return mapped ? own(mapped) : null;
+  });
+
   prepare("inboxItems", (row) => {
     const mapped = withId(row);
     if (!mapped) return null;
@@ -807,6 +813,7 @@ export async function restoreBackupForUser(
         await db.savingsGoal.deleteMany({ where: { userId } });
         await db.budget.deleteMany({ where: { userId } });
         await db.financeCategoryRule.deleteMany({ where: { userId } });
+        await db.billSuggestionDismissal.deleteMany({ where: { userId } });
         await db.task.deleteMany({ where: { userId } });
         await db.project.deleteMany({ where: { userId } });
         await db.inboxItem.deleteMany({ where: { userId } });
@@ -913,6 +920,7 @@ export async function restoreBackupForUser(
     savingsGoals: await prisma.savingsGoal.count({ where: { userId } }),
     budgets: await prisma.budget.count({ where: { userId } }),
     financeCategoryRules: await prisma.financeCategoryRule.count({ where: { userId } }),
+    billSuggestionDismissals: await prisma.billSuggestionDismissal.count({ where: { userId } }),
     inboxItems: await prisma.inboxItem.count({ where: { userId } }),
     taskTags: await prisma.taskTag.count({ where: { task: { userId } } }),
     documents: await prisma.lifeDocument.count({ where: { userId } }),

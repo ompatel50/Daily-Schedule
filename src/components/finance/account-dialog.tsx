@@ -42,6 +42,10 @@ export interface AccountView {
   balance: number;
   /** True for credit_card / loan accounts, whose balance is normally owed. */
   debt: boolean;
+  /** Utilisation is measured against this; null = not tracked. */
+  creditLimit: number | null;
+  /** Day of month the statement payment is due; null = not tracked. */
+  statementDueDay: number | null;
 }
 
 interface AccountForm {
@@ -51,6 +55,9 @@ interface AccountForm {
   openingBalance: string;
   /** Empty string = no low-balance alert. */
   lowBalanceThreshold: string;
+  /** Empty string = no tracked limit / statement day. */
+  creditLimit: string;
+  statementDueDay: string;
   notes: string;
 }
 
@@ -61,6 +68,8 @@ function blankAccount(): AccountForm {
     currency: "USD",
     openingBalance: "0",
     lowBalanceThreshold: "",
+    creditLimit: "",
+    statementDueDay: "",
     notes: "",
   };
 }
@@ -73,6 +82,8 @@ function formFrom(account: AccountView): AccountForm {
     openingBalance: String(account.openingBalance),
     lowBalanceThreshold:
       account.lowBalanceThreshold === null ? "" : String(account.lowBalanceThreshold),
+    creditLimit: account.creditLimit === null ? "" : String(account.creditLimit),
+    statementDueDay: account.statementDueDay === null ? "" : String(account.statementDueDay),
     notes: account.notes ?? "",
   };
 }
@@ -121,6 +132,22 @@ export function AccountDialog({
       setErrors({ lowBalanceThreshold: ["Enter a number, or leave it empty"] });
       return;
     }
+    const creditCard = form.type === "credit_card";
+    const limitRaw = form.creditLimit.trim();
+    const creditLimit = !creditCard || limitRaw === "" ? null : Number(limitRaw);
+    if (creditLimit !== null && (!Number.isFinite(creditLimit) || creditLimit <= 0)) {
+      setErrors({ creditLimit: ["Enter an amount above zero, or leave it empty"] });
+      return;
+    }
+    const dueDayRaw = form.statementDueDay.trim();
+    const statementDueDay = !creditCard || dueDayRaw === "" ? null : Number(dueDayRaw);
+    if (
+      statementDueDay !== null &&
+      (!Number.isInteger(statementDueDay) || statementDueDay < 1 || statementDueDay > 31)
+    ) {
+      setErrors({ statementDueDay: ["Pick a day of the month (1–31)"] });
+      return;
+    }
 
     startTransition(async () => {
       const result = await saveFinanceAccount({
@@ -130,6 +157,8 @@ export function AccountDialog({
         currency: form.currency.trim() || "USD",
         openingBalance,
         lowBalanceThreshold,
+        creditLimit,
+        statementDueDay,
         notes: form.notes.trim() || null,
       });
 
@@ -233,6 +262,62 @@ export function AccountDialog({
                   : "What the account held before the first transaction you record. Negative for money owed."}
               </p>
             </div>
+
+            {form.type === "credit_card" && (
+              <div className="grid gap-3 sm:grid-cols-2">
+                <div className="space-y-1.5">
+                  <Label htmlFor="account-credit-limit">Credit limit (optional)</Label>
+                  <Input
+                    id="account-credit-limit"
+                    type="number"
+                    inputMode="decimal"
+                    min={0}
+                    step="0.01"
+                    value={form.creditLimit}
+                    aria-invalid={Boolean(errors.creditLimit)}
+                    aria-describedby={errors.creditLimit ? "account-credit-limit-error" : undefined}
+                    onChange={(event) => set("creditLimit", event.target.value)}
+                    placeholder="Not tracked"
+                  />
+                  {errors.creditLimit ? (
+                    <p id="account-credit-limit-error" className="text-xs text-destructive">
+                      {errors.creditLimit[0]}
+                    </p>
+                  ) : (
+                    <p className="text-xs text-muted-foreground">
+                      Shows utilisation on the account card.
+                    </p>
+                  )}
+                </div>
+                <div className="space-y-1.5">
+                  <Label htmlFor="account-statement-day">Statement due day (optional)</Label>
+                  <Input
+                    id="account-statement-day"
+                    type="number"
+                    inputMode="numeric"
+                    min={1}
+                    max={31}
+                    step={1}
+                    value={form.statementDueDay}
+                    aria-invalid={Boolean(errors.statementDueDay)}
+                    aria-describedby={
+                      errors.statementDueDay ? "account-statement-day-error" : undefined
+                    }
+                    onChange={(event) => set("statementDueDay", event.target.value)}
+                    placeholder="Not tracked"
+                  />
+                  {errors.statementDueDay ? (
+                    <p id="account-statement-day-error" className="text-xs text-destructive">
+                      {errors.statementDueDay[0]}
+                    </p>
+                  ) : (
+                    <p className="text-xs text-muted-foreground">
+                      Day of the month the payment is due — shown like a bill&apos;s due date.
+                    </p>
+                  )}
+                </div>
+              </div>
+            )}
 
             <div className="space-y-1.5">
               <Label htmlFor="account-threshold">Low-balance alert (optional)</Label>

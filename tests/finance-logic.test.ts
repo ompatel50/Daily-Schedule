@@ -11,9 +11,13 @@ import {
   budgetPeriodWindow,
   budgetProgress,
   budgetWindows,
+  compareSpendingByCategory,
+  creditUtilization,
   formatMoney,
   moneyRound,
   netBalance,
+  nextStatementDueDate,
+  previousBudgetWindow,
   savingsProgress,
   spendingByCategory,
   summarizeTransactions,
@@ -602,5 +606,164 @@ describe("transferLegs", () => {
     const [out, into] = transferLegs({ ...input, amount: -40 });
     expect(out.amount).toBe(-40);
     expect(into.amount).toBe(40);
+  });
+});
+
+describe("creditUtilization", () => {
+  it("measures what is owed against the limit with the usual tone bands", () => {
+    expect(creditUtilization({ balance: -300, creditLimit: 1000 })).toEqual({
+      owed: 300,
+      limit: 1000,
+      available: 700,
+      percent: 30,
+      tone: "elevated",
+    });
+    expect(creditUtilization({ balance: -100, creditLimit: 1000 })?.tone).toBe("ok");
+    expect(creditUtilization({ balance: -700, creditLimit: 1000 })?.tone).toBe("high");
+  });
+
+  it("a positive balance owes nothing; over the limit stays honest", () => {
+    expect(creditUtilization({ balance: 25, creditLimit: 1000 })).toMatchObject({
+      owed: 0,
+      percent: 0,
+      available: 1000,
+    });
+    const over = creditUtilization({ balance: -1200, creditLimit: 1000 });
+    expect(over).toMatchObject({ percent: 120, available: 0, tone: "high" });
+  });
+
+  it("no meaningful limit, no utilisation", () => {
+    expect(creditUtilization({ balance: -300, creditLimit: null })).toBeNull();
+    expect(creditUtilization({ balance: -300, creditLimit: 0 })).toBeNull();
+  });
+});
+
+describe("nextStatementDueDate", () => {
+  it("lands on this month's day when it is still ahead, else next month's", () => {
+    expect(nextStatementDueDate(25, "2026-07-10")).toBe("2026-07-25");
+    expect(nextStatementDueDate(25, "2026-07-25")).toBe("2026-07-25"); // today counts
+    expect(nextStatementDueDate(5, "2026-07-10")).toBe("2026-08-05");
+  });
+
+  it("clamps to short months instead of skipping them", () => {
+    expect(nextStatementDueDate(31, "2026-02-10")).toBe("2026-02-28");
+    expect(nextStatementDueDate(31, "2028-02-10")).toBe("2028-02-29"); // leap year
+    expect(nextStatementDueDate(31, "2026-04-30")).toBe("2026-04-30");
+  });
+});
+
+describe("compareSpendingByCategory", () => {
+  it("unions both windows and sorts by the size of the change", () => {
+    const current: TransactionLike[] = [
+      { amount: -300, category: "groceries" },
+      { amount: -80, category: "dining" },
+      { amount: 2000, category: "income" }, // never counted
+      { amount: -50, category: "transfer" }, // bookkeeping — never counted
+    ];
+    const previous: TransactionLike[] = [
+      { amount: -200, category: "groceries" },
+      { amount: -80, category: "dining" },
+      { amount: -60, category: "transport" }, // dropped to zero this month
+    ];
+    const deltas = compareSpendingByCategory(current, previous);
+    expect(deltas.map((delta) => delta.category)).toEqual([
+      "groceries",
+      "transport",
+      "dining",
+    ]);
+    expect(deltas[0]).toMatchObject({ current: 300, previous: 200, delta: 100 });
+    expect(deltas[1]).toMatchObject({ current: 0, previous: 60, delta: -60 });
+    expect(deltas[2]).toMatchObject({ current: 80, previous: 80, delta: 0 });
+  });
+});
+
+describe("previousBudgetWindow", () => {
+  it("weekly steps back seven days; monthly is the previous calendar month", () => {
+    expect(previousBudgetWindow("weekly", { start: "2026-07-27", end: "2026-08-02" })).toEqual({
+      start: "2026-07-20",
+      end: "2026-07-26",
+    });
+    expect(previousBudgetWindow("monthly", { start: "2026-07-01", end: "2026-07-31" })).toEqual({
+      start: "2026-06-01",
+      end: "2026-06-30",
+    });
+  });
+});
+
+describe("budget rollover", () => {
+  const windows = budgetWindows(TODAY); // July 2026, week starting Monday
+  const budget = {
+    id: "b1",
+    category: "groceries",
+    amount: 400,
+    period: "monthly",
+    rollover: true,
+  };
+
+  it("carries last month's unused amount into this month's room", () => {
+    const [view] = budgetProgress(
+      [budget],
+      [
+        { date: "2026-06-10", amount: -150, category: "groceries" }, // $250 unused
+        { date: "2026-07-10", amount: -500, category: "groceries" },
+      ],
+      windows,
+    );
+    expect(view.carry).toBe(250);
+    expect(view.effectiveAmount).toBe(650);
+    expect(view.spent).toBe(500);
+    expect(view.remaining).toBe(150);
+    expect(view.over).toBe(false);
+    expect(view.percent).toBe(77);
+  });
+
+  it("caps the carry at one period's worth and floors it at zero", () => {
+    const [untouched] = budgetProgress(
+      [budget],
+      [{ date: "2026-07-10", amount: -100, category: "groceries" }],
+      windows,
+    );
+    expect(untouched.carry).toBe(400); // June had no spending — full cap
+    expect(untouched.effectiveAmount).toBe(800);
+
+    const [overspentBefore] = budgetProgress(
+      [budget],
+      [
+        { date: "2026-06-10", amount: -600, category: "groceries" }, // June over
+        { date: "2026-07-10", amount: -100, category: "groceries" },
+      ],
+      windows,
+    );
+    expect(overspentBefore.carry).toBe(0); // a budget is a ceiling, not a debt
+    expect(overspentBefore.effectiveAmount).toBe(400);
+  });
+
+  it("without opting in, nothing carries and the maths are unchanged", () => {
+    const [view] = budgetProgress(
+      [{ ...budget, rollover: false }],
+      [
+        { date: "2026-06-10", amount: -150, category: "groceries" },
+        { date: "2026-07-10", amount: -500, category: "groceries" },
+      ],
+      windows,
+    );
+    expect(view.carry).toBe(0);
+    expect(view.effectiveAmount).toBe(400);
+    expect(view.over).toBe(true);
+  });
+
+  it("weekly rollover measures against the previous week", () => {
+    const [view] = budgetProgress(
+      [{ ...budget, period: "weekly", amount: 100 }],
+      [
+        // TODAY = Friday 2026-07-31; this week is Mon Jul 27 – Sun Aug 2.
+        { date: "2026-07-21", amount: -40, category: "groceries" }, // last week
+        { date: "2026-07-29", amount: -90, category: "groceries" }, // this week
+      ],
+      windows,
+    );
+    expect(view.carry).toBe(60);
+    expect(view.effectiveAmount).toBe(160);
+    expect(view.over).toBe(false);
   });
 });

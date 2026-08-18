@@ -88,7 +88,7 @@ function BudgetRow({
           {budget.over ? (
             <Badge variant="outline" className="gap-1 border-red-500/30 text-[10px] text-red-700 dark:text-red-400">
               <TriangleAlert className="h-2.5 w-2.5" aria-hidden="true" />
-              Over by {formatMoney(budget.spent - budget.amount, currency)}
+              Over by {formatMoney(budget.spent - budget.effectiveAmount, currency)}
             </Badge>
           ) : budget.thresholdReached ? (
             <Badge
@@ -115,7 +115,7 @@ function BudgetRow({
       />
       <div className="mt-1.5 flex items-center justify-between gap-2 text-xs text-muted-foreground">
         <span className="tabular">
-          {formatMoney(budget.spent, currency)} / {formatMoney(budget.amount, currency)}
+          {formatMoney(budget.spent, currency)} / {formatMoney(budget.effectiveAmount, currency)}
         </span>
         <span className={cn("tabular", budget.over && "font-medium text-red-700 dark:text-red-400")}>
           {budget.over ? `${budget.percent}% spent` : `${formatMoney(budget.remaining, currency)} left`}
@@ -124,6 +124,11 @@ function BudgetRow({
       <p className="mt-1 text-[11px] text-muted-foreground">
         {budget.period === "weekly" ? "This week" : "This month"} ·{" "}
         {formatDay(budget.windowStart, "MMM d")} – {formatDay(budget.windowEnd, "MMM d")}
+        {budget.carry > 0
+          ? ` · includes ${formatMoney(budget.carry, currency)} rolled over`
+          : budget.rollover
+            ? " · rollover on"
+            : ""}
         {budget.threshold !== null ? ` · alerts at ${budget.threshold}%` : ""}
       </p>
     </div>

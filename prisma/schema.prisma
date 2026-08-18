@@ -134,6 +134,7 @@ model User {
   financeImportBatches FinanceImportBatch[]
   financeCategoryRules FinanceCategoryRule[]
   transferDismissals TransferDismissal[]
+  billSuggestionDismissals BillSuggestionDismissal[]
   inboxItems        InboxItem[]
   documents         LifeDocument[]
   assistantProposals AssistantProposal[]
@@ -1598,6 +1599,15 @@ model FinanceAccount {
   /// resolveLowBalanceReminder in src/lib/logic/reminders.ts.
   lowBalanceThreshold Float?
 
+  /// Credit limit, for debt accounts (credit cards): what utilisation is
+  /// measured against. Null = not tracked.
+  creditLimit Float?
+
+  /// Day of month (1–31) the statement payment is due, for credit cards.
+  /// Clamped to the month's length when shorter (31 → Feb 28). Surfaced with
+  /// the same due-distance language bills use. Null = not tracked.
+  statementDueDay Int?
+
   notes      String?
   archivedAt DateTime?
   sortOrder  Int       @default(0)
@@ -1778,6 +1788,11 @@ model Budget {
   /// resolveBudgetThresholdReminder in src/lib/logic/reminders.ts.
   alertThresholdPercent Int?
 
+  /// Opt-in rollover: the previous period's unused amount carries into the
+  /// current one, capped at one period's worth. The maths live in
+  /// budgetProgress (src/lib/logic/finance.ts) — this is only the switch.
+  rollover Boolean @default(false)
+
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
@@ -1823,6 +1838,22 @@ model FinanceImportBatch {
 
   @@index([userId, createdAt])
   @@index([accountId])
+}
+
+/// A "track this as a bill" suggestion the user said NO to: recurring-cost
+/// detection must never re-offer this payee. Keyed on the normalised
+/// (trimmed, lowercased) payee — dismissing "Netflix" covers every cadence
+/// it might be re-detected at.
+model BillSuggestionDismissal {
+  id     String @id @default(cuid())
+  userId String
+  user   User   @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  payeeKey String
+
+  createdAt DateTime @default(now())
+
+  @@unique([userId, payeeKey])
 }
 
 /// A transfer suggestion the user said NO to: this exact pair of ledger rows

@@ -111,16 +111,29 @@ function formFrom(bill: BillRowView): BillForm {
   };
 }
 
+/** What a "track this as a bill" suggestion pre-fills for a NEW bill. */
+export interface BillPrefill {
+  name: string;
+  amount: number;
+  category: string;
+  recurrence: string;
+  dueDate: string;
+  accountId: string | null;
+}
+
 export function BillDialog({
   open,
   onOpenChange,
   bill,
+  initial,
   accounts,
   today,
 }: {
   open: boolean;
   onOpenChange: (open: boolean) => void;
   bill?: BillRowView | null;
+  /** Pre-filled values for a NEW bill (ignored when editing). */
+  initial?: BillPrefill | null;
   /** Unarchived accounts the bill can default to being paid from. */
   accounts: AccountView[];
   today: string;
@@ -133,9 +146,24 @@ export function BillDialog({
 
   React.useEffect(() => {
     if (!open) return;
-    setForm(bill ? formFrom(bill) : blankBill(today));
+    const blank = blankBill(today);
+    setForm(
+      bill
+        ? formFrom(bill)
+        : initial
+          ? {
+              ...blank,
+              name: initial.name,
+              amount: String(initial.amount),
+              category: initial.category,
+              recurrence: initial.recurrence,
+              dueDate: initial.dueDate,
+              accountId: initial.accountId ?? NO_ACCOUNT,
+            }
+          : blank,
+    );
     setErrors({});
-  }, [open, bill, today]);
+  }, [open, bill, initial, today]);
 
   function set<K extends keyof BillForm>(key: K, value: BillForm[K]) {
     setForm((current) => ({ ...current, [key]: value }));

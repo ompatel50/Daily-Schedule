@@ -528,6 +528,13 @@ export const financeAccountSchema = z.object({
   openingBalance: money.default(0),
   /** Remind when the balance drops below this; null = no low-balance alert. */
   lowBalanceThreshold: money.nullable().optional(),
+  /** Utilisation is measured against this; null = not tracked. */
+  creditLimit: money
+    .refine((value) => value > 0, "The credit limit must be above zero")
+    .nullable()
+    .optional(),
+  /** Day of month the statement payment is due; null = not tracked. */
+  statementDueDay: z.number().int().min(1).max(31).nullable().optional(),
   notes: z.string().max(2000).nullable().optional(),
 });
 
@@ -685,6 +692,8 @@ export const budgetSchema = z.object({
     ])
     .nullable()
     .optional(),
+  /** Opt-in: last period's unused amount carries into this one (capped). */
+  rollover: z.boolean().default(false),
 });
 
 export type BudgetInput = z.infer<typeof budgetSchema>;

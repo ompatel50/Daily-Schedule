@@ -47,10 +47,13 @@
  *      "when an import's category cell says X, import it as Y". Small, but a
  *      restore that dropped them would silently re-corrupt the next CSV
  *      import's categories — which is why they are backed up at all.
- * v10 — adds transfer reconciliation: dismissed transfer suggestions
- *      (`transferDismissals` — pairs the user said NO to must stay said-no-to
- *      after a restore) and the `preTransferCategory` column on transactions
- *      (what unlinking a linked transfer restores).
+ * v10 — adds transfer reconciliation and credit-card depth: dismissed
+ *      transfer suggestions (`transferDismissals` — pairs the user said NO to
+ *      must stay said-no-to after a restore), dismissed track-as-bill
+ *      suggestions (`billSuggestionDismissals`), the `preTransferCategory`
+ *      column on transactions (what unlinking a linked transfer restores),
+ *      `creditLimit`/`statementDueDay` on accounts, and `rollover` on
+ *      budgets.
  *
  * A v1–v9 file restores into a v10 app unchanged: the missing tables simply
  * have no rows, the new columns take their defaults (a v7 health batch arrives
@@ -134,6 +137,7 @@ export const BACKUP_TABLES = [
   "savingsGoals",
   "budgets",
   "financeCategoryRules",
+  "billSuggestionDismissals",
   "inboxItems",
   "documents",
   "seedBatches",

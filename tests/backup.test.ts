@@ -133,19 +133,26 @@ describe("backup validation", () => {
     expect(result.warnings.join(" ")).not.toContain("unrecognised");
   });
 
-  it("v10 carries dismissed transfer suggestions, after the rows they cite", () => {
+  it("v10 carries both dismissal ledgers, transfer pairs after their rows", () => {
     expect(BACKUP_VERSION).toBe(10);
     expect(BACKUP_TABLES).toContain("transferDismissals");
-    // A dismissal references two ledger rows — they must restore first.
+    expect(BACKUP_TABLES).toContain("billSuggestionDismissals");
+    // A transfer dismissal references two ledger rows — they restore first.
     expect(BACKUP_TABLES.indexOf("financeTransactions")).toBeLessThan(
       BACKUP_TABLES.indexOf("transferDismissals"),
     );
 
     const result = inspectBackup(
-      backup({ data: { transferDismissals: [{ id: "d1", aId: "t1", bId: "t2" }] } }),
+      backup({
+        data: {
+          transferDismissals: [{ id: "d1", aId: "t1", bId: "t2" }],
+          billSuggestionDismissals: [{ id: "b1", payeeKey: "netflix" }],
+        },
+      }),
     );
     expect(result.ok).toBe(true);
     expect(result.counts.transferDismissals).toBe(1);
+    expect(result.counts.billSuggestionDismissals).toBe(1);
     expect(result.warnings.join(" ")).not.toContain("unrecognised");
   });
 

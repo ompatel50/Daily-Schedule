@@ -44,6 +44,12 @@ export async function saveFinanceAccount(input: unknown): Promise<ActionResult<{
       data.lowBalanceThreshold === undefined || data.lowBalanceThreshold === null
         ? null
         : moneyRound(data.lowBalanceThreshold),
+    // Same convention for the credit-card depth fields.
+    creditLimit:
+      data.creditLimit === undefined || data.creditLimit === null
+        ? null
+        : moneyRound(data.creditLimit),
+    statementDueDay: data.statementDueDay ?? null,
   };
 
   if (id) {
@@ -308,6 +314,25 @@ export async function deleteBudget(id: string): Promise<ActionResult<null>> {
 }
 
 // --- bills -------------------------------------------------------------------
+
+/**
+ * "Don't offer to track this payee as a bill again." Keyed on the normalised
+ * payee, so re-detection at any cadence stays suppressed. Idempotent.
+ */
+export async function dismissBillSuggestion(payee: string): Promise<ActionResult<null>> {
+  if (typeof payee !== "string" || payee.trim() === "" || payee.length > 200) {
+    return fail("Nothing to dismiss");
+  }
+  const user = await getCurrentUser();
+  const payeeKey = payee.trim().toLowerCase();
+  await prisma.billSuggestionDismissal.upsert({
+    where: { userId_payeeKey: { userId: user.id, payeeKey } },
+    create: { userId: user.id, payeeKey },
+    update: {},
+  });
+  revalidateAll();
+  return succeed(null);
+}
 
 export async function saveBill(input: unknown): Promise<ActionResult<{ id: string }>> {
   const parsed = billSchema.safeParse(input);

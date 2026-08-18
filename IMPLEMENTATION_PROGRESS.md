@@ -5072,8 +5072,8 @@ those cells lean.
 | 1  | Finance import correctness (1a–1d)                | ✅ done |
 | 2  | Split finance-board.tsx                           | ✅ done |
 | 3  | Transfers: reconciliation & auto-detection        | ✅ done |
-| 4  | Credit card depth + recurring + insights          | ⏳ next |
-| 5  | Money as integer cents                            | not started |
+| 4  | Credit card depth + recurring + insights          | ✅ done |
+| 5  | Money as integer cents                            | ⏳ next |
 | 6  | Task ↔ Planner linking                            | not started |
 | 7  | Global undo: soft-delete + Trash                  | not started |
 | 8  | Planner & habit quality features                  | not started |
@@ -5337,3 +5337,92 @@ row sanitiser automatically.
   unlink → mark-as-transfer round trip through the real UI, self-healing
   cleanup. Full suite **123 passed / 2 skipped** against the production
   build. Typecheck, lint, build green.
+
+## Phase 4 — credit-card depth, recurring detection, finance insights
+
+One additive migration (`20260818045252_credit_depth_recurring_rollover`):
+`FinanceAccount.creditLimit` + `statementDueDay`, `Budget.rollover`, and the
+`BillSuggestionDismissal` table (unique per user + normalised payee). All
+folded into backup **v10** (unshipped until this PR merges), with
+`billSuggestionDismissals` in export/restore and the columns riding the
+schema-driven sanitiser.
+
+### 4a — credit card depth
+
+Pure logic in `finance.ts`: `creditUtilization` (owed ÷ limit; tones ok <30%
+· elevated 30–69% · high ≥70%; a positive balance owes 0%; over-limit stays
+honest at >100%) and `nextStatementDueDate` (day-of-month → next occurrence,
+today inclusive, clamped to short months — 31 → Feb 28/29). The account
+dialog shows both fields for credit-card accounts only (cleared to null when
+the type changes or fields empty); the account card grows a utilisation bar
++ "N% used · $owed of $limit" and a statement line speaking the bills' own
+due language (`describeDueDistance` + the same urgency classes).
+
+### 4b — recurring detection → "track as bill"
+
+`src/lib/logic/recurring-detect.ts` (pure): groups money-out rows by
+normalised payee (skipping bill-linked rows, transfer legs, bookkeeping,
+payee-less rows), keeps amounts within ±15% (floor $2) of the payee's
+median, collapses same-day double charges, and accepts a cadence only when
+EVERY gap fits one tolerance band (weekly 5–9, monthly 26–36, yearly
+350–380 days) with ≥3 occurrences (yearly: 2). Suggests the median amount,
+the most common category, the latest row's account, and a next due date
+stepped forward until it is ≥ today — a suggestion is never born overdue.
+`computeBillSuggestions` (server) runs it over a bounded ~13-month window,
+subtracts dismissed payees (`dismissBillSuggestion` action, upsert,
+idempotent) and payees an active bill already covers by name, caps at 5.
+The Bills section shows them as a dashed "Looks recurring" block:
+"Track as bill" opens the existing BillDialog **pre-filled** (new optional
+`initial` prop — name/amount/category/recurrence/first due date/account,
+with forbidden categories falling back to `other`), dismiss buries the
+payee for good. Known soft edge (documented): the created bill suppresses
+by NAME equality; renaming the bill away from the payee re-surfaces the
+suggestion until dismissed.
+
+### 4c — month over month
+
+`compareSpendingByCategory` (pure): union of both windows' spending by
+category, bookkeeping excluded, sorted by |delta| so `slice(0, n)` IS "top
+movers". `financeWindows` extends the one ledger fetch back through the
+previous calendar month (which also covers weekly rollover); the overview
+adds `previousMonth` totals + `monthOverMonth` deltas. New
+`monthly-report-section.tsx` on the finance page (left column, under
+Bills): spending and income tiles with last-month comparison (spending up =
+red, down = green; income mirrored) and the top five movers with
+before → after amounts and delta chips. A section, not a route.
+
+### 4d — budget rollover
+
+`BudgetLike.rollover` (opt-in, per budget). `budgetProgress` — still the one
+place consumption maths lives — computes `carry = clamp(target −
+previousPeriodSpent, 0, target)` from `previousBudgetWindow` (weekly −7
+days; monthly = previous calendar month) and measures spent/remaining/
+percent/over/threshold against `effectiveAmount = target + carry`. An
+overspent previous period carries zero — a budget is a ceiling, never a
+debt. The budget dialog gains the switch; the row shows `spent /
+effectiveAmount` and "includes $X rolled over" (or "rollover on").
+*Documented asymmetry:* the daily budget-threshold REMINDER still measures
+against the base target (its evaluation path never loads the previous
+window) — it can only warn early for a rollover budget, never late.
+
+### Verification
+
+* Unit **1,228 → 1,249**: utilisation (bands, over-limit, owed-nothing,
+  no-limit), statement dates (ahead/behind/today, short-month + leap-year
+  clamps), category deltas (union, ordering, bookkeeping exclusion),
+  previous windows, rollover (carry/cap/floor/opt-out/weekly), and the new
+  `tests/recurring-detect.test.ts` (10 cases: monthly detection +
+  pre-fill, stale-history future due date, drift + variance tolerance,
+  occurrence minimums per cadence, irregular/one-off/dissimilar refusals,
+  bill-linked/transfer/income exclusions, same-day dedupe,
+  case-insensitive keys, ordering).
+* Integration **415 → 422** (`finance-depth.test.ts`): field persistence +
+  clearing + validation refusals, rollover through the real overview,
+  suggestion → per-user isolation → dismissal persistence → bill-name
+  suppression, month-over-month overview data, backup round trip of the
+  new columns and dismissals.
+* E2E: new permanent `tests/e2e/finance-depth.spec.ts` — utilisation bar
+  moving with spending, statement line, three monthly charges → suggestion
+  → pre-filled bill dialog → created bill suppresses the suggestion,
+  rollover budget row, report section; self-healing cleanup. Full suite
+  **124 passed / 2 skipped**. Typecheck, lint, build green.

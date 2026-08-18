@@ -16,6 +16,7 @@ import {
 } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
+import { Switch } from "@/components/ui/switch";
 import {
   Select,
   SelectContent,
@@ -48,6 +49,12 @@ export interface BudgetView {
   remaining: number;
   percent: number;
   over: boolean;
+  /** Opt-in: last period's unused amount carries into this one. */
+  rollover: boolean;
+  /** What last period's unused amount added (0 unless rollover). */
+  carry: number;
+  /** amount + carry — what spent/percent/over are measured against. */
+  effectiveAmount: number;
   /** The days the period currently covers, for the "resets" hint. */
   windowStart: string;
   windowEnd: string;
@@ -75,6 +82,7 @@ export function BudgetDialog({
   const [amount, setAmount] = React.useState("");
   const [period, setPeriod] = React.useState<BudgetPeriod>("monthly");
   const [threshold, setThreshold] = React.useState<string>(NO_ALERT);
+  const [rollover, setRollover] = React.useState(false);
   const [errors, setErrors] = React.useState<Record<string, string[] | undefined>>({});
 
   const available = BUDGETABLE_CATEGORIES.filter(
@@ -87,6 +95,7 @@ export function BudgetDialog({
     setAmount(budget ? String(budget.amount) : "");
     setPeriod(budget?.period === "weekly" ? "weekly" : "monthly");
     setThreshold(budget?.threshold ? String(budget.threshold) : NO_ALERT);
+    setRollover(budget?.rollover ?? false);
     setErrors({});
   }, [open, budget]);
 
@@ -111,6 +120,7 @@ export function BudgetDialog({
         amount: value,
         period,
         alertThresholdPercent: threshold === NO_ALERT ? null : Number(threshold),
+        rollover,
       });
       if (result.ok) {
         toast.success(isEdit ? "Budget updated" : "Budget created");
@@ -233,6 +243,19 @@ export function BudgetDialog({
                 Reminds once per {period === "weekly" ? "week" : "month"} when spending crosses
                 that line — never twice for the same period.
               </p>
+            </div>
+
+            <div className="flex items-center justify-between gap-3">
+              <div>
+                <Label htmlFor="budget-rollover" className="text-sm font-normal">
+                  Roll unused amount into the next {period === "weekly" ? "week" : "month"}
+                </Label>
+                <p className="text-xs text-muted-foreground">
+                  Carries at most one {period === "weekly" ? "week" : "month"}&apos;s worth; an
+                  overspent period never borrows from the next.
+                </p>
+              </div>
+              <Switch id="budget-rollover" checked={rollover} onCheckedChange={setRollover} />
             </div>
           </div>
 
