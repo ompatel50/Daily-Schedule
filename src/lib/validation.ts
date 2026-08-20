@@ -220,6 +220,12 @@ export const foodItemSchema = z.object({
   extraNutrients: z.record(z.string(), nutrientAmount(1_000_000)).optional(),
   category: z.enum(FOOD_CATEGORIES).default("other"),
   favorite: z.boolean().optional(),
+  /** Retail EAN/UPC digits, so a scan of this product resolves locally. */
+  barcode: z
+    .string()
+    .regex(/^\d{8,14}$/, "A barcode is 8–14 digits")
+    .nullable()
+    .optional(),
 });
 
 /**

@@ -353,6 +353,9 @@ export async function saveFoodItem(input: unknown): Promise<ActionResult<{ id: s
     brand: rest.brand ?? null,
     description: rest.description ?? notes ?? null,
     servingLabel: rest.servingLabel ?? null,
+    // The scan path pre-fills this, so a future scan of the same product
+    // resolves locally before any provider is asked.
+    barcode: rest.barcode ?? null,
     userId: user.id,
     isCustom: true,
     // A hand-entered food is its own provider: it has no external id, so the

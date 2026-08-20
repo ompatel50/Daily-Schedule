@@ -6347,3 +6347,67 @@ Reminder `(userId, enabled)` + `(userId, deletedAt)`.
 * Typecheck, lint (0 errors; 2 new warnings, both instances of the two
   documented warn-level react-hooks rules in their established dialog/search
   patterns), build green; browser-verified.
+
+## Checkpoint 1.3 — barcode scanning for food
+
+### The audit, before any change
+
+Barcode scanning was **already substantially built** (the hosted-upgrade
+"Phase 24" work, which this task statement predates): `FoodItem.barcode`
+with an index, `NormalizedFood.barcode` (USDA `gtinUpc`, OFF `code`),
+`lookupFoodByBarcode` (local rows first — offline-capable — then OFF),
+`lookupBarcodeAction` with the 8–14-digit gate, and a scanner dialog using
+the native `BarcodeDetector` (camera starts only on explicit click, every
+track stopped on close, EAN/UPC formats only), wired into the food search.
+Manual entry was already never gated.
+
+What the checkpoint required and was MISSING: (1) a **bundled fallback
+decoder** — engines without `BarcodeDetector` (Safari, Firefox) had no live
+scanning at all, only manual entry; (2) **USDA in the resolution chain** —
+OFF was the only remote source, though USDA Branded records carry a
+GTIN/UPC; (3) the **unknown-barcode → create-it-manually offer** with the
+code pre-filled.
+
+### What changed
+
+* **Bundled fallback decoder**: `@zxing/browser` + `@zxing/library`
+  (pure-JS, no external service — decoding stays on-device), lazy-imported
+  only when the native detector is absent AND the camera is started, so the
+  chunk is never paid elsewhere. It attaches to the dialog's own video
+  element — the existing getUserMedia/stop lifecycle is unchanged, and
+  `IScannerControls.stop()` joins the one `stopCamera`. Live scanning now
+  needs only a camera; the unsupported message shrank to the no-camera case.
+* **Provider chain**: `lookupFoodByBarcode` now falls through OFF → USDA
+  (`search(code, {preferBranded})`, match verified against the normalised
+  record's own GTIN, zero-padding-insensitive — a fuzzy text hit can never
+  impersonate the product). Failure semantics preserved: outage ≠ missing
+  product, and USDA can rescue an OFF outage. Caching/refresh behaviour
+  untouched — a scanned pick is cached with its barcode on first log
+  (`materializeFood`/`cacheFood`), which is what makes the next scan local.
+* **Unknown barcode**: a definitive miss now offers "Add it as a custom
+  food" — `CustomFoodDialog` gained a controlled mode (`open`/`onOpenChange`
+  /`initialBarcode`/`onSaved`) and an optional barcode field
+  (`foodItemSchema.barcode`, 8–14 digits, written by `saveFoodItem`); saving
+  loops straight back into the lookup, which now resolves the new local row
+  into the log dialog. Its NumberField labels also gained real htmlFor/id
+  pairing en route.
+
+### Verification
+
+* Unit: tests/food-lookup.test.ts **+4** — USDA GTIN fallback on an OFF
+  miss, zero-padding-insensitive matching, fuzzy-hit refusal (a USDA text
+  hit with a different GTIN never impersonates), OFF-outage rescue. All
+  existing lookup/blending/provider tests pass unchanged (175 across the
+  food suites).
+* Integration: new tests/integration/barcode.test.ts (3) — custom food with
+  barcode → local resolution round trip (no network touched), malformed
+  barcode refused, cross-user invisibility of the local pass.
+* E2E: new tests/e2e/barcode.spec.ts — the deterministic headless flow:
+  create a custom food WITH its barcode through the real dialog, resolve it
+  through the scanner's manual entry into the log dialog; and graceful
+  degradation (headless has no camera; manual entry stays first-class).
+  Live camera decoding is untestable headless by design (camera only starts
+  from a user click) — the decode→lookup seam is unit-covered.
+* Typecheck, lint (0 errors, warning count unchanged), build green. The new
+  packages added no `npm audit` advisories (the 3 documented prisma-chain
+  highs remain the only ones).
