@@ -1475,19 +1475,77 @@ model CalendarDaySummary {
 
   habitsDue  Int @default(0)
   habitsDone Int @default(0)
+  /// Deliberate "didn't do it today" logs among the due opportunities.
+  habitsSkipped Int @default(0)
+  /// Due opportunities that ended the day unmet (never counts paused days).
+  habitsMissed Int @default(0)
+  /// Habits sitting inside a pause window — excluded, NEVER missed.
+  habitsPaused Int @default(0)
 
   calories Float @default(0)
   protein  Float @default(0)
   carbs    Float @default(0)
   fat      Float @default(0)
+  fiber    Float @default(0)
+  /// Discriminates "ate exactly the above" from "logged nothing": the macro
+  /// columns are unknown — not zero — when this is 0. The DailyFact view
+  /// (src/lib/logic/daily-facts.ts) resolves that to null for analyses.
+  mealCount Int @default(0)
+
+  /// Nutrition-target adherence for the day: how many applicable targets had
+  /// data and how many of those were met. 0/0 = no targets or nothing logged.
+  nutritionTargetsMet   Int @default(0)
+  nutritionTargetsTotal Int @default(0)
 
   workoutCount   Int @default(0)
   workoutMinutes Int @default(0)
   caloriesBurned Int @default(0)
+  /// Σ reps × weight over completed sets — 0 for cardio-only days.
+  workoutVolumeKg Float @default(0)
+  /// JSON array of the day's distinct completed workout types.
+  workoutTypes String @default("[]")
+  /// training | rest, resolved through the one day-type resolver
+  /// (override wins, else any completed workout). Null on rows written
+  /// before this column existed; a rebuild fills it.
+  dayType String?
+
+  /// Planner minutes: timed blocks only (all-day/untimed blocks count in
+  /// plannedCount but carry no minutes — the utilisation view's rule).
+  plannedMinutes   Int @default(0)
+  completedMinutes Int @default(0)
+  /// JSON object: schedule category → planned minutes (timed blocks only).
+  categoryMinutes String @default("{}")
+
+  /// Tasks: created during the operational day, completed during it, and
+  /// due that day while still open at recompute time ("overdue" is
+  /// present-knowledge — task events are not historically journaled).
+  tasksCreated   Int @default(0)
+  tasksCompleted Int @default(0)
+  tasksDueOpen   Int @default(0)
+
+  /// Finance, integer cents. Spend/income exclude the bookkeeping
+  /// categories (transfer, adjustment) exactly as budgets and insights do.
+  /// Zero means "no rows that day", which for a finance-tracking account is
+  /// a real zero; accounts that never track money read all-zero here and
+  /// the analyses in Phase 2 must treat all-zero finance histories as
+  /// untracked, not thrifty.
+  spendCents       Int @default(0)
+  incomeCents      Int @default(0)
+  transactionCount Int @default(0)
+  /// JSON object: finance category → spend cents (magnitudes).
+  spendByCategory String @default("{}")
+
+  /// Whether a journal entry exists for the day.
+  hasJournal Boolean @default(false)
 
   steps      Float?
   sleepHours Float?
   bodyWeight Float?
+  restingHr  Float?
+  hrv        Float?
+  /// Active energy for the day (kcal), from the health metrics.
+  activeCalories Float?
+  hydrationMl    Float?
 
   /// 0–100 day score for the heatmap, produced by src/server/day-score.ts.
   ///

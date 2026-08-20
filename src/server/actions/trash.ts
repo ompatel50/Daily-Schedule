@@ -5,12 +5,12 @@ import { revalidatePath } from "next/cache";
 import { getCurrentUser } from "@/lib/db";
 import { prismaIncludingTrashed } from "@/lib/prisma";
 import { SOFT_DELETE_MODELS, type SoftDeleteModel } from "@/lib/soft-delete";
-import { operationalDayOfRecord } from "@/lib/logic/operational-day";
+import { operationalDayOf, operationalDayOfRecord } from "@/lib/logic/operational-day";
 import { parseSkipDates, serializeSkipDates } from "@/lib/logic/recurrence";
 import { resetMinuteOf } from "@/lib/logic/schedule";
 import { fail, succeed, type ActionResult } from "@/lib/validation";
 import { scheduleSettingsFor, setScheduleEnabled } from "@/server/schedule";
-import { recomputeDay } from "@/server/summaries";
+import { recomputeDay, recomputeDaysFor } from "@/server/summaries";
 
 /**
  * Restore and purge, the Trash's two verbs. Both run on the RAW client (the
@@ -108,6 +108,26 @@ export async function restoreTrashItem(
           })
         ).count;
       }
+      // The restored rows re-enter the day summaries' task counts.
+      const settings = scheduleSettingsFor(user);
+      const reset = resetMinuteOf(settings);
+      const rows = await raw.task.findMany({
+        where: {
+          userId: user.id,
+          deletedAt: null,
+          OR: [{ id }, { parentId: id }, ...(task.parentId ? [{ id: task.parentId }] : [])],
+        },
+        select: { createdAt: true, completedAt: true, dueDate: true },
+      });
+      await recomputeDaysFor(
+        user.id,
+        rows.flatMap((row) => {
+          const days = [operationalDayOf(row.createdAt, settings.timezone, reset)];
+          if (row.completedAt) days.push(operationalDayOf(row.completedAt, settings.timezone, reset));
+          if (row.dueDate) days.push(row.dueDate);
+          return days;
+        }),
+      );
       break;
     }
 
@@ -212,11 +232,18 @@ export async function restoreTrashItem(
         where: { id: tx.accountId, userId: user.id, deletedAt: { not: null } },
         data: { deletedAt: null },
       });
+      // Transfer legs share one date, so the row's own date covers the pair.
+      await recomputeDay(user.id, tx.date);
       break;
     }
 
     case "FinanceAccount": {
       // The account plus the transactions its delete took along (same stamp).
+      const returning = await raw.financeTransaction.findMany({
+        where: { accountId: id, userId: user.id, deletedAt: stamp },
+        select: { date: true },
+        distinct: ["date"],
+      });
       const result = await raw.financeAccount.updateMany({
         where: { id, userId: user.id },
         data: { deletedAt: null },
@@ -228,11 +255,19 @@ export async function restoreTrashItem(
           data: { deletedAt: null },
         })
       ).count;
+      await recomputeDaysFor(
+        user.id,
+        returning.map((transaction) => transaction.date),
+      );
       break;
     }
 
     case "Workout": {
       // The workout and its mirrored planner block travel together.
+      const workout = (await raw.workout.findFirst({
+        where: { id, userId: user.id },
+        select: { date: true },
+      }))!;
       const result = await raw.workout.updateMany({
         where: { id, userId: user.id },
         data: { deletedAt: null },
@@ -244,6 +279,7 @@ export async function restoreTrashItem(
           data: { deletedAt: null },
         })
       ).count;
+      await recomputeDay(user.id, workout.date);
       break;
     }
 
@@ -271,6 +307,12 @@ export async function restoreTrashItem(
         data: { deletedAt: null },
       });
       restored = result.count;
+      // Day-keyed rows (meals, journal pages, health metrics) re-enter their
+      // day's summary; the loaded row still carries the field.
+      const day = (row as unknown as { date?: unknown }).date;
+      if (typeof day === "string" && /^\d{4}-\d{2}-\d{2}$/.test(day)) {
+        await recomputeDay(user.id, day);
+      }
     }
   }
 

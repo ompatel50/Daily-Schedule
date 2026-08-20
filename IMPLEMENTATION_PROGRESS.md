@@ -6175,7 +6175,7 @@ theme, cookie headers), 390 px overflow sweep clean on /review,
 | 1.4 | Nutrition targets                             | ✅ done |
 | 1.5 | Workout depth                                 | ✅ done |
 | 1.6 | Nutrition ↔ workout linkage                   | ✅ done |
-| 2.1 | Unified daily fact layer                      | ⏳ |
+| 2.1 | Unified daily fact layer                      | ✅ done |
 | 2.2 | Correlation insights                          | ⏳ |
 | 2.3 | Spending triggers                             | ⏳ |
 | 2.4 | Anomaly nudges                                | ⏳ |
@@ -6611,3 +6611,102 @@ the manual override — and the surfaces.
   Select (day type shown with provenance, "(set by you)" appears,
   reverting to Auto clears it).
 * Typecheck, lint (0 errors), build green; browser-verified.
+
+## Checkpoint 2.1 — unified daily fact layer
+
+### The documented decision: extend `CalendarDaySummary`, no parallel table
+
+The task allowed a new `DailyFact` model or extending the existing summary
+and asked for the choice to be deliberate. **Extended.** The summary is
+already one row per (userId, operational day), already recomputed
+incrementally by every write path (`recomputeDay`), already idempotent
+(upsert), already rebuildable in O(days) with bounded concurrency
+(`REBUILD_CONCURRENCY = 8`), and already the thing the calendar and
+insights read. A parallel table would need the identical trigger network,
+rebuild machinery and day-key semantics — a hand-maintained twin of exactly
+the kind the standing rules forbid. The cost is a wider row; the analyses
+read a bounded window of them. The decision and the null-semantics contract
+live in the module docstring of `src/lib/logic/daily-facts.ts`.
+
+### What changed
+
+* **Migration `daily_fact_columns`** (additive, defaulted — old rows stay
+  valid): planner minutes (`plannedMinutes`, `completedMinutes`,
+  `categoryMinutes` JSON), habit buckets (`habitsSkipped`, `habitsMissed`,
+  `habitsPaused`), nutrition depth (`fiber`, `mealCount`,
+  `nutritionTargetsMet/Total`), workout depth (`workoutVolumeKg`,
+  `workoutTypes` JSON, `dayType`), tasks (`tasksCreated`, `tasksCompleted`,
+  `tasksDueOpen`), finance (`spendCents`, `incomeCents`,
+  `transactionCount`, `spendByCategory` JSON), `hasJournal`, and nullable
+  health columns (`restingHr`, `hrv`, `activeCalories`, `hydrationMl`).
+* **`src/lib/logic/daily-facts.ts`** (pure) — the typed `DailyFact` record
+  and `dailyFactFromSummary`, which resolves the null semantics the storage
+  cannot express: **missing data is explicitly null, never zero** — macros
+  null unless `mealCount > 0`, score null unless `scoreApplicable > 0`,
+  adherence null unless targets applied, health nullable end to end;
+  counts are true zeros ("nothing happened" is a fact for a count), with
+  the finance caveat documented (untracked money is a history-wide
+  question for the analyses, not a per-day one). Plus the fold helpers
+  `recomputeDay` uses: `plannerMinuteFacts` (timed non-skipped blocks,
+  cross-midnight via the shared span math), `financeDayFacts`
+  (sign-split magnitudes in cents; `BOOKKEEPING_CATEGORIES`
+  transfer/adjustment counted but never spend/income),
+  `workoutDayFacts` (volume over completed sets, bodyweight = no invented
+  weight; distinct types first-seen). JSON cells parse defensively —
+  a corrupt cell degrades to empty, never throws a page down.
+* **`recomputeDay`** widened to one 13-way parallel read: goal evaluations
+  come from the SAME memoised `evaluateGoalsForDate` call the day score
+  makes (request-level cache hit, no second evaluation); task counts go
+  through `operationalDayWindow` (createdAt/completedAt are instants — the
+  4 AM reset is honoured, never hand-subtracted hours); day type stored
+  override-first (same rule as `getDayType`); journal presence read via
+  guarded `findFirst` (a trashed page must not read as "journaled");
+  habit totals gained a `paused` bucket (`getHabitDayTotals`) so paused
+  days are never due or missed. `getDailyFacts(userId, from, to)` is the
+  read side: one indexed query + O(1) map per row.
+* **Trigger-network completion** — finance, task and journal writes never
+  recomputed (their data wasn't summarised before); now they do, each for
+  exactly the days its facts live on: `saveTransaction` (both days on a
+  date edit), `deleteTransaction` (pair-aware), `transferBetweenAccounts`,
+  `setAccountBalance`, `markBillPaid`, `deleteFinanceAccount` (distinct
+  ledger dates), `saveTask`/`completeTask`/`reopenTask`/`dropTask`/
+  `deleteTask`/`rollTaskForward` (created/completed instants via
+  `operationalDayOf`, due dates directly; helper `taskFactDays`),
+  `scheduleTaskOnPlanner` (closed a pre-existing gap: the created block
+  never recomputed its day), the journal empty-page delete path, and the
+  Trash restore paths (task graphs, transactions, accounts, workouts, and
+  any day-keyed row generically). New `recomputeDaysFor(userId, dates)`
+  centralises the dedup + bounded-concurrency fan-out.
+
+### Performance
+
+* Daily path: `recomputeDay` is ~13 indexed single-day reads + 1 upsert —
+  nothing reads unbounded history. Writes recompute at most a handful of
+  days (a task delete: created + completed + due days of the affected
+  rows).
+* Rebuild measured on the seeded dev database: **60 days in 506 ms
+  (~8 ms/day)** at concurrency 8 — O(days), unchanged shape from before
+  the widening.
+
+### Verification
+
+* Unit +18 (tests/daily-facts.test.ts): null resolution (unlogged vs
+  logged-zero-kcal day, score, adherence, day-type whitelist, defensive
+  JSON), planner minute rules (cross-midnight, all-day/skipped/point
+  blocks), finance sign-split + bookkeeping exclusion, workout volume over
+  completed sets only. Suite 1,387 → 1,405.
+* Integration +16 (tests/integration/daily-facts.test.ts): incremental
+  correctness through the REAL actions (a saved transaction lands in the
+  summary with no manual recompute; a date edit recomputes both days; a
+  delete takes it back out; transfers/adjustments count but never spend),
+  task counts through the operational window (an 06:00 UTC creation lands
+  on the previous New York day), journal presence round trip, pause-aware
+  habit buckets, day type stored with override, target adherence cached
+  from the shared evaluation, recompute idempotence (identical row
+  modulo `updatedAt`), bulk rebuild filling wiped rows, cross-user
+  isolation. Suite → 544, all green.
+* E2E: finance-depth, task-planner-links, trash round-trips, review-data
+  (10 tests) re-run green over the new wiring; browser-verified /,
+  /calendar, /finance, /tasks, /nutrition, /today on the production build
+  (no console errors beyond the self-hosted Vercel-insights 404).
+* Typecheck, lint (0 errors, 63-warning baseline), build green.

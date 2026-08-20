@@ -11,6 +11,7 @@ import { FINANCE_CATEGORY_META, type FinanceCategory } from "@/lib/enums";
 import { advanceBillAfterPayment, moneyRound, transferLegs } from "@/lib/logic/finance";
 import { centsOrLegacy, centsToAmount, toCents } from "@/lib/logic/money";
 import { scheduleSettingsFor } from "@/server/schedule";
+import { recomputeDay, recomputeDaysFor } from "@/server/summaries";
 import {
   billSchema,
   budgetSchema,
@@ -118,6 +119,12 @@ export async function deleteFinanceAccount(id: string): Promise<ActionResult<nul
     select: { id: true },
   });
   if (!account) return succeed(null);
+  // The ledger rows about to disappear from the day summaries.
+  const touched = await prisma.financeTransaction.findMany({
+    where: { accountId: id, userId: user.id },
+    select: { date: true },
+    distinct: ["date"],
+  });
   const stamp = trashStamp();
   await prisma.$transaction([
     prisma.financeTransaction.updateMany({
@@ -129,6 +136,10 @@ export async function deleteFinanceAccount(id: string): Promise<ActionResult<nul
       data: { deletedAt: stamp },
     }),
   ]);
+  await recomputeDaysFor(
+    user.id,
+    touched.map((transaction) => transaction.date),
+  );
   revalidateAll();
   return succeed(null);
 }
@@ -174,6 +185,7 @@ export async function setAccountBalance(
       notes: "Balance set by hand",
     },
   });
+  await recomputeDay(user.id, date);
   revalidateAll();
   return succeed({ adjustment: adjustmentCents });
 }
@@ -227,6 +239,8 @@ export async function saveTransaction(input: unknown): Promise<ActionResult<{ id
       return fail("This is one leg of a transfer — delete the transfer and record it again");
     }
     await prisma.financeTransaction.update({ where: { id }, data: payload });
+    // A moved transaction changes both days' summaries.
+    await recomputeDaysFor(user.id, [existing.date, payload.date]);
     revalidateAll();
     return succeed({ id });
   }
@@ -234,6 +248,7 @@ export async function saveTransaction(input: unknown): Promise<ActionResult<{ id
   const created = await prisma.financeTransaction.create({
     data: { ...payload, userId: user.id },
   });
+  await recomputeDay(user.id, payload.date);
   revalidateAll();
   return succeed({ id: created.id });
 }
@@ -251,7 +266,7 @@ export async function deleteTransaction(id: string): Promise<ActionResult<null>>
   const user = await getCurrentUser();
   const existing = await prisma.financeTransaction.findFirst({
     where: { id, userId: user.id },
-    select: { transferGroupId: true },
+    select: { transferGroupId: true, date: true },
   });
   if (existing) {
     await prisma.financeTransaction.updateMany({
@@ -260,6 +275,8 @@ export async function deleteTransaction(id: string): Promise<ActionResult<null>>
         : { id, userId: user.id },
       data: { deletedAt: trashStamp() },
     });
+    // Both legs of a transfer share one date, so this covers the pair.
+    await recomputeDay(user.id, existing.date);
   }
   revalidateAll();
   return succeed(null);
@@ -321,6 +338,7 @@ export async function transferBetweenAccounts(
     })),
   });
 
+  await recomputeDay(user.id, date);
   revalidateAll();
   return succeed({ transferGroupId, amount: toCents(amount) });
 }
@@ -509,6 +527,7 @@ export async function markBillPaid(input: unknown): Promise<ActionResult<MarkBil
     }
   });
 
+  if (writeTransaction) await recomputeDay(user.id, date);
   revalidateAll();
   return succeed({
     nextDueDate: advance.settled ? null : advance.nextDueDate,

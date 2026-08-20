@@ -161,6 +161,7 @@ export async function saveJournalEntry(input: unknown): Promise<ActionResult<{ i
       where: { userId: user.id, date },
       data: { deletedAt: trashStamp() },
     });
+    await recomputeDay(user.id, date);
     revalidateAll();
     return succeed({ id: "" });
   }
