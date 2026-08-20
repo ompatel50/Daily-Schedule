@@ -187,3 +187,52 @@ export function kgToLb(kg: number): number {
 export function lbToKg(lb: number): number {
   return lb / LB_PER_KG;
 }
+
+// ---------------------------------------------------------------------------
+// Training vs rest days — the descriptive comparison
+// ---------------------------------------------------------------------------
+
+export interface DayTypeSideSummary {
+  /** Days with food logged. */
+  days: number;
+  avgCalories: number | null;
+  avgProtein: number | null;
+}
+
+export interface DayTypeComparison {
+  training: DayTypeSideSummary;
+  rest: DayTypeSideSummary;
+}
+
+/**
+ * Average intake on training vs rest days, over days that HAVE food logged —
+ * an unlogged day is unknown and joins neither side. Purely descriptive: the
+ * numbers say what happened; nothing here prescribes what should.
+ * O(days) over the caller's window.
+ */
+export function compareDayTypes(
+  days: Array<{
+    calories: number;
+    protein: number;
+    workoutCount: number;
+    override: "training" | "rest" | null;
+  }>,
+): DayTypeComparison {
+  const sides = {
+    training: { days: 0, calories: 0, protein: 0 },
+    rest: { days: 0, calories: 0, protein: 0 },
+  };
+  for (const day of days) {
+    if (day.calories <= 0) continue; // nothing logged — unknown, not zero
+    const side = day.override ?? (day.workoutCount > 0 ? "training" : "rest");
+    sides[side].days += 1;
+    sides[side].calories += day.calories;
+    sides[side].protein += day.protein;
+  }
+  const summarize = (side: { days: number; calories: number; protein: number }) => ({
+    days: side.days,
+    avgCalories: side.days > 0 ? Math.round(side.calories / side.days) : null,
+    avgProtein: side.days > 0 ? Math.round((side.protein / side.days) * 10) / 10 : null,
+  });
+  return { training: summarize(sides.training), rest: summarize(sides.rest) };
+}

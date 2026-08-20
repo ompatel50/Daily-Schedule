@@ -31,7 +31,7 @@ import {
   type DayStatus,
   type ScheduleMode,
 } from "@/lib/logic/schedule";
-import { totalMacros } from "@/lib/logic/nutrition";
+import { compareDayTypes, totalMacros } from "@/lib/logic/nutrition";
 import { parseJson, sum } from "@/lib/utils";
 import { getDayScore, scoreOptionsFor } from "@/server/day-score";
 import { evaluateGoalsForDate } from "@/server/goals";
@@ -571,10 +571,7 @@ export async function getGoalMap(date?: DayKey) {
   let dayType: "training" | "rest" | null = null;
   if (hasVariants) {
     const day = date ?? scheduleSettingsFor(user).today;
-    const trained = await prisma.workout.count({
-      where: { userId: user.id, date: day, status: "completed" },
-    });
-    dayType = trained > 0 ? "training" : "rest";
+    dayType = (await getDayType(user.id, day)).dayType;
   }
 
   const map = new Map<string, (typeof goals)[number]>();
@@ -590,6 +587,26 @@ export async function getGoalMap(date?: DayKey) {
 }
 
 /**
+ * One day's type — the manual override when one exists, else derived from
+ * completed workouts. THE resolver: everything that answers "is this a
+ * training day?" (goal gating reads it via facts, the goal map and the
+ * targets view-model read it here) agrees by construction.
+ */
+export async function getDayType(
+  userId: string,
+  date: DayKey,
+): Promise<{ dayType: "training" | "rest"; overridden: boolean; trainedCount: number }> {
+  const [override, trained] = await Promise.all([
+    prisma.dayTypeOverride.findUnique({ where: { userId_date: { userId, date } } }),
+    prisma.workout.count({ where: { userId, date, status: "completed" } }),
+  ]);
+  if (override?.dayType === "training" || override?.dayType === "rest") {
+    return { dayType: override.dayType, overridden: true, trainedCount: trained };
+  }
+  return { dayType: trained > 0 ? "training" : "rest", overridden: false, trainedCount: trained };
+}
+
+/**
  * The nutrition page's Targets view-model: every active nutrition target
  * (macro goals + the hydration goal), the date's day type, and what was
  * consumed against each. `consumed: null` when nothing was logged — unknown,
@@ -597,22 +614,45 @@ export async function getGoalMap(date?: DayKey) {
  */
 export async function getNutritionTargets(date: DayKey) {
   const user = await getCurrentUser();
-  const [goals, trained, meals, hydrationRows] = await Promise.all([
-    prisma.goal.findMany({
-      where: {
-        userId: user.id,
-        active: true,
-        archivedAt: null,
-        OR: [{ domain: "nutrition" }, { source: "hydration" }],
-      },
-      orderBy: [{ metric: "asc" }, { dayType: "asc" }],
-    }),
-    prisma.workout.count({ where: { userId: user.id, date, status: "completed" } }),
-    getMealsForDay(date),
-    prisma.healthMetric.findMany({ where: { userId: user.id, date, type: "hydration_ml" } }),
-  ]);
+  const comparisonFrom = shiftDay(date, -27);
+  const [goals, dayTypeInfo, meals, hydrationRows, windowSummaries, windowOverrides] =
+    await Promise.all([
+      prisma.goal.findMany({
+        where: {
+          userId: user.id,
+          active: true,
+          archivedAt: null,
+          OR: [{ domain: "nutrition" }, { source: "hydration" }],
+        },
+        orderBy: [{ metric: "asc" }, { dayType: "asc" }],
+      }),
+      getDayType(user.id, date),
+      getMealsForDay(date),
+      prisma.healthMetric.findMany({ where: { userId: user.id, date, type: "hydration_ml" } }),
+      // For the descriptive training-vs-rest comparison: the summary cache
+      // already holds per-day calories/protein/workoutCount — O(28) rows.
+      getSummaries(user.id, comparisonFrom, date),
+      prisma.dayTypeOverride.findMany({
+        where: { userId: user.id, date: { gte: comparisonFrom, lte: date } },
+        select: { date: true, dayType: true },
+      }),
+    ]);
 
-  const dayType: "training" | "rest" = trained > 0 ? "training" : "rest";
+  const { dayType, overridden, trainedCount } = dayTypeInfo;
+  const overrideByDate = new Map(windowOverrides.map((row) => [row.date, row.dayType]));
+  const comparison = compareDayTypes(
+    windowSummaries.map((summary) => ({
+      calories: summary.calories,
+      protein: summary.protein,
+      workoutCount: summary.workoutCount,
+      override:
+        overrideByDate.get(summary.date) === "training"
+          ? ("training" as const)
+          : overrideByDate.get(summary.date) === "rest"
+            ? ("rest" as const)
+            : null,
+    })),
+  );
   const totals = totalMacros(meals.flatMap((meal) => meal.entries));
   const anyFood = meals.some((meal) => meal.entries.length > 0);
   const hydration = aggregateDay("hydration_ml", hydrationRows as HealthRowLike[])?.value ?? null;
@@ -639,6 +679,9 @@ export async function getNutritionTargets(date: DayKey) {
   return {
     date,
     dayType,
+    overridden,
+    trainedCount,
+    comparison,
     hasVariants: goals.some((goal) => goal.dayType !== "all"),
     rows: goals.map((goal) => ({
       id: goal.id,

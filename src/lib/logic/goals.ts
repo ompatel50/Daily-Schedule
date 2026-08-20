@@ -104,15 +104,16 @@ export const GOAL_DAY_TYPE_META: Record<GoalDayType, { label: string; hint: stri
  * override on top; this is the default classification.)
  */
 export function dayTypeOfFacts(
-  facts: Pick<GoalFacts, "workoutCount">,
+  facts: Pick<GoalFacts, "workoutCount" | "dayTypeOverride">,
 ): Exclude<GoalDayType, "all"> {
+  if (facts.dayTypeOverride) return facts.dayTypeOverride;
   return facts.workoutCount > 0 ? "training" : "rest";
 }
 
 /** Whether a goal places any requirement on a day of this type. */
 export function goalAppliesOnDayType(
   goal: Pick<GoalLike, "dayType">,
-  facts: Pick<GoalFacts, "workoutCount">,
+  facts: Pick<GoalFacts, "workoutCount" | "dayTypeOverride">,
 ): boolean {
   const dayType = goal.dayType ?? "all";
   return dayType === "all" || dayType === dayTypeOfFacts(facts);
@@ -188,6 +189,8 @@ export interface GoalFacts {
   workoutCount: number;
   workoutMinutes: number;
   workoutDistanceKm: number;
+  /** Manual day-type override for the day; null = derive from workouts. */
+  dayTypeOverride: "training" | "rest" | null;
   /** Habit ids completed in the period. */
   habitsDone: Set<string>;
   plannerRequired: number;
@@ -210,6 +213,7 @@ export function emptyFacts(): GoalFacts {
     workoutCount: 0,
     workoutMinutes: 0,
     workoutDistanceKm: 0,
+    dayTypeOverride: null,
     habitsDone: new Set(),
     plannerRequired: 0,
     plannerRequiredDone: 0,

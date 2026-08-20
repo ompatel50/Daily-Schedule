@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 
 import {
   baseUnitsFor,
+  compareDayTypes,
   describeServing,
   macroSplit,
   macrosFor,
@@ -126,5 +127,37 @@ describe("describeServing", () => {
 
   it("passes raw units through", () => {
     expect(describeServing(chicken, 150, "g")).toBe("150 g");
+  });
+});
+
+describe("training vs rest comparison", () => {
+  const day = (
+    calories: number,
+    workoutCount: number,
+    override: "training" | "rest" | null = null,
+  ) => ({ calories, protein: calories / 10, workoutCount, override });
+
+  it("averages logged days per side; unlogged days join neither", () => {
+    const result = compareDayTypes([
+      day(2000, 1),
+      day(2200, 2),
+      day(1600, 0),
+      day(0, 1), // trained but logged nothing — unknown, excluded
+      day(0, 0),
+    ]);
+    expect(result.training).toEqual({ days: 2, avgCalories: 2100, avgProtein: 210 });
+    expect(result.rest).toEqual({ days: 1, avgCalories: 1600, avgProtein: 160 });
+  });
+
+  it("an override moves a day to the other side", () => {
+    const result = compareDayTypes([day(2000, 1, "rest"), day(1500, 0, "training")]);
+    expect(result.rest.days).toBe(1);
+    expect(result.rest.avgCalories).toBe(2000);
+    expect(result.training.avgCalories).toBe(1500);
+  });
+
+  it("no logged days at all reports empty sides, not zeros", () => {
+    const result = compareDayTypes([day(0, 1)]);
+    expect(result.training).toEqual({ days: 0, avgCalories: null, avgProtein: null });
   });
 });

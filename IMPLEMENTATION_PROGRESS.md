@@ -6174,7 +6174,7 @@ theme, cookie headers), 390 px overflow sweep clean on /review,
 | 1.3 | Barcode scanning for food                     | ✅ done |
 | 1.4 | Nutrition targets                             | ✅ done |
 | 1.5 | Workout depth                                 | ✅ done |
-| 1.6 | Nutrition ↔ workout linkage                   | ⏳ |
+| 1.6 | Nutrition ↔ workout linkage                   | ✅ done |
 | 2.1 | Unified daily fact layer                      | ⏳ |
 | 2.2 | Correlation insights                          | ⏳ |
 | 2.3 | Spending triggers                             | ⏳ |
@@ -6561,3 +6561,53 @@ Phase 11 fixed for reminders).
 * E2E: rest-timer.spec.ts (the session round trip) green against the
   rebuilt app; full unit suite green. Typecheck, lint (0 errors), build
   green; browser-verified.
+
+## Checkpoint 1.6 — nutrition ↔ workout linkage
+
+### What changed
+
+1.4 already derived a day's type from completed workouts and applied
+day-typed targets automatically; this checkpoint added the missing half —
+the manual override — and the surfaces.
+
+* **Manual override** — new `DayTypeOverride` model (additive migration
+  `day_type_override`; one row per user per day, unique `(userId, date)`;
+  rides backup v13 as its own table, remapped per user on restore).
+  `setDayTypeOverride` (src/server/actions/day-type.ts) upserts or clears
+  it and recomputes the day — day-typed targets gate the day score, so an
+  override changes the score honestly.
+* **One resolver** — `getDayType(userId, date)` in queries.ts (override
+  wins, else any completed workout = training) now backs the goal map and
+  the targets view-model; goal evaluation reads the same answer through
+  facts (`GoalFacts.dayTypeOverride`, loaded per-day by
+  `measureFactsByDay`, consulted by `dayTypeOfFacts`) — so the gate, the
+  streak synthesis, the score exclusions, the stat cards and the Targets
+  card cannot disagree by construction.
+* **The nutrition page shows the day type** — a classification row on the
+  Targets card: "Training day (2 completed workouts)" / "Rest day (no
+  completed workout)" / "(set by you)", with a Select to treat the day as
+  training or rest, or revert to Auto. The card's description continues to
+  name which target set applies.
+* **Descriptive summary** — `compareDayTypes` (pure, O(days)): average
+  calories and protein on training vs rest days over the last 28 days,
+  computed from the summary cache + overrides, counting only days with
+  food logged (an unlogged day is unknown and joins neither side).
+  Rendered as a two-sided block on the Targets card. Strictly descriptive
+  — it reports the relationship and stops; no advice, per the checkpoint's
+  explicit constraint.
+
+### Verification
+
+* Unit: goals +2 (override outranks derivation both ways; gating through
+  the override), nutrition +3 (`compareDayTypes` — logged-days-only
+  averaging, override reassignment, empty sides as null never zero).
+* Integration +4 (tests/integration/nutrition-targets.test.ts): the
+  override flipping the resolved type, the goal map and the targets view,
+  then clearing back to derivation; the day score gating through the
+  override (a training target scoring on an overridden day with NO workout
+  logged); the comparison respecting overrides and skipping unlogged days;
+  cross-user isolation + the backup round trip of the overrides table.
+* E2E: nutrition-targets.spec.ts +1 — the override loop through the real
+  Select (day type shown with provenance, "(set by you)" appears,
+  reverting to Auto clears it).
+* Typecheck, lint (0 errors), build green; browser-verified.

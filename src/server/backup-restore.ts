@@ -86,6 +86,7 @@ const MODEL_BY_TABLE: Record<BackupTable, string> = {
   goals: "Goal",
   goalEntries: "GoalEntry",
   goalMilestones: "GoalMilestone",
+  dayTypeOverrides: "DayTypeOverride",
   scheduleRules: "ScheduleRule",
   scheduleRuleDays: "ScheduleRuleDay",
   scheduleOverrides: "ScheduleOverride",
@@ -567,6 +568,14 @@ export async function restoreBackupForUser(
     if (!mapped) return null;
     if (!inFile("goals", row.goalId)) return null;
     mapped.goalId = map(row.goalId);
+    return own(mapped);
+  });
+
+  // Day-type overrides are plain per-user, per-day rows — no foreign keys
+  // beyond the owner.
+  prepare("dayTypeOverrides", (row) => {
+    const mapped = withId(row);
+    if (!mapped) return null;
     return own(mapped);
   });
 

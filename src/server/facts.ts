@@ -50,7 +50,8 @@ export async function measureFactsByDay(
 
   const range = { gte: from, lte: to };
 
-  const [meals, metrics, workouts, habitLogs, plannerItems, goalEntries] = await Promise.all([
+  const [meals, metrics, workouts, dayTypeOverrides, habitLogs, plannerItems, goalEntries] =
+    await Promise.all([
     prisma.meal.findMany({
       where: { userId, date: range },
       select: {
@@ -79,6 +80,10 @@ export async function measureFactsByDay(
     prisma.workout.findMany({
       where: { userId, date: range, status: "completed" },
       select: { date: true, durationMin: true, distanceKm: true },
+    }),
+    prisma.dayTypeOverride.findMany({
+      where: { userId, date: range },
+      select: { date: true, dayType: true },
     }),
     prisma.habitLog.findMany({
       where: { userId, date: range, status: "done" },
@@ -130,6 +135,14 @@ export async function measureFactsByDay(
     facts.workoutCount += 1;
     facts.workoutMinutes += workout.durationMin;
     facts.workoutDistanceKm += workout.distanceKm ?? 0;
+  }
+
+  // --- day-type overrides -----------------------------------------------------
+  for (const override of dayTypeOverrides) {
+    const facts = byDay.get(override.date);
+    if (!facts) continue;
+    facts.dayTypeOverride =
+      override.dayType === "training" || override.dayType === "rest" ? override.dayType : null;
   }
 
   // --- habits ---------------------------------------------------------------

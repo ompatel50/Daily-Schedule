@@ -65,9 +65,10 @@
  * v13 — `Goal.dayType` (all | training | rest) riding the existing goals
  *      table, for targets that vary between training and rest days, and
  *      `WorkoutSet.supersetGroup` riding the existing workoutSets table so
- *      superset grouping survives without the template. No new tables;
- *      bumped because an older app's restore would silently drop both
- *      columns.
+ *      superset grouping survives without the template, plus the new
+ *      `dayTypeOverrides` table (the manual training/rest answer per day).
+ *      Bumped because an older app's restore would silently drop the
+ *      columns and the table alike.
  *
  * A v1–v12 file restores into a v13 app unchanged: the missing tables simply
  * have no rows, the new columns take their defaults (a v7 health batch arrives
@@ -145,6 +146,7 @@ export const BACKUP_TABLES = [
   "goals",
   "goalEntries",
   "goalMilestones",
+  "dayTypeOverrides",
   "scheduleRules",
   "scheduleRuleDays",
   "scheduleOverrides",

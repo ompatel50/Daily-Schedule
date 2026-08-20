@@ -493,3 +493,24 @@ describe("nutrition target roster", () => {
     expect(metrics).toEqual(["calories", "protein", "carbs", "fat", "fiber", "hydration"]);
   });
 });
+
+describe("day-type override", () => {
+  it("outranks the derived classification in both directions", () => {
+    expect(dayTypeOfFacts(facts({ workoutCount: 2, dayTypeOverride: "rest" }))).toBe("rest");
+    expect(dayTypeOfFacts(facts({ workoutCount: 0, dayTypeOverride: "training" }))).toBe(
+      "training",
+    );
+    // No override — derivation as before.
+    expect(dayTypeOfFacts(facts({ workoutCount: 2 }))).toBe("training");
+  });
+
+  it("gates day-typed goals through the override", () => {
+    const trainingGoal = goal({ dayType: "training" });
+    expect(
+      goalAppliesOnDayType(trainingGoal, facts({ workoutCount: 0, dayTypeOverride: "training" })),
+    ).toBe(true);
+    expect(
+      goalAppliesOnDayType(trainingGoal, facts({ workoutCount: 3, dayTypeOverride: "rest" })),
+    ).toBe(false);
+  });
+});

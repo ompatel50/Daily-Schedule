@@ -114,6 +114,7 @@ model User {
   healthMetrics            HealthMetric[]
   healthRecords            HealthRecord[]
   goals                    Goal[]
+  dayTypeOverrides         DayTypeOverride[]
   daySummaries             CalendarDaySummary[]
   journalEntries           JournalEntry[]
   reminders                Reminder[]
@@ -1390,6 +1391,25 @@ model Goal {
 /// reminder feed, deduplicated by the same delivery ledger as every other
 /// reminder. Both sides are user-scoped; the action layer verifies the goal
 /// belongs to the caller before writing a row.
+/// A manual answer to "is this a training day?", outranking the derived
+/// classification (any completed workout = training). One row per day per
+/// user; deleting the row falls back to the derived answer. Day-typed
+/// nutrition targets and their day-score gating read through this.
+model DayTypeOverride {
+  id     String @id @default(cuid())
+  userId String
+  user   User   @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  date    String // YYYY-MM-DD (operational day, like every date-only record)
+  /// training | rest
+  dayType String
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@unique([userId, date])
+}
+
 model GoalMilestone {
   id     String @id @default(cuid())
   userId String

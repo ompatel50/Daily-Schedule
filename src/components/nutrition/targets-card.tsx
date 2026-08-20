@@ -33,6 +33,7 @@ import {
   type GoalDayType,
 } from "@/lib/logic/goals";
 import { formatNumber, pct } from "@/lib/utils";
+import { setDayTypeOverride } from "@/server/actions/day-type";
 import { deleteGoalPermanently, saveGoalWithSchedule } from "@/server/actions/goals";
 import type { NutritionTargetsView } from "@/server/queries";
 
@@ -57,18 +58,20 @@ export function TargetsCard({ view }: { view: NutritionTargetsView }) {
       accent="text-domain-nutrition"
       description={
         view.hasVariants
-          ? `${view.dayType === "training" ? "Training-day" : "Rest-day"} targets apply today`
+          ? `${view.dayType === "training" ? "Training-day" : "Rest-day"} targets apply`
           : "Your daily numbers — set by you"
       }
       action={<TargetsDialog view={view} />}
     >
+      <DayTypeRow view={view} />
+
       {activeRows.length === 0 ? (
-        <p className="text-sm text-muted-foreground">
+        <p className="mt-3 text-sm text-muted-foreground">
           No targets yet. Set the numbers you want to log against — they&apos;re yours to
           choose, and the app never computes them for you.
         </p>
       ) : (
-        <div className="space-y-3">
+        <div className="mt-3 space-y-3">
           {activeRows.map((row) => (
             <TargetRow key={row.id} row={row} />
           ))}
@@ -80,7 +83,89 @@ export function TargetsCard({ view }: { view: NutritionTargetsView }) {
           for {view.dayType === "training" ? "a rest day" : "a training day"}.
         </p>
       )}
+
+      <DayTypeComparisonBlock view={view} />
     </SectionCard>
+  );
+}
+
+/**
+ * The day's classification, and the way to correct it. Derived from completed
+ * workouts; the Select writes a per-day override (or clears back to "auto").
+ */
+function DayTypeRow({ view }: { view: NutritionTargetsView }) {
+  const router = useRouter();
+  const [pending, startTransition] = React.useTransition();
+
+  const value = view.overridden ? view.dayType : "auto";
+
+  function change(next: string) {
+    startTransition(async () => {
+      const result = await setDayTypeOverride({
+        date: view.date,
+        dayType: next === "auto" ? null : (next as "training" | "rest"),
+      });
+      if (result.ok) router.refresh();
+      else toast.error(result.error);
+    });
+  }
+
+  return (
+    <div className="flex flex-wrap items-center justify-between gap-2 rounded-md bg-muted/40 px-2.5 py-1.5 text-sm">
+      <span>
+        {view.dayType === "training" ? "Training day" : "Rest day"}
+        <span className="ml-1.5 text-xs text-muted-foreground">
+          {view.overridden
+            ? "(set by you)"
+            : view.trainedCount > 0
+              ? `(${view.trainedCount} completed workout${view.trainedCount === 1 ? "" : "s"})`
+              : "(no completed workout)"}
+        </span>
+      </span>
+      <Select value={value} onValueChange={change} disabled={pending}>
+        <SelectTrigger aria-label="Day type" className="h-7 w-auto gap-1 px-2 text-xs">
+          <SelectValue />
+        </SelectTrigger>
+        <SelectContent>
+          <SelectItem value="auto">Auto (from workouts)</SelectItem>
+          <SelectItem value="training">Treat as training day</SelectItem>
+          <SelectItem value="rest">Treat as rest day</SelectItem>
+        </SelectContent>
+      </Select>
+    </div>
+  );
+}
+
+/**
+ * Descriptive only: what intake looked like on each kind of day. No advice —
+ * the app reports the relationship and stops.
+ */
+function DayTypeComparisonBlock({ view }: { view: NutritionTargetsView }) {
+  const { training, rest } = view.comparison;
+  if (training.days === 0 && rest.days === 0) return null;
+
+  const side = (label: string, summary: typeof training) => (
+    <div className="rounded-md border px-2.5 py-2">
+      <p className="text-xs font-medium text-muted-foreground">
+        {label} · {summary.days} day{summary.days === 1 ? "" : "s"} logged
+      </p>
+      <p className="mt-0.5 text-sm">
+        {summary.avgCalories !== null ? `${formatNumber(summary.avgCalories)} kcal` : "—"}
+        {summary.avgProtein !== null ? ` · ${formatNumber(summary.avgProtein, 1)} g protein` : ""}
+      </p>
+    </div>
+  );
+
+  return (
+    <div className="mt-4 space-y-1.5">
+      <p className="text-xs font-medium text-muted-foreground">
+        Training vs rest · last 28 days, averages over logged days
+      </p>
+      <div className="grid grid-cols-2 gap-2">
+        {side("Training days", training)}
+        {side("Rest days", rest)}
+      </div>
+    </div>
   );
 }
 

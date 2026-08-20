@@ -51,3 +51,19 @@ test("set a calorie target, see neutral progress, remove it again", async ({ pag
     .click();
   await expect(page.getByText(/moved to the Trash/).first()).toBeVisible();
 });
+
+test("the day type is shown and can be overridden, then reverted", async ({ page }) => {
+  await page.goto("/nutrition");
+
+  // The classification row names the day type and its provenance.
+  await expect(page.getByText(/Training day|Rest day/).first()).toBeVisible();
+
+  await page.getByLabel("Day type").click();
+  await page.getByRole("option", { name: "Treat as training day" }).click();
+  await expect(page.getByText("(set by you)").first()).toBeVisible();
+
+  // Revert to the derived answer so reruns start clean.
+  await page.getByLabel("Day type").click();
+  await page.getByRole("option", { name: "Auto (from workouts)" }).click();
+  await expect(page.getByText("(set by you)")).toHaveCount(0);
+});

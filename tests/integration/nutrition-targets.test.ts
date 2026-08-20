@@ -7,6 +7,7 @@
 import { beforeAll, beforeEach, describe, expect, it } from "vitest";
 
 import { prisma } from "@/lib/prisma";
+import { setDayTypeOverride } from "@/server/actions/day-type";
 import { saveGoalWithSchedule } from "@/server/actions/goals";
 import { logFood } from "@/server/actions/nutrition";
 import { exportBackup, importBackup } from "@/server/actions/backup";
@@ -243,5 +244,91 @@ describe("isolation", () => {
     actAs(bob);
     const view = await getNutritionTargets(DAY);
     expect(view.rows).toHaveLength(0);
+  });
+});
+
+describe("day-type override (nutrition ↔ workout linkage)", () => {
+  it("flips the resolved day type, the goal map and the targets view", async () => {
+    await saveGoalWithSchedule(targetPayload({ target: 2000 })); // all days
+    await saveGoalWithSchedule(
+      targetPayload({ label: "Calories (training)", target: 2600, dayType: "training" }),
+    );
+
+    // Derived: no workout → rest.
+    expect((await getNutritionTargets(DAY)).dayType).toBe("rest");
+    expect((await getGoalMap(DAY)).get("calories")?.target).toBe(2000);
+
+    // Manual: treat as a training day.
+    const set = await setDayTypeOverride({ date: DAY, dayType: "training" });
+    expect(set.ok).toBe(true);
+    const overridden = await getNutritionTargets(DAY);
+    expect(overridden.dayType).toBe("training");
+    expect(overridden.overridden).toBe(true);
+    expect((await getGoalMap(DAY)).get("calories")?.target).toBe(2600);
+
+    // Clearing falls back to derivation.
+    const cleared = await setDayTypeOverride({ date: DAY, dayType: null });
+    expect(cleared.ok).toBe(true);
+    const back = await getNutritionTargets(DAY);
+    expect(back.dayType).toBe("rest");
+    expect(back.overridden).toBe(false);
+  });
+
+  it("gates the day score through the override", async () => {
+    await saveGoalWithSchedule(
+      targetPayload({
+        metric: "protein",
+        label: "Protein (training)",
+        target: 100,
+        unit: "g",
+        direction: "gte",
+        source: "protein",
+        dayType: "training",
+      }),
+    );
+    await logMeal(600); // logs 10g protein via the fixture food
+
+    const settings = await settingsForAlice();
+    // Rest day (derived): the training target is excluded.
+    const before = await getDayScore(alice.id, DAY, settings);
+    expect(before.exclusions.some((entry) => entry.label === "Protein (training)")).toBe(true);
+
+    // Overriding to training makes it applicable — with NO workout logged.
+    await setDayTypeOverride({ date: DAY, dayType: "training" });
+    const after = await getDayScore(alice.id, DAY, settings);
+    const opportunity = after.categories
+      .find((category) => category.category === "goals")
+      ?.opportunities.find((entry) => entry.label === "Protein (training)");
+    expect(opportunity).toBeDefined();
+  });
+
+  it("the comparison respects overrides and skips unlogged days", async () => {
+    // A logged rest day, manually declared a training day.
+    await logMeal(1500);
+    await setDayTypeOverride({ date: DAY, dayType: "training" });
+    const view = await getNutritionTargets(DAY);
+    expect(view.comparison.training.days).toBe(1);
+    expect(view.comparison.rest.days).toBe(0);
+  });
+
+  it("overrides never cross users and ride the backup", async () => {
+    await setDayTypeOverride({ date: DAY, dayType: "training" });
+
+    actAs(bob);
+    expect((await getNutritionTargets(DAY)).overridden).toBe(false);
+
+    actAs(alice);
+    const exported = await exportBackup();
+    expect(exported.ok).toBe(true);
+    if (!exported.ok) return;
+    const file = exported.data as { data: Record<string, Array<{ dayType?: string; date?: string }>> };
+    expect(file.data.dayTypeOverrides).toHaveLength(1);
+    expect(file.data.dayTypeOverrides[0]).toMatchObject({ date: DAY, dayType: "training" });
+
+    actAs(bob);
+    const restored = await importBackup(exported.data, "merge");
+    expect(restored.ok).toBe(true);
+    const bobOverride = await prisma.dayTypeOverride.findFirst({ where: { userId: bob.id } });
+    expect(bobOverride).toMatchObject({ date: DAY, dayType: "training" });
   });
 });
