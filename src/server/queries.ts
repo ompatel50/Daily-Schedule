@@ -24,6 +24,7 @@ import { emptySearchRows, type SearchRows } from "@/lib/logic/search";
 import { operationalDayWhere } from "@/lib/logic/operational-day";
 import { comparePlannerSpans } from "@/lib/logic/schedule-span";
 import {
+  createStableDateKey,
   describeSchedule,
   resetMinuteOf,
   resolveEffectiveSchedule,
@@ -708,6 +709,8 @@ export async function searchEverything(query: string, limit = 8): Promise<Search
     tags,
     healthMetrics,
     healthRecords,
+    meals,
+    reminders,
   ] = await Promise.all([
       prisma.scheduleItem.findMany({
         where: { userId: user.id, title: { contains: term, mode: "insensitive" } },
@@ -844,6 +847,44 @@ export async function searchEverything(query: string, limit = 8): Promise<Search
         take: limit,
         select: { id: true, kind: true, title: true, subtitle: true, date: true },
       }),
+      // Logged meals match on their free text only. `type` is a fixed
+      // vocabulary ("lunch") that would return every lunch ever logged —
+      // discovery of meal *kinds* belongs to Foods and Meal templates.
+      prisma.meal.findMany({
+        where: {
+          userId: user.id,
+          OR: [
+            { label: { contains: term, mode: "insensitive" } },
+            { notes: { contains: term, mode: "insensitive" } },
+          ],
+        },
+        orderBy: { date: "desc" },
+        take: limit,
+        select: { id: true, date: true, type: true, label: true },
+      }),
+      prisma.reminder.findMany({
+        where: {
+          userId: user.id,
+          OR: [
+            { title: { contains: term, mode: "insensitive" } },
+            { message: { contains: term, mode: "insensitive" } },
+          ],
+        },
+        orderBy: { remindAt: "desc" },
+        take: limit,
+        select: {
+          id: true,
+          title: true,
+          repeat: true,
+          enabled: true,
+          remindAt: true,
+          // A block-born reminder deep-links its planner day. `deletedAt`
+          // rides along because Prisma cannot filter a to-one include —
+          // the mapping below nulls the link when the block sits in the
+          // Trash (src/lib/soft-delete.ts documents this boundary).
+          scheduleItem: { select: { date: true, deletedAt: true } },
+        },
+      }),
     ]);
 
   return {
@@ -885,6 +926,20 @@ export async function searchEverything(query: string, limit = 8): Promise<Search
     documents,
     healthMetrics,
     healthRecords: healthRecords.map((record) => ({ ...record, date: record.date as DayKey })),
+    meals: meals.map((meal) => ({ ...meal, date: meal.date as DayKey })),
+    // The fire day resolves in the USER's timezone here — the pure hit
+    // builder never does timezone math on an instant.
+    reminders: reminders.map((reminder) => ({
+      id: reminder.id,
+      title: reminder.title,
+      repeat: reminder.repeat,
+      enabled: reminder.enabled,
+      day: createStableDateKey(reminder.remindAt, user.timezone),
+      blockDate:
+        reminder.scheduleItem && reminder.scheduleItem.deletedAt === null
+          ? (reminder.scheduleItem.date as DayKey)
+          : null,
+    })),
     tags: tags.map((tag) => ({
       id: tag.id,
       name: tag.name,

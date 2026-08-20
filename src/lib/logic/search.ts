@@ -1,12 +1,14 @@
-import { relativeDayLabel, type DayKey } from "@/lib/date";
+import { daysBetween, relativeDayLabel, type DayKey } from "@/lib/date";
 import {
   ACCOUNT_TYPE_META,
   BILL_KINDS,
   FINANCE_CATEGORY_META,
   HEALTH_RECORD_KIND_META,
+  MEAL_TYPE_META,
   type AccountType,
   type FinanceCategory,
   type HealthRecordKind,
+  type MealType,
 } from "@/lib/enums";
 import { describeExpiryDistance, documentKindLabel } from "@/lib/logic/documents";
 import { formatCents } from "@/lib/logic/money";
@@ -25,6 +27,7 @@ export const SEARCH_GROUPS = [
   "Projects",
   "Tags",
   "Inbox",
+  "Reminders",
   "Documents",
   "Routines",
   "Habits",
@@ -38,6 +41,7 @@ export const SEARCH_GROUPS = [
   "Health",
   "Health records",
   "Templates",
+  "Meals",
   "Foods",
   "Meal templates",
   "Journal",
@@ -55,6 +59,26 @@ export interface SearchHit {
 export interface SearchRows {
   items: Array<{ id: string; title: string; date: DayKey; category: string }>;
   workouts: Array<{ id: string; name: string; date: DayKey; durationMin: number }>;
+  /**
+   * Logged meals, matched on their free text (label/notes) — never on `type`:
+   * "lunch" is a fixed vocabulary word that would return every lunch ever
+   * logged, capped at the per-module bound, which helps nobody.
+   */
+  meals: Array<{ id: string; date: DayKey; type: string; label: string | null }>;
+  /**
+   * `day` is the reminder's next fire date resolved in the USER's timezone by
+   * the server — the pure layer never does timezone math on an instant.
+   * `blockDate` is set when the reminder was born from a (live) planner
+   * block: the hit then deep-links that day's planner.
+   */
+  reminders: Array<{
+    id: string;
+    title: string;
+    repeat: string;
+    enabled: boolean;
+    day: DayKey | null;
+    blockDate: DayKey | null;
+  }>;
   foods: Array<{ id: string; name: string; brand: string | null; category: string; calories: number }>;
   habits: Array<{ id: string; name: string; category: string; archived: boolean }>;
   goals: Array<{ id: string; label: string; domain: string; unit: string; target: number }>;
@@ -113,6 +137,8 @@ export function emptySearchRows(): SearchRows {
   return {
     items: [],
     workouts: [],
+    meals: [],
+    reminders: [],
     foods: [],
     habits: [],
     goals: [],
@@ -136,37 +162,84 @@ export function emptySearchRows(): SearchRows {
 }
 
 /**
- * Flatten matching rows into grouped, render-ready hits. Group order is the
- * declaration order of SEARCH_GROUPS: the things you act on daily first.
+ * How strongly a hit's title matches the typed term. Levels, not a continuum:
+ * whole-title match beats prefix beats word-start beats mid-word; a hit whose
+ * title does not contain the term at all (it matched on a secondary field —
+ * notes, payee, issuer…) scores zero and relies on recency alone.
  */
-export function buildSearchHits(rows: SearchRows, referenceDay: DayKey): SearchHit[] {
-  const hits: SearchHit[] = [];
+function exactness(title: string, term: string): number {
+  const haystack = title.trim().toLowerCase();
+  const needle = term.trim().toLowerCase();
+  if (!needle) return 0;
+  if (haystack === needle) return 3;
+  if (haystack.startsWith(needle)) return 2;
+  const index = haystack.indexOf(needle);
+  if (index === -1) return 0;
+  const boundary = !/[a-z0-9]/.test(haystack[index - 1] ?? "");
+  return boundary ? 1 : 0.5;
+}
+
+/**
+ * Recency weight in (0, 1]: 1 for the reference day itself, halving every
+ * week of distance (past or future — "next week's bill" is as current as
+ * "last week's transaction"). Hits with no natural date score 0 and keep
+ * their fetch order.
+ */
+function recency(day: DayKey | null, referenceDay: DayKey): number {
+  if (!day) return 0;
+  return 1 / (1 + Math.abs(daysBetween(day, referenceDay)) / 7);
+}
+
+/**
+ * Flatten matching rows into grouped, render-ready hits.
+ *
+ * Ranking: hits stay grouped by source module (the palette renders one section
+ * per group). Groups order by their best *title* match for the typed term —
+ * an exact title hit floats its whole group — falling back to SEARCH_GROUPS
+ * declaration order (the things you act on daily first). Within a group, hits
+ * order by match strength then recency, so "chipotle" puts today's Chipotle
+ * transaction above one from March. Bounding happens at fetch time: the server
+ * caps every module's rows, so one noisy model cannot crowd out the rest.
+ */
+export function buildSearchHits(rows: SearchRows, referenceDay: DayKey, term = ""): SearchHit[] {
+  const entries: Array<{ hit: SearchHit; day: DayKey | null; index: number }> = [];
+  const hits = {
+    push(hit: SearchHit, day: DayKey | null = null) {
+      entries.push({ hit, day, index: entries.length });
+    },
+  };
 
   for (const item of rows.items) {
-    hits.push({
-      id: `item-${item.id}`,
-      group: "Planner",
-      title: item.title,
-      subtitle: `${relativeDayLabel(item.date, referenceDay)} · ${item.category}`,
-      href: `/planner?date=${item.date}`,
-    });
+    hits.push(
+      {
+        id: `item-${item.id}`,
+        group: "Planner",
+        title: item.title,
+        subtitle: `${relativeDayLabel(item.date, referenceDay)} · ${item.category}`,
+        href: `/planner?date=${item.date}`,
+      },
+      item.date,
+    );
   }
 
   for (const task of rows.tasks) {
-    hits.push({
-      id: `task-${task.id}`,
-      group: "Tasks",
-      title: task.title,
-      subtitle:
-        task.status !== "open"
-          ? task.status === "done"
-            ? "Done"
-            : "Dropped"
-          : task.dueDate
-            ? describeDueDistance(task.dueDate, referenceDay)
-            : "Open",
-      href: "/tasks",
-    });
+    hits.push(
+      {
+        id: `task-${task.id}`,
+        group: "Tasks",
+        title: task.title,
+        subtitle:
+          task.status !== "open"
+            ? task.status === "done"
+              ? "Done"
+              : "Dropped"
+            : task.dueDate
+              ? describeDueDistance(task.dueDate, referenceDay)
+              : "Open",
+        href: "/tasks",
+      },
+      task.dueDate,
+    );
   }
 
   for (const project of rows.projects) {
@@ -206,15 +279,35 @@ export function buildSearchHits(rows: SearchRows, referenceDay: DayKey): SearchH
     });
   }
 
+  for (const reminder of rows.reminders) {
+    const repeatLabel = REMINDER_REPEAT_LABELS[reminder.repeat] ?? "Reminder";
+    const when = reminder.day ? ` · ${relativeDayLabel(reminder.day, referenceDay)}` : "";
+    hits.push(
+      {
+        id: `reminder-${reminder.id}`,
+        group: "Reminders",
+        title: reminder.title,
+        subtitle: `${repeatLabel}${when}${reminder.enabled ? "" : " · off"}`,
+        href: reminder.blockDate
+          ? `/planner?date=${reminder.blockDate}`
+          : "/settings#reminders",
+      },
+      reminder.day,
+    );
+  }
+
   for (const document of rows.documents) {
     const kindLabel = documentKindLabel(document.kind);
-    hits.push({
-      id: `doc-${document.id}`,
-      group: "Documents",
-      title: document.name,
-      subtitle: `${document.issuer ? `${document.issuer} · ` : ""}${kindLabel} · ${describeExpiryDistance(document.expiryDate, referenceDay)}`,
-      href: "/inbox",
-    });
+    hits.push(
+      {
+        id: `doc-${document.id}`,
+        group: "Documents",
+        title: document.name,
+        subtitle: `${document.issuer ? `${document.issuer} · ` : ""}${kindLabel} · ${describeExpiryDistance(document.expiryDate, referenceDay)}`,
+        href: "/inbox",
+      },
+      document.expiryDate,
+    );
   }
 
   for (const routine of rows.routines) {
@@ -249,13 +342,16 @@ export function buildSearchHits(rows: SearchRows, referenceDay: DayKey): SearchH
 
   for (const bill of rows.bills) {
     const kindLabel = bill.kind === BILL_KINDS[1] ? "Subscription" : "Bill";
-    hits.push({
-      id: `bill-${bill.id}`,
-      group: "Bills",
-      title: bill.name,
-      subtitle: `${kindLabel} · ${formatCents(bill.amount)} · ${describeDueDistance(bill.nextDueDate, referenceDay)}`,
-      href: "/finance",
-    });
+    hits.push(
+      {
+        id: `bill-${bill.id}`,
+        group: "Bills",
+        title: bill.name,
+        subtitle: `${kindLabel} · ${formatCents(bill.amount)} · ${describeDueDistance(bill.nextDueDate, referenceDay)}`,
+        href: "/finance",
+      },
+      bill.nextDueDate,
+    );
   }
 
   for (const account of rows.accounts) {
@@ -272,13 +368,16 @@ export function buildSearchHits(rows: SearchRows, referenceDay: DayKey): SearchH
   for (const transaction of rows.transactions) {
     const categoryLabel =
       FINANCE_CATEGORY_META[transaction.category as FinanceCategory]?.label ?? transaction.category;
-    hits.push({
-      id: `txn-${transaction.id}`,
-      group: "Transactions",
-      title: transaction.payee || categoryLabel,
-      subtitle: `${relativeDayLabel(transaction.date, referenceDay)} · ${formatCents(transaction.amount, transaction.currency)}`,
-      href: "/finance",
-    });
+    hits.push(
+      {
+        id: `txn-${transaction.id}`,
+        group: "Transactions",
+        title: transaction.payee || categoryLabel,
+        subtitle: `${relativeDayLabel(transaction.date, referenceDay)} · ${formatCents(transaction.amount, transaction.currency)}`,
+        href: "/finance",
+      },
+      transaction.date,
+    );
   }
 
   for (const budget of rows.budgets) {
@@ -304,13 +403,16 @@ export function buildSearchHits(rows: SearchRows, referenceDay: DayKey): SearchH
   }
 
   for (const workout of rows.workouts) {
-    hits.push({
-      id: `workout-${workout.id}`,
-      group: "Workouts",
-      title: workout.name,
-      subtitle: `${relativeDayLabel(workout.date, referenceDay)} · ${workout.durationMin} min`,
-      href: `/workouts?date=${workout.date}`,
-    });
+    hits.push(
+      {
+        id: `workout-${workout.id}`,
+        group: "Workouts",
+        title: workout.name,
+        subtitle: `${relativeDayLabel(workout.date, referenceDay)} · ${workout.durationMin} min`,
+        href: `/workouts?date=${workout.date}`,
+      },
+      workout.date,
+    );
   }
 
   for (const metric of rows.healthMetrics) {
@@ -318,23 +420,29 @@ export function buildSearchHits(rows: SearchRows, referenceDay: DayKey): SearchH
       metric.latestValue !== null && metric.latestDate !== null
         ? `${formatTarget(metric.latestValue)}${metric.unit ? ` ${metric.unit}` : ""} on ${relativeDayLabel(metric.latestDate, referenceDay)}`
         : "no readings yet";
-    hits.push({
-      id: `health-${metric.type}`,
-      group: "Health",
-      title: metric.label,
-      subtitle: `${metric.count} reading${metric.count === 1 ? "" : "s"} · ${latest}`,
-      href: `/health/${metric.group}`,
-    });
+    hits.push(
+      {
+        id: `health-${metric.type}`,
+        group: "Health",
+        title: metric.label,
+        subtitle: `${metric.count} reading${metric.count === 1 ? "" : "s"} · ${latest}`,
+        href: `/health/${metric.group}`,
+      },
+      metric.latestDate,
+    );
   }
 
   for (const record of rows.healthRecords) {
-    hits.push({
-      id: `hrec-${record.id}`,
-      group: "Health records",
-      title: record.title,
-      subtitle: `${HEALTH_RECORD_KIND_META[record.kind as HealthRecordKind]?.label ?? record.kind} · ${relativeDayLabel(record.date, referenceDay)}${record.subtitle ? ` · ${record.subtitle}` : ""}`,
-      href: "/health/vitals",
-    });
+    hits.push(
+      {
+        id: `hrec-${record.id}`,
+        group: "Health records",
+        title: record.title,
+        subtitle: `${HEALTH_RECORD_KIND_META[record.kind as HealthRecordKind]?.label ?? record.kind} · ${relativeDayLabel(record.date, referenceDay)}${record.subtitle ? ` · ${record.subtitle}` : ""}`,
+        href: "/health/vitals",
+      },
+      record.date,
+    );
   }
 
   for (const template of rows.workoutTemplates) {
@@ -345,6 +453,20 @@ export function buildSearchHits(rows: SearchRows, referenceDay: DayKey): SearchH
       subtitle: `Workout template · ${template.type}`,
       href: "/workouts",
     });
+  }
+
+  for (const meal of rows.meals) {
+    const typeLabel = MEAL_TYPE_META[meal.type as MealType]?.label ?? meal.type;
+    hits.push(
+      {
+        id: `meal-${meal.id}`,
+        group: "Meals",
+        title: meal.label?.trim() || typeLabel,
+        subtitle: `${relativeDayLabel(meal.date, referenceDay)} · ${meal.label?.trim() ? typeLabel : "Meal"}`,
+        href: `/nutrition?date=${meal.date}`,
+      },
+      meal.date,
+    );
   }
 
   for (const food of rows.foods) {
@@ -368,18 +490,53 @@ export function buildSearchHits(rows: SearchRows, referenceDay: DayKey): SearchH
   }
 
   for (const entry of rows.journal) {
-    hits.push({
-      id: `journal-${entry.id}`,
-      group: "Journal",
-      title: entry.title || entry.content.slice(0, 60),
-      subtitle: relativeDayLabel(entry.date, referenceDay),
-      href: `/today?date=${entry.date}`,
-    });
+    hits.push(
+      {
+        id: `journal-${entry.id}`,
+        group: "Journal",
+        title: entry.title || entry.content.slice(0, 60),
+        subtitle: relativeDayLabel(entry.date, referenceDay),
+        href: `/today?date=${entry.date}`,
+      },
+      entry.date,
+    );
   }
 
-  const order = new Map(SEARCH_GROUPS.map((group, index) => [group, index]));
-  return hits.sort((a, b) => (order.get(a.group) ?? 99) - (order.get(b.group) ?? 99));
+  // Rank. Exactness dominates recency within a group (a full level apart is
+  // always decisive); a group floats only on title-match strength, never on
+  // recency alone, so declaration order stays meaningful when nothing stands
+  // out. Sorts are stable, so fetch order breaks every remaining tie.
+  const declared = new Map(SEARCH_GROUPS.map((group, index) => [group, index]));
+  const scored = entries.map((entry) => ({
+    ...entry,
+    score: exactness(entry.hit.title, term) * 2 + recency(entry.day, referenceDay),
+    exact: exactness(entry.hit.title, term),
+  }));
+  const groupRank = new Map<SearchGroup, number>();
+  for (const entry of scored) {
+    const current = groupRank.get(entry.hit.group) ?? 0;
+    if (entry.exact > current) groupRank.set(entry.hit.group, entry.exact);
+  }
+  scored.sort((a, b) => {
+    if (a.hit.group !== b.hit.group) {
+      const rankDelta =
+        (groupRank.get(b.hit.group) ?? 0) - (groupRank.get(a.hit.group) ?? 0);
+      if (rankDelta !== 0) return rankDelta;
+      return (declared.get(a.hit.group) ?? 99) - (declared.get(b.hit.group) ?? 99);
+    }
+    if (b.score !== a.score) return b.score - a.score;
+    return a.index - b.index;
+  });
+  return scored.map((entry) => entry.hit);
 }
+
+/** Human labels for Reminder.repeat — the fixed vocabulary from validation. */
+const REMINDER_REPEAT_LABELS: Record<string, string> = {
+  none: "Reminder",
+  daily: "Daily reminder",
+  weekdays: "Weekday reminder",
+  weekly: "Weekly reminder",
+};
 
 function formatTarget(value: number): string {
   return Number.isInteger(value) ? String(value) : String(Math.round(value * 10) / 10);

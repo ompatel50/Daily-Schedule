@@ -78,6 +78,10 @@ describe("global search hits", () => {
             date: "2026-07-20",
           },
         ],
+        meals: [{ id: "m", date: "2026-07-29", type: "custom", label: "Pre-workout shake" }],
+        reminders: [
+          { id: "rem", title: "Take out bins", repeat: "weekly", enabled: true, day: "2026-07-31", blockDate: null },
+        ],
       }),
       REF,
     );
@@ -107,6 +111,12 @@ describe("global search hits", () => {
     expect(byGroup.get("Health")?.subtitle).toContain("412 readings");
     expect(byGroup.get("Health records")?.href).toBe("/health/vitals");
     expect(byGroup.get("Health records")?.subtitle).toContain("Medication");
+    // A logged meal lands on its own day's nutrition page.
+    expect(byGroup.get("Meals")?.href).toBe("/nutrition?date=2026-07-29");
+    expect(byGroup.get("Meals")?.title).toBe("Pre-workout shake");
+    // Reminders are managed from Settings — the hit deep-links the anchor.
+    expect(byGroup.get("Reminders")?.href).toBe("/settings#reminders");
+    expect(byGroup.get("Reminders")?.subtitle).toBe("Weekly reminder · Tomorrow");
     // every declared group appeared, and ids are namespaced uniquely
     expect(new Set(hits.map((hit) => hit.group)).size).toBe(SEARCH_GROUPS.length);
     expect(new Set(hits.map((hit) => hit.id)).size).toBe(hits.length);
@@ -220,5 +230,126 @@ describe("global search hits", () => {
       REF,
     );
     expect(hits[0].subtitle).toContain("archived");
+  });
+
+  it("labels meals without a custom label by their type", () => {
+    const [hit] = buildSearchHits(
+      rows({ meals: [{ id: "m", date: "2026-07-30", type: "lunch", label: null }] }),
+      REF,
+    );
+    expect(hit.title).toBe("Lunch");
+    expect(hit.subtitle).toBe("Today · Meal");
+  });
+
+  it("shows a disabled reminder as off", () => {
+    const [hit] = buildSearchHits(
+      rows({
+        reminders: [{ id: "r", title: "Stretch", repeat: "none", enabled: false, day: "2026-07-30", blockDate: null }],
+      }),
+      REF,
+    );
+    expect(hit.subtitle).toBe("Reminder · Today · off");
+  });
+
+  it("deep-links a block-born reminder to its planner day", () => {
+    const [hit] = buildSearchHits(
+      rows({
+        reminders: [
+          {
+            id: "r",
+            title: "Leave for the airport",
+            repeat: "none",
+            enabled: true,
+            day: "2026-08-02",
+            blockDate: "2026-08-02",
+          },
+        ],
+      }),
+      REF,
+    );
+    expect(hit.href).toBe("/planner?date=2026-08-02");
+  });
+
+  describe("ranking", () => {
+    it("floats the group holding an exact title match above earlier groups", () => {
+      const hits = buildSearchHits(
+        rows({
+          // "Tasks" is declared before "Transactions", but the transaction's
+          // payee IS the query — its group should lead.
+          tasks: [{ id: "t", title: "Email Chipotle catering", status: "open", dueDate: null }],
+          transactions: [
+            {
+              id: "tx",
+              payee: "Chipotle",
+              category: "dining",
+              date: "2026-07-29",
+              amount: -1240,
+              currency: "USD",
+            },
+          ],
+        }),
+        REF,
+        "chipotle",
+      );
+      expect(hits[0].group).toBe("Transactions");
+      expect(hits[1].group).toBe("Tasks");
+    });
+
+    it("keeps declaration order when no group holds a stronger title match", () => {
+      const hits = buildSearchHits(
+        rows({
+          tasks: [{ id: "t", title: "Buy protein powder", status: "open", dueDate: null }],
+          foods: [{ id: "f", name: "Whey protein bar", brand: null, category: "snack", calories: 210 }],
+        }),
+        REF,
+        "protein",
+      );
+      // Both are word-boundary matches — Tasks is declared first and stays first.
+      expect(hits[0].group).toBe("Tasks");
+    });
+
+    it("ranks exact over prefix over substring within a group", () => {
+      const hits = buildSearchHits(
+        rows({
+          tasks: [
+            { id: "a", title: "Tax return checklist", status: "open", dueDate: null },
+            { id: "b", title: "Tax", status: "open", dueDate: null },
+            { id: "c", title: "File the tax", status: "open", dueDate: null },
+          ],
+        }),
+        REF,
+        "tax",
+      );
+      expect(hits.map((hit) => hit.id)).toEqual(["task-b", "task-a", "task-c"]);
+    });
+
+    it("breaks equal-strength ties by recency", () => {
+      const hits = buildSearchHits(
+        rows({
+          items: [
+            { id: "old", title: "Standup", date: "2026-03-01", category: "work" },
+            { id: "recent", title: "Standup", date: "2026-07-29", category: "work" },
+          ],
+        }),
+        REF,
+        "standup",
+      );
+      expect(hits[0].id).toBe("item-recent");
+      expect(hits[1].id).toBe("item-old");
+    });
+
+    it("never reorders groups on recency alone", () => {
+      const hits = buildSearchHits(
+        rows({
+          tasks: [{ id: "t", title: "Renew gym membership", status: "open", dueDate: null }],
+          workouts: [{ id: "w", name: "Morning gym session", date: REF, durationMin: 45 }],
+        }),
+        REF,
+        "gym",
+      );
+      // Both match at word-boundary strength; the workout is more recent but
+      // recency must not pull "Workouts" above the earlier-declared "Tasks".
+      expect(hits[0].group).toBe("Tasks");
+    });
   });
 });

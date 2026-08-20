@@ -82,7 +82,10 @@ export default async function SettingsPage() {
           }}
         />
 
-        <NotificationsPanel />
+        {/* Anchored so reminder search hits can land here directly. */}
+        <div id="reminders">
+          <NotificationsPanel />
+        </div>
         <PushPanel />
         <SecurityPanel
           minPasswordLength={MIN_PASSWORD_LENGTH}

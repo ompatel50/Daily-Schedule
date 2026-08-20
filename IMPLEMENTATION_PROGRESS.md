@@ -6155,3 +6155,116 @@ row-scoped name, two-step purge, the topbar/page heading collision on
 /review). Browser verification: nonce CSP live-probed (hydration, charts,
 theme, cookie headers), 390 px overflow sweep clean on /review,
 /settings/trash, /settings/data, /finance, /planner.
+
+# Master update: capture, depth, intelligence, automation
+
+> Two phases on branch `claude/personal-os-master-update-v1ex1p`, started
+> from `main` after PR #25 merged. Standing rules: additive and reversible
+> migrations, pure logic in `src/lib/logic`, data access in `src/server`,
+> never duplicated across components, no placeholder UI, multi-user
+> isolation everywhere, each checkpoint ends green (typecheck, lint, unit +
+> integration, targeted E2E, browser verification) with this file updated.
+
+## Checkpoint checklist (master update)
+
+| #   | Checkpoint                                    | Status |
+|-----|-----------------------------------------------|--------|
+| 1.1 | Cross-module search verification              | ✅ done |
+| 1.2 | Quick-capture everywhere                      | ⏳ |
+| 1.3 | Barcode scanning for food                     | ⏳ |
+| 1.4 | Nutrition targets                             | ⏳ |
+| 1.5 | Workout depth                                 | ⏳ |
+| 1.6 | Nutrition ↔ workout linkage                   | ⏳ |
+| 2.1 | Unified daily fact layer                      | ⏳ |
+| 2.2 | Correlation insights                          | ⏳ |
+| 2.3 | Spending triggers                             | ⏳ |
+| 2.4 | Anomaly nudges                                | ⏳ |
+| 2.5 | Automations: rules engine core                | ⏳ |
+| 2.6 | Rule builder UI, library, integration pass    | ⏳ |
+
+## Checkpoint 1.1 — cross-module search verification
+
+### The audit, before any change
+
+`buildSearchHits` / `searchEverything` turned out to be far broader than the
+task assumed — the Preview-3 Phase 14 and later hosted-upgrade phases had
+already extended it. Coverage found on entry (21 sources): planner items
+(title), tasks (title), projects (name), tags (name, with usage counts),
+inbox items (title+notes), documents (name+issuer), routines/schedule
+templates (name), habits (name), goals (label), bills (name), accounts
+(name), transactions (payee+notes), budgets (category key), savings goals
+(name), workouts (name), health metrics (fixed vocabulary, matched in
+memory, one grouped query), health records (title+subtitle+kind), workout
+templates (name), foods (searchKey), meal templates (name), journal
+(title+content).
+
+**Missing from the required roster: logged meals and reminders.** Everything
+else on the task's list was already spanned. Also missing: any exact-match
+or recency weighting — group order was fixed declaration order, within-group
+order was whatever the fetch's orderBy produced.
+
+Soft-delete was already respected everywhere: `searchEverything` reads
+through the guarded client (src/lib/soft-delete.ts), which AND-merges
+`deletedAt: null` into every findMany on the 16 guarded models. Bounding was
+already per-module (`take: limit`, default 8, shared by all sources).
+
+### What changed
+
+* **Meals** search on their free text only — `label` + `notes`, never `type`:
+  "lunch" is fixed vocabulary that would return every lunch ever logged.
+  Hit → `/nutrition?date=<meal's day>`. **Reminders** search on
+  `title` + `message`; the hit shows the repeat kind, the next fire day
+  (resolved in the *user's* timezone via `createStableDateKey` in the server
+  — the pure layer does no timezone math on instants) and an "off" marker
+  when disabled. A block-born reminder (scheduleItemId set, block live)
+  deep-links its planner day; otherwise the hit lands on
+  `/settings#reminders` (new anchor on the notifications panel, the
+  `#backup` precedent). The to-one block include selects `deletedAt` and the
+  server nulls the link when the block is trashed — the documented
+  soft-delete boundary pattern.
+* **Ranking** (pure, in `buildSearchHits`, which now takes the typed term):
+  exactness levels — whole-title match > prefix > word-start > mid-word >
+  secondary-field-only — dominate; recency (halving per week of distance
+  from the user's today, past or future) breaks ties within a level. Groups
+  stay contiguous (the palette renders sections); a group floats above
+  declaration order only on title-match strength, never on recency alone.
+  Sorts are stable, so fetch order breaks remaining ties. The palette and
+  the assistant's `search` tool both pass the term through.
+* **Bounding** unchanged and now pinned by an integration test: every module
+  capped at the shared limit, a noisy module cannot starve a quiet one.
+* **Palette**: new groups render automatically (the component maps whatever
+  groups arrive, cmdk provides the keyboard navigation); verified in the
+  browser.
+
+### Performance decision, documented
+
+Every one of the ~23 per-keystroke queries is (a) pre-filtered by an indexed
+`userId` column, (b) capped with `take`, and (c) debounced 180 ms in the
+palette. The text matchers are `ILIKE '%term%'`, which no btree can serve —
+a pg_trgm GIN index could, but adding `CREATE EXTENSION` to a migration
+makes deploys depend on database superuser policy, a real portability cost
+against a query set that is already bounded per user per module. Decision:
+no new indexes; the matcher's *filter* columns (userId scoping) were audited
+and all already indexed — Meal has `(userId, date)` + `(userId, deletedAt)`,
+Reminder `(userId, enabled)` + `(userId, deletedAt)`.
+
+### Verification
+
+* Unit: tests/search.test.ts **9 → 18** — the two new sources' hit shapes
+  (meal label/type titling, reminder repeat/off subtitles, the planner
+  deep-link), and the ranking contract: exact floats its group, equal
+  strength keeps declaration order, exact > prefix > substring within a
+  group, recency breaks ties, recency alone never reorders groups.
+* Integration: new tests/integration/search.test.ts (7) — meals matched on
+  label/notes and NOT on type; reminders matched on title/message with the
+  fire day resolved; the block-born reminder's planner day carried, and
+  nulled when the block is trashed; trashed rows (task, meal, reminder,
+  planner block) invisible with a live control; the per-module bound with a
+  noisy module not starving a quiet one; meals/reminders never crossing
+  users.
+* E2E: new tests/e2e/search-palette.spec.ts — the palette loop a browser
+  alone can prove: capture → `/` shortcut → debounced server search →
+  grouped section → keyboard-only selection → navigation → cleanup.
+* Typecheck, lint, full unit + integration suites green; browser-verified
+  (palette groups for the new sources, ranking, keyboard navigation,
+  reminder anchor).
