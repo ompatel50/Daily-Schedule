@@ -27,7 +27,7 @@ import {
 import { ASSISTANT_LIMITS, ASSISTANT_MODES } from "./logic/assistant";
 import { FOOD_PROVIDERS } from "./logic/food";
 import { parseRule } from "./logic/recurrence";
-import { GOAL_COMPARISONS, GOAL_SOURCES } from "./logic/goals";
+import { GOAL_COMPARISONS, GOAL_DAY_TYPES, GOAL_SOURCES } from "./logic/goals";
 import { TEMPLATE_APPLY_MODES } from "./logic/planner";
 import { DAYPARTS, OVERRIDE_KINDS, SCHEDULE_MODES } from "./logic/schedule";
 import { NUTRIENT_BASES } from "./logic/servings";
@@ -35,7 +35,7 @@ import { normalizeTagNames, TAG_NAME_MAX, TASK_TAG_LIMIT } from "./logic/tasks";
 
 /** Every server action validates its input through one of these schemas. */
 
-const dayKey = z
+export const dayKey = z
   .string()
   .regex(/^\d{4}-\d{2}-\d{2}$/, "Expected a YYYY-MM-DD date");
 
@@ -220,6 +220,12 @@ export const foodItemSchema = z.object({
   extraNutrients: z.record(z.string(), nutrientAmount(1_000_000)).optional(),
   category: z.enum(FOOD_CATEGORIES).default("other"),
   favorite: z.boolean().optional(),
+  /** Retail EAN/UPC digits, so a scan of this product resolves locally. */
+  barcode: z
+    .string()
+    .regex(/^\d{8,14}$/, "A barcode is 8–14 digits")
+    .nullable()
+    .optional(),
 });
 
 /**
@@ -298,6 +304,17 @@ export const setExerciseRestSchema = z.object({
   workoutId: z.string().min(1),
   exercise: z.string().trim().min(1, "Exercise is required").max(120),
   restSec: z.number().int().min(0).max(3600).nullable(),
+});
+
+/** Superset key for one exercise's sets; null takes it out of its group. */
+export const setExerciseGroupSchema = z.object({
+  workoutId: z.string().min(1),
+  exercise: z.string().trim().min(1, "Exercise is required").max(120),
+  group: z
+    .string()
+    .trim()
+    .regex(/^[A-Z]$/, "One letter, A–Z")
+    .nullable(),
 });
 
 /**
@@ -427,6 +444,8 @@ export const goalSchema = z.object({
   period: z.enum(["daily", "weekly", "monthly"]).default("daily"),
   source: z.enum(GOAL_SOURCES).default("manual"),
   sourceRef: z.string().max(60).nullable().optional(),
+  /** all | training | rest — which kind of day the goal applies to. */
+  dayType: z.enum(GOAL_DAY_TYPES).default("all"),
   startDate: dayKey.nullable().optional(),
   endDate: dayKey.nullable().optional(),
   active: z.boolean().default(true),

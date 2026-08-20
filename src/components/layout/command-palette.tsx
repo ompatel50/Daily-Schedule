@@ -40,6 +40,11 @@ import { useUIStore } from "@/store/ui-store";
 const MAX_RECENTS = 6;
 const RECENTS_KEY = "palette-recents";
 
+/** The cmdk identity of a search hit — one definition for item and selection. */
+function hitValue(hit: SearchHit): string {
+  return `${hit.title} ${hit.subtitle} ${hit.id}`;
+}
+
 export function CommandPalette() {
   const router = useRouter();
   const { setTheme, resolvedTheme } = useTheme();
@@ -53,6 +58,10 @@ export function CommandPalette() {
   const [hits, setHits] = React.useState<SearchHit[]>([]);
   const [searching, setSearching] = React.useState(false);
   const [recents, setRecents] = React.useState<string[]>([]);
+  // Controlled cmdk selection. The static commands never leave the list, so
+  // without this, arriving search hits render ABOVE a still-selected command
+  // and Enter would run the command instead of following the top-ranked hit.
+  const [selected, setSelected] = React.useState("");
 
   // Debounced server search — the palette stays responsive while the database
   // is hit at most every 180 ms.
@@ -62,6 +71,7 @@ export function CommandPalette() {
     if (term.length < 2) {
       setHits([]);
       setSearching(false);
+      setSelected("");
       return;
     }
 
@@ -70,7 +80,10 @@ export function CommandPalette() {
     const handle = setTimeout(async () => {
       try {
         const results = await globalSearch(term);
-        if (!cancelled) setHits(results);
+        if (!cancelled) {
+          setHits(results);
+          if (results.length > 0) setSelected(hitValue(results[0]));
+        }
       } finally {
         if (!cancelled) setSearching(false);
       }
@@ -131,8 +144,8 @@ export function CommandPalette() {
     () => [
       {
         id: "quick-add",
-        label: "Quick add to planner",
-        keywords: "quick add task schedule item new",
+        label: "Capture anything",
+        keywords: "quick add capture task schedule item expense food workout habit new",
         icon: <Plus />,
         shortcut: "N",
         action: () => openQuickAdd(),
@@ -224,7 +237,13 @@ export function CommandPalette() {
     : [];
 
   return (
-    <CommandDialog open={open} onOpenChange={setOpen} shouldFilter={query.trim().length < 2}>
+    <CommandDialog
+      open={open}
+      onOpenChange={setOpen}
+      shouldFilter={query.trim().length < 2}
+      value={selected}
+      onValueChange={setSelected}
+    >
       <CommandInput
         placeholder="Search your data, or jump to a page…"
         value={query}
@@ -246,7 +265,7 @@ export function CommandPalette() {
             {groupHits.map((hit) => (
               <CommandItem
                 key={hit.id}
-                value={`${hit.title} ${hit.subtitle} ${hit.id}`}
+                value={hitValue(hit)}
                 onSelect={() => run(() => router.push(hit.href))}
               >
                 <ArrowRight className="opacity-50" />

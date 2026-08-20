@@ -81,6 +81,95 @@ export interface GoalLike {
   period: string;
   source: string;
   sourceRef: string | null;
+  /** One of GOAL_DAY_TYPES; optional so older shapes read as "all". */
+  dayType?: string;
+}
+
+// ---------------------------------------------------------------------------
+// Day types — targets that vary between training and rest days
+// ---------------------------------------------------------------------------
+
+export const GOAL_DAY_TYPES = ["all", "training", "rest"] as const;
+export type GoalDayType = (typeof GOAL_DAY_TYPES)[number];
+
+export const GOAL_DAY_TYPE_META: Record<GoalDayType, { label: string; hint: string }> = {
+  all: { label: "Every day", hint: "applies whatever the day looks like" },
+  training: { label: "Training days", hint: "days with a completed workout" },
+  rest: { label: "Rest days", hint: "days without a completed workout" },
+};
+
+/**
+ * A day's type, derived from what was actually logged: any completed workout
+ * makes it a training day. (The nutrition↔workout linkage adds a manual
+ * override on top; this is the default classification.)
+ */
+export function dayTypeOfFacts(
+  facts: Pick<GoalFacts, "workoutCount" | "dayTypeOverride">,
+): Exclude<GoalDayType, "all"> {
+  if (facts.dayTypeOverride) return facts.dayTypeOverride;
+  return facts.workoutCount > 0 ? "training" : "rest";
+}
+
+/** Whether a goal places any requirement on a day of this type. */
+export function goalAppliesOnDayType(
+  goal: Pick<GoalLike, "dayType">,
+  facts: Pick<GoalFacts, "workoutCount" | "dayTypeOverride">,
+): boolean {
+  const dayType = goal.dayType ?? "all";
+  return dayType === "all" || dayType === dayTypeOfFacts(facts);
+}
+
+// ---------------------------------------------------------------------------
+// Nutrition targets — the daily numbers the nutrition page logs against
+// ---------------------------------------------------------------------------
+
+/**
+ * The metrics the nutrition Targets editor offers. Each is a goal whose
+ * source the app can measure from logged data on its own — nothing manual.
+ * Water rides the hydration health metric; everything else sums from meals.
+ */
+export const NUTRITION_TARGET_METRICS: ReadonlyArray<{
+  metric: string;
+  source: GoalSource;
+  label: string;
+  unit: string;
+}> = [
+  { metric: "calories", source: "calories", label: "Calories", unit: "kcal" },
+  { metric: "protein", source: "protein", label: "Protein", unit: "g" },
+  { metric: "carbs", source: "carbs", label: "Carbs", unit: "g" },
+  { metric: "fat", source: "fat", label: "Fat", unit: "g" },
+  { metric: "fiber", source: "fiber", label: "Fibre", unit: "g" },
+  { metric: "hydration", source: "hydration", label: "Water", unit: "ml" },
+];
+
+/**
+ * Neutral progress-against-target phrasing: consumed, remaining, over/under —
+ * numbers only, no judgement. `consumed: null` means nothing was logged,
+ * which is unknown, not zero.
+ */
+export function describeTargetRemaining(
+  goal: Pick<GoalLike, "direction" | "target" | "targetMax" | "unit">,
+  consumed: number | null,
+): string {
+  if (consumed === null) return "not logged yet";
+  const fmt = (value: number) => formatValue(value, goal.unit);
+  switch (goal.direction) {
+    case "lte": {
+      const diff = goal.target - consumed;
+      return diff >= 0 ? `${fmt(diff)} left` : `${fmt(-diff)} over`;
+    }
+    case "range": {
+      const max = goal.targetMax ?? goal.target;
+      if (consumed < goal.target) return `${fmt(goal.target - consumed)} to the range`;
+      if (consumed > max) return `${fmt(consumed - max)} over`;
+      return "in range";
+    }
+    case "gte":
+    default: {
+      const diff = goal.target - consumed;
+      return diff > 0 ? `${fmt(diff)} to go` : "met";
+    }
+  }
 }
 
 /**
@@ -100,6 +189,8 @@ export interface GoalFacts {
   workoutCount: number;
   workoutMinutes: number;
   workoutDistanceKm: number;
+  /** Manual day-type override for the day; null = derive from workouts. */
+  dayTypeOverride: "training" | "rest" | null;
   /** Habit ids completed in the period. */
   habitsDone: Set<string>;
   plannerRequired: number;
@@ -122,6 +213,7 @@ export function emptyFacts(): GoalFacts {
     workoutCount: 0,
     workoutMinutes: 0,
     workoutDistanceKm: 0,
+    dayTypeOverride: null,
     habitsDone: new Set(),
     plannerRequired: 0,
     plannerRequiredDone: 0,
@@ -280,6 +372,8 @@ export interface GoalEvaluation {
   status: DayStatus;
   /** Whether this goal places any requirement on this date at all. */
   applicable: boolean;
+  /** True when `applicable` is false purely because of the day-type gate. */
+  dayTypeExcluded: boolean;
   measurement: Measurement;
   outcome: GoalOutcome;
   /** Set for weekly goals and times-per-week schedules. */
@@ -371,7 +465,12 @@ export function buildGoalEvaluation(params: {
   const measurement = measureGoal(goal, weekly ? params.weekFacts : params.facts);
   const outcome = evaluateGoal(goal, measurement);
 
-  const applicable = occurrence.active || occurrence.flexible || Boolean(weekly);
+  // Day-type gate: a training-day target simply is not a requirement on a
+  // rest day (and vice versa) — checked against the DATE's own facts, never
+  // the week's.
+  const dayTypeExcluded = !goalAppliesOnDayType(goal, params.facts);
+  const applicable =
+    !dayTypeExcluded && (occurrence.active || occurrence.flexible || Boolean(weekly));
 
   return {
     goal,
@@ -379,6 +478,7 @@ export function buildGoalEvaluation(params: {
     occurrence,
     status,
     applicable,
+    dayTypeExcluded,
     measurement,
     outcome,
     weekly,

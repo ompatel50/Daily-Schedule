@@ -449,6 +449,56 @@ describe("barcode lookup", () => {
     expect(outcome.food).toBeNull();
     expect(outcome.failure?.reason).toBe("unavailable");
   });
+
+  it("falls through to a USDA Branded GTIN when Open Food Facts misses", async () => {
+    stubFetch((url) =>
+      url.includes("openfoodfacts")
+        ? { json: offMissingProductResponse }
+        : { json: usdaSearchResponse },
+    );
+
+    const outcome = await lookupFoodByBarcode(USER, "0016000275287");
+
+    expect(outcome.food).toMatchObject({ provider: "usda", origin: "usda" });
+    expect(outcome.food?.name.toLowerCase()).toContain("granola");
+    expect(outcome.failure).toBeNull();
+  });
+
+  it("matches GTINs across zero-padding differences", async () => {
+    stubFetch((url) =>
+      url.includes("openfoodfacts")
+        ? { json: offMissingProductResponse }
+        : { json: usdaSearchResponse },
+    );
+
+    // The fixture's gtinUpc is "0016000275287" — a scanner reporting the
+    // 11-digit-plus-check UPC-A form must still match it.
+    const outcome = await lookupFoodByBarcode(USER, "016000275287");
+    expect(outcome.food).toMatchObject({ provider: "usda" });
+  });
+
+  it("never lets a fuzzy USDA text hit impersonate the product", async () => {
+    stubFetch((url) =>
+      url.includes("openfoodfacts")
+        ? { json: offMissingProductResponse }
+        : { json: usdaSearchResponse },
+    );
+
+    // A real code that matches none of the returned GTINs: definitive miss.
+    const outcome = await lookupFoodByBarcode(USER, "9999999999999");
+    expect(outcome.food).toBeNull();
+    expect(outcome.failure).toBeNull();
+  });
+
+  it("rescues an Open Food Facts outage through the USDA fallback", async () => {
+    stubFetch((url) =>
+      url.includes("openfoodfacts") ? { status: 503 } : { json: usdaSearchResponse },
+    );
+
+    const outcome = await lookupFoodByBarcode(USER, "0016000275287");
+    expect(outcome.food).toMatchObject({ provider: "usda" });
+    expect(outcome.failure).toBeNull();
+  });
 });
 
 // ---------------------------------------------------------------------------

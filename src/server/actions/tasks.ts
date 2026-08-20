@@ -4,11 +4,12 @@ import { revalidatePath } from "next/cache";
 
 import { getCurrentUser, prisma } from "@/lib/db";
 import { PROJECT_STATUSES, type ProjectStatus } from "@/lib/enums";
-import { operationalDayOfRecord } from "@/lib/logic/operational-day";
+import { operationalDayOf, operationalDayOfRecord } from "@/lib/logic/operational-day";
 import { resetMinuteOf } from "@/lib/logic/schedule";
 import { trashStamp } from "@/lib/soft-delete";
+import { dispatchAutomationEvent, taskContext } from "@/server/automation";
 import { scheduleSettingsFor } from "@/server/schedule";
-import { recomputeDay } from "@/server/summaries";
+import { recomputeDay, recomputeDaysFor } from "@/server/summaries";
 import { linkedBlocksToComplete, nextDueAfterCompletion } from "@/lib/logic/tasks";
 import {
   fail,
@@ -22,6 +23,22 @@ import {
 
 function revalidateAll() {
   revalidatePath("/", "layout");
+}
+
+/**
+ * The operational days a task's summary facts live on: created/completed
+ * count on the day containing that instant (through the user's reset), the
+ * open-due count on the due date itself.
+ */
+function taskFactDays(
+  task: { createdAt: Date; completedAt: Date | null; dueDate: string | null },
+  timezone: string | null | undefined,
+  resetMinute: number,
+): string[] {
+  const days = [operationalDayOf(task.createdAt, timezone, resetMinute)];
+  if (task.completedAt) days.push(operationalDayOf(task.completedAt, timezone, resetMinute));
+  if (task.dueDate) days.push(task.dueDate);
+  return days;
 }
 
 // --- projects ----------------------------------------------------------------
@@ -168,6 +185,20 @@ export async function saveTask(input: unknown): Promise<ActionResult<{ id: strin
       await db.task.update({ where: { id }, data: payload });
       await syncTaskTags(db, id, tagIds);
     });
+    // A moved due date changes the open-due count on both days.
+    if (existing.dueDate !== payload.dueDate) {
+      await recomputeDaysFor(
+        user.id,
+        [existing.dueDate, payload.dueDate].filter((day): day is string => day !== null),
+      );
+    }
+    await dispatchAutomationEvent(user.id, {
+      module: "task",
+      event: "updated",
+      recordId: id,
+      context: taskContext({ ...payload, status: existing.status }),
+      date: scheduleSettingsFor(user).today,
+    });
     revalidateAll();
     return succeed({ id });
   }
@@ -179,6 +210,15 @@ export async function saveTask(input: unknown): Promise<ActionResult<{ id: strin
       sortOrder: await prisma.task.count({ where: { userId: user.id, status: "open" } }),
       tags: tagIds.length ? { create: tagIds.map((tagId) => ({ tagId })) } : undefined,
     },
+  });
+  const settings = scheduleSettingsFor(user);
+  await recomputeDaysFor(user.id, taskFactDays(created, settings.timezone, resetMinuteOf(settings)));
+  await dispatchAutomationEvent(user.id, {
+    module: "task",
+    event: "created",
+    recordId: created.id,
+    context: taskContext(created),
+    date: settings.today,
   });
   revalidateAll();
   return succeed({ id: created.id });
@@ -252,20 +292,40 @@ export async function completeTask(id: string): Promise<ActionResult<CompleteTas
     return reflectCompletionOnBlocks(db, user.id, id, outcome, settings.today, reset);
   });
 
-  for (const day of reflected.days) {
-    await recomputeDay(user.id, day);
-  }
+  // The reflected blocks' days, plus the completion instant's day (the
+  // completed count), the old due date (open-due drops) and, for a repeat,
+  // the day the due date advanced onto.
+  await recomputeDaysFor(user.id, [
+    ...reflected.days,
+    settings.today,
+    ...(task.dueDate ? [task.dueDate] : []),
+    ...(nextDue ? [nextDue] : []),
+  ]);
   revalidateAll();
   return succeed({ status: outcome, nextDue: nextDue ?? null, blocksCompleted: reflected.count });
 }
 
 export async function reopenTask(id: string): Promise<ActionResult<null>> {
   const user = await getCurrentUser();
+  // Read the completion stamp before it is cleared — its day loses a
+  // completed count when this reopens.
+  const task = await prisma.task.findFirst({
+    where: { id, userId: user.id, status: { in: ["done", "dropped"] } },
+    select: { completedAt: true, dueDate: true },
+  });
   const result = await prisma.task.updateMany({
     where: { id, userId: user.id, status: { in: ["done", "dropped"] } },
     data: { status: "open", completedAt: null },
   });
   if (result.count === 0) return fail("Task not found");
+  if (task) {
+    const settings = scheduleSettingsFor(user);
+    const days = task.dueDate ? [task.dueDate] : [];
+    if (task.completedAt) {
+      days.push(operationalDayOf(task.completedAt, settings.timezone, resetMinuteOf(settings)));
+    }
+    await recomputeDaysFor(user.id, days);
+  }
   revalidateAll();
   return succeed(null);
 }
@@ -273,11 +333,16 @@ export async function reopenTask(id: string): Promise<ActionResult<null>> {
 /** Deliberately not doing it — distinct from done, and it breaks no repeat. */
 export async function dropTask(id: string): Promise<ActionResult<null>> {
   const user = await getCurrentUser();
+  const task = await prisma.task.findFirst({
+    where: { id, userId: user.id, status: "open" },
+    select: { dueDate: true },
+  });
   const result = await prisma.task.updateMany({
     where: { id, userId: user.id, status: "open" },
     data: { status: "dropped", completedAt: null },
   });
   if (result.count === 0) return fail("Task not found");
+  if (task?.dueDate) await recomputeDay(user.id, task.dueDate);
   revalidateAll();
   return succeed(null);
 }
@@ -291,12 +356,22 @@ export async function dropTask(id: string): Promise<ActionResult<null>> {
  */
 export async function deleteTask(id: string): Promise<ActionResult<null>> {
   const user = await getCurrentUser();
-  const task = await prisma.task.findFirst({ where: { id, userId: user.id }, select: { id: true } });
-  if (!task) return succeed(null);
+  // The task and its subtasks all vanish from the day summaries' counts.
+  const affected = await prisma.task.findMany({
+    where: { userId: user.id, OR: [{ id }, { parentId: id }] },
+    select: { createdAt: true, completedAt: true, dueDate: true },
+  });
+  if (affected.length === 0) return succeed(null);
   await prisma.task.updateMany({
     where: { userId: user.id, OR: [{ id }, { parentId: id }] },
     data: { deletedAt: trashStamp() },
   });
+  const settings = scheduleSettingsFor(user);
+  const reset = resetMinuteOf(settings);
+  await recomputeDaysFor(
+    user.id,
+    affected.flatMap((task) => taskFactDays(task, settings.timezone, reset)),
+  );
   revalidateAll();
   return succeed(null);
 }
@@ -323,6 +398,7 @@ export async function rollTaskForward(
       repeatAnchor: task.repeat === "none" ? task.repeatAnchor : toDate,
     },
   });
+  await recomputeDaysFor(user.id, [...(task.dueDate ? [task.dueDate] : []), toDate]);
   revalidateAll();
   return succeed({ dueDate: toDate });
 }
@@ -372,6 +448,10 @@ export async function scheduleTaskOnPlanner(
     },
   });
 
+  await recomputeDay(
+    user.id,
+    operationalDayOfRecord(created, resetMinuteOf(scheduleSettingsFor(user))),
+  );
   revalidateAll();
   return succeed({ scheduleItemId: created.id, date });
 }

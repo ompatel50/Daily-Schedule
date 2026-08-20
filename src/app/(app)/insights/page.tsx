@@ -13,6 +13,8 @@ import {
 } from "lucide-react";
 
 import { MetricEntry } from "@/components/health/metric-entry";
+import { CorrelationsCard } from "@/components/insights/correlations-card";
+import { ObservationsCard } from "@/components/insights/observations-card";
 import { TrendAreaChart, TrendLineChart } from "@/components/shared/charts";
 import { PageHeader } from "@/components/shared/page-header";
 import { SectionCard } from "@/components/shared/section-card";
@@ -29,8 +31,9 @@ import {
   getUser,
   getWindowStats,
 } from "@/server/queries";
+import { getAnomalyContextFor } from "@/server/anomalies";
 import { getMetricSeries } from "@/server/health";
-import { getWeeklyReview } from "@/server/insights";
+import { getCorrelationReport, getWeeklyReview } from "@/server/insights";
 import { scheduleSettingsFor } from "@/server/schedule";
 import { getWeekBounds } from "@/lib/logic/schedule";
 
@@ -45,23 +48,26 @@ export default async function InsightsPage() {
   const date = settings.today;
   const week = getWeekBounds(date, settings);
 
-  const [thisWeek, lastWeek, habits, goals, metricSeries, review] = await Promise.all([
-    getWindowStats(shiftDay(date, -6), date),
-    getWindowStats(shiftDay(date, -13), shiftDay(date, -7)),
-    getHabitsWithStats(date, { historyDays: 90 }),
-    getGoalMap(),
-    // Aggregated per-day values from the one health module — a day with rows
-    // from several sources charts one number, in the user's display units.
-    getMetricSeries(shiftDay(date, -(TREND_DAYS - 1)), date, [
-      "body_weight",
-      "steps",
-      "sleep_hours",
-      "resting_hr",
-    ]),
-    // Uses the configured week start, so "this week" means the same thing here
-    // as it does for a times-per-week goal.
-    getWeeklyReview(user.id, week.start, week.end, settings),
-  ]);
+  const [thisWeek, lastWeek, habits, goals, metricSeries, review, correlations] =
+    await Promise.all([
+      getWindowStats(shiftDay(date, -6), date),
+      getWindowStats(shiftDay(date, -13), shiftDay(date, -7)),
+      getHabitsWithStats(date, { historyDays: 90 }),
+      getGoalMap(),
+      // Aggregated per-day values from the one health module — a day with rows
+      // from several sources charts one number, in the user's display units.
+      getMetricSeries(shiftDay(date, -(TREND_DAYS - 1)), date, [
+        "body_weight",
+        "steps",
+        "sleep_hours",
+        "resting_hr",
+      ]),
+      // Uses the configured week start, so "this week" means the same thing here
+      // as it does for a times-per-week goal.
+      getWeeklyReview(user.id, week.start, week.end, settings),
+      getCorrelationReport(user.id, date),
+    ]);
+  const anomalies = await getAnomalyContextFor(user, settings);
 
   const calorieGoal = goals.get("calories")?.target ?? 0;
   const workoutGoal = goals.get("workouts_per_week")?.target ?? 0;
@@ -307,6 +313,16 @@ export default async function InsightsPage() {
               </div>
             )}
           </SectionCard>
+
+          <ObservationsCard
+            observations={anomalies.report.observations}
+            ready={anomalies.report.ready}
+            muted={Object.entries(anomalies.preferences)
+              .filter(([, preference]) => preference?.muted)
+              .map(([category]) => category as never)}
+          />
+
+          <CorrelationsCard report={correlations} />
 
           <SectionCard
             title="Body weight"

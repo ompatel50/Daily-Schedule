@@ -5,6 +5,8 @@ import { revalidatePath } from "next/cache";
 import { getCurrentUser, prisma } from "@/lib/db";
 import { trashStamp } from "@/lib/soft-delete";
 import { INBOX_STATUSES, type InboxStatus } from "@/lib/enums";
+import { dispatchAutomationEvent, inboxContext } from "@/server/automation";
+import { scheduleSettingsFor } from "@/server/schedule";
 import {
   convertInboxItemSchema,
   fail,
@@ -34,6 +36,13 @@ export async function saveInboxItem(input: unknown): Promise<ActionResult<{ id: 
   }
 
   const created = await prisma.inboxItem.create({ data: { ...payload, userId: user.id } });
+  await dispatchAutomationEvent(user.id, {
+    module: "inbox",
+    event: "created",
+    recordId: created.id,
+    context: inboxContext(created),
+    date: scheduleSettingsFor(user).today,
+  });
   revalidateAll();
   return succeed({ id: created.id });
 }

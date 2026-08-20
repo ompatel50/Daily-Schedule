@@ -126,7 +126,7 @@ const searchTool: AssistantTool = {
   async run(ctx, args) {
     const { query, limit } = args as { query: string; limit?: number };
     const rows = await searchEverything(query, limit ?? 5);
-    const hits = buildSearchHits(rows, ctx.settings.today);
+    const hits = buildSearchHits(rows, ctx.settings.today, query);
     return toolOk({
       hits: hits.map((hit) => ({
         group: hit.group,

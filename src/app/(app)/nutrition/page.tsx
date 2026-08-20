@@ -15,12 +15,14 @@ import { formatDay, isDayKey, lastNDays, shiftDay } from "@/lib/date";
 import { macroSplit, totalMacros } from "@/lib/logic/nutrition";
 import { availableUnits } from "@/lib/logic/servings";
 import { average, formatNumber, pct } from "@/lib/utils";
+import { TargetsCard } from "@/components/nutrition/targets-card";
 import {
   getToday,
   getDayNutrition,
   getFoodShortcuts,
   getGoalMap,
   getMealTemplates,
+  getNutritionTargets,
   getUser,
 } from "@/server/queries";
 import { getSummaries } from "@/server/summaries";
@@ -54,13 +56,17 @@ export default async function NutritionPage({
   const date = params.date && isDayKey(params.date) ? params.date : todayKey;
 
   const user = await getUser();
-  const [{ meals, totals }, shortcuts, templates, goals, weekSummaries] = await Promise.all([
-    getDayNutrition(date),
-    getFoodShortcuts(),
-    getMealTemplates(),
-    getGoalMap(),
-    getSummaries(user.id, shiftDay(date, -13), date),
-  ]);
+  const [{ meals, totals }, shortcuts, templates, goals, weekSummaries, targets] =
+    await Promise.all([
+      getDayNutrition(date),
+      getFoodShortcuts(),
+      getMealTemplates(),
+      // Day-aware: with training/rest variants, the DATE's set is the one
+      // the stat cards measure against.
+      getGoalMap(date),
+      getSummaries(user.id, shiftDay(date, -13), date),
+      getNutritionTargets(date),
+    ]);
 
   const calorieGoal = goals.get("calories")?.target ?? 0;
   const proteinGoal = goals.get("protein")?.target ?? 0;
@@ -212,6 +218,8 @@ export default async function NutritionPage({
         </div>
 
         <div className="space-y-6 lg:col-span-2">
+          <TargetsCard view={targets} />
+
           <SectionCard title="Macro split" icon={PieChart} accent="text-domain-nutrition">
             <MacroDonut protein={totals.protein} carbs={totals.carbs} fat={totals.fat} />
             <div className="mt-2 grid grid-cols-3 gap-2 text-center">

@@ -155,10 +155,14 @@ describe("backup validation", () => {
     expect(result.warnings.join(" ")).not.toContain("unrecognised");
   });
 
-  it("v12 adds goal milestones and the habit pause window", () => {
+  it("v12 milestones/pause; v13 day types; v14 anomaly prefs; v15 rules", () => {
     // The bump exists so an older app refuses a newer file rather than
-    // silently dropping the parts it does not know.
-    expect(BACKUP_VERSION).toBe(12);
+    // silently dropping the parts it does not know. v13 carries Goal.dayType
+    // and dayTypeOverrides (1.4/1.6); v14 the anomalyPreferences table
+    // (2.4); v15 the automationRules table (2.5).
+    expect(BACKUP_VERSION).toBe(15);
+    expect(BACKUP_TABLES).toContain("anomalyPreferences");
+    expect(BACKUP_TABLES).toContain("automationRules");
     expect(BACKUP_TABLES).toContain("goalMilestones");
     // Milestones restore AFTER their goals — parents before children.
     expect(BACKUP_TABLES.indexOf("goalMilestones")).toBeGreaterThan(

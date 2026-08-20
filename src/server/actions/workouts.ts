@@ -4,8 +4,14 @@ import { revalidatePath } from "next/cache";
 
 import { getCurrentUser, prisma } from "@/lib/db";
 import { trashStamp } from "@/lib/soft-delete";
-import { parseTimeToMinute } from "@/lib/date";
-import { estimateCaloriesBurned, expandTemplateExercises, type TemplateExercise } from "@/lib/logic/workouts";
+import { parseTimeToMinute, shiftDay } from "@/lib/date";
+import {
+  estimateCaloriesBurned,
+  exerciseProgression,
+  expandTemplateExercises,
+  type ExerciseProgressionPoint,
+  type TemplateExercise,
+} from "@/lib/logic/workouts";
 import { lbToKg } from "@/lib/logic/nutrition";
 import {
   fail,
@@ -15,6 +21,8 @@ import {
   workoutTemplateSchema,
   type ActionResult,
 } from "@/lib/validation";
+import { scheduleSettingsFor } from "@/server/schedule";
+import { dispatchAutomationEvent, workoutContext } from "@/server/automation";
 import { recomputeDay } from "@/server/summaries";
 
 function revalidateAll() {
@@ -90,6 +98,13 @@ export async function saveWorkout(input: unknown): Promise<ActionResult<{ id: st
   if (addToPlanner) await syncPlannerItem(user.id, workout.id);
 
   await recomputeDay(user.id, workout.date);
+  await dispatchAutomationEvent(user.id, {
+    module: "workout",
+    event: id ? "updated" : "created",
+    recordId: workout.id,
+    context: workoutContext(workout),
+    date: workout.date,
+  });
   revalidateAll();
   return succeed({ id: workout.id });
 }
@@ -345,5 +360,46 @@ export async function repeatWorkout(id: string, date: string): Promise<ActionRes
       completed: true,
     })),
     addToPlanner: true,
+  });
+}
+
+/** How far back the progression view reads. A year is enough to see a trend. */
+const PROGRESSION_WINDOW_DAYS = 365;
+
+/**
+ * One exercise's history — top weight, estimated 1RM, reps and volume per
+ * day — for the progression chart. Reads completed sets of completed
+ * workouts inside a bounded window: O(window sets), never O(all history).
+ */
+export async function getExerciseProgression(
+  exercise: string,
+): Promise<ActionResult<{ exercise: string; points: ExerciseProgressionPoint[] }>> {
+  const name = exercise.trim();
+  if (!name || name.length > 120) return fail("Pick an exercise");
+
+  const user = await getCurrentUser();
+  // The user's operational today, never the host clock (repo rule) — on a
+  // year-long window the difference is cosmetic, but conventions hold.
+  const todayKey = scheduleSettingsFor(user).today;
+  const rows = await prisma.workoutSet.findMany({
+    where: {
+      exercise: { equals: name, mode: "insensitive" },
+      completed: true,
+      workout: {
+        userId: user.id,
+        status: "completed",
+        date: { gte: shiftDay(todayKey, -PROGRESSION_WINDOW_DAYS) },
+      },
+    },
+    select: { reps: true, weightKg: true, workout: { select: { date: true } } },
+    orderBy: { workout: { date: "asc" } },
+    take: 2000,
+  });
+
+  return succeed({
+    exercise: name,
+    points: exerciseProgression(
+      rows.map((row) => ({ date: row.workout.date, reps: row.reps, weightKg: row.weightKg })),
+    ),
   });
 }

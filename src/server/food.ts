@@ -625,9 +625,11 @@ export interface BarcodeLookupOutcome {
 }
 
 /**
- * One food by its retail barcode: local rows first (a product scanned before
- * is already cached and works offline), then Open Food Facts, the provider
- * that indexes by barcode. Only the digits leave the machine.
+ * One food by its retail barcode, through the existing provider chain: local
+ * rows first (a product scanned before is already cached and works offline),
+ * then Open Food Facts — the provider that indexes packaged goods by barcode
+ * — then USDA, whose Branded records carry a GTIN/UPC and cover products OFF
+ * misses. Only the digits leave the machine.
  */
 export async function lookupFoodByBarcode(
   userId: string,
@@ -655,17 +657,51 @@ export async function lookupFoodByBarcode(
     };
   }
 
-  const source = providerById("off");
-  if (!source || !source.status().configured) {
-    return {
-      food: null,
-      failure: { reason: "not_configured", message: "Barcode lookup is not available right now." },
-    };
+  const off = providerById("off");
+  const offConfigured = off != null && off.status().configured;
+  let offFailure: ProviderFailure | null = offConfigured
+    ? null
+    : { reason: "not_configured", message: "Barcode lookup is not available right now." };
+
+  if (off != null && offConfigured) {
+    const outcome = await off.details(code);
+    if (outcome.ok) {
+      if (outcome.data) {
+        return { food: { ...outcome.data, isRecent: false, origin: "off" }, failure: null };
+      }
+    } else {
+      offFailure = outcome.failure;
+    }
   }
 
-  const outcome = await source.details(code);
-  if (!outcome.ok) return { food: null, failure: outcome.failure };
-  if (!outcome.data) return { food: null, failure: null };
+  // OFF had no answer — a USDA Branded record may still carry this GTIN. The
+  // barcode travels as a plain search term (their index matches gtinUpc), and
+  // the match is verified against the normalised record's own barcode so a
+  // fuzzy text hit can never impersonate the product.
+  const usda = providerById("usda");
+  if (usda && usda.status().configured) {
+    const outcome = await usda.search(code, { limit: 5, preferBranded: true });
+    if (outcome.ok) {
+      const match = outcome.data.find(
+        (candidate) => candidate.barcode && matchesBarcode(candidate.barcode, code),
+      );
+      if (match) return { food: { ...match, isRecent: false, origin: "usda" }, failure: null };
+    } else if (offFailure === null) {
+      // OFF answered "no such product" definitively; surface the USDA outage
+      // only when it was the remaining hope.
+      offFailure = outcome.failure;
+    }
+  }
 
-  return { food: { ...outcome.data, isRecent: false, origin: "off" }, failure: null };
+  return { food: null, failure: offFailure };
+}
+
+/**
+ * GTIN equality across zero-padding: the same product appears as
+ * "036000291452" (UPC-A) and "0036000291452" (GTIN-13) depending on source.
+ */
+function matchesBarcode(a: string, b: string): boolean {
+  const left = a.replace(/\D/g, "").replace(/^0+/, "");
+  const right = b.replace(/\D/g, "").replace(/^0+/, "");
+  return left !== "" && left === right;
 }

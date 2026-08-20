@@ -12,6 +12,7 @@ import {
   type ImportBatchView,
 } from "@/components/finance/finance-board";
 import type { SavingsGoalView } from "@/components/finance/savings-goal-dialog";
+import { SpendingPatternsCard } from "@/components/finance/spending-patterns-card";
 import type { TransactionView } from "@/components/finance/transaction-dialog";
 import { PageHeader } from "@/components/shared/page-header";
 import { StatCard } from "@/components/shared/stat-card";
@@ -20,12 +21,20 @@ import { toDayKey } from "@/lib/date";
 import { formatCents } from "@/lib/logic/money";
 import { pluralize } from "@/lib/utils";
 import { BILL_SOON_DAYS, getFinanceOverview } from "@/server/finance";
+import { getSpendingReport } from "@/server/insights";
+import { getUser } from "@/server/queries";
+import { scheduleSettingsFor } from "@/server/schedule";
 
 export const metadata: Metadata = { title: "Finance" };
 export const dynamic = "force-dynamic";
 
 export default async function FinancePage() {
-  const overview = await getFinanceOverview();
+  const user = await getUser();
+  const [overview, spendingReport] = await Promise.all([
+    getFinanceOverview(),
+    // The user's operational today — never the host clock.
+    getSpendingReport(user.id, scheduleSettingsFor(user).today),
+  ]);
 
   // The largest currency group leads the stats; other currencies are never
   // summed into it — that would be a fictional number.
@@ -224,6 +233,10 @@ export default async function FinancePage() {
           primaryCurrency={primaryCurrency}
         />
       </Suspense>
+
+      <div className="mt-6">
+        <SpendingPatternsCard report={spendingReport} currency={primaryCurrency} />
+      </div>
     </div>
   );
 }

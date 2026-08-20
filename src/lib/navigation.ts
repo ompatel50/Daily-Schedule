@@ -176,7 +176,7 @@ export const NAV_GROUPS: Array<{ label: string; hrefs: string[] }> = [
 
 export const KEYBOARD_SHORTCUTS: Array<{ keys: string; action: string; group: string }> = [
   { keys: "⌘K / Ctrl K", action: "Open command palette", group: "Global" },
-  { keys: "N", action: "Quick add to the planner", group: "Global" },
+  { keys: "N", action: "Capture anything — plans, tasks, money, food, training", group: "Global" },
   { keys: "/", action: "Search everything", group: "Global" },
   { keys: "?", action: "Show keyboard shortcuts", group: "Global" },
   { keys: "G then D", action: "Go to dashboard", group: "Navigation" },

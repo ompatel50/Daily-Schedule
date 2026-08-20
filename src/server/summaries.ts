@@ -16,11 +16,19 @@
  */
 import { prisma } from "@/lib/prisma";
 import { type DayKey, dayRange, daysBetween, shiftDay, weekRange } from "@/lib/date";
+import {
+  dailyFactFromSummary,
+  financeDayFacts,
+  plannerMinuteFacts,
+  workoutDayFacts,
+} from "@/lib/logic/daily-facts";
 import { aggregateDayAll } from "@/lib/logic/health";
-import { operationalDayWhere } from "@/lib/logic/operational-day";
+import { centsOrLegacy } from "@/lib/logic/money";
+import { operationalDayWhere, operationalDayWindow } from "@/lib/logic/operational-day";
 import { resetMinuteOf } from "@/lib/logic/schedule";
 import { round, sum } from "@/lib/utils";
 import { getDayScore, scoreOptionsFor } from "@/server/day-score";
+import { evaluateGoalsForDate } from "@/server/goals";
 import { getHabitDayTotals } from "@/server/habits";
 import { scheduleSettingsFor } from "@/server/schedule";
 
@@ -46,21 +54,52 @@ export async function recomputeDay(userId: string, date: DayKey): Promise<void> 
   });
   const settings = scheduleSettingsFor(user ?? { weekStartsOn: 1, timezone: "UTC" });
 
-  const [items, habitTotals, meals, workouts, metrics, dayScore] = await Promise.all([
+  const scoreOptions = scoreOptionsFor(user ?? { scoreWeights: null, scoreOptionalTasks: false });
+  // Tasks live on instants (createdAt/completedAt); the operational-day
+  // window converts the day key to real bounds — never hand-subtracted hours.
+  const dayWindow = operationalDayWindow(date, settings.timezone, resetMinuteOf(settings));
+
+  const [
+    items,
+    habitTotals,
+    meals,
+    workouts,
+    metrics,
+    dayScore,
+    goalEvaluations,
+    transactions,
+    journal,
+    dayTypeOverride,
+    tasksCreated,
+    tasksCompleted,
+    tasksDueOpen,
+  ] = await Promise.all([
     // Planner records of the OPERATIONAL day — includes the after-midnight
     // tail on the next calendar date. Every other record type here stores its
     // operational day directly in `date`.
     prisma.scheduleItem.findMany({
       where: { userId, ...operationalDayWhere(date, resetMinuteOf(settings)) },
-      select: { status: true },
+      select: {
+        status: true,
+        allDay: true,
+        startMinute: true,
+        endMinute: true,
+        category: true,
+      },
     }),
     // Habit due-ness comes from the shared schedule engine, so a weekday habit
-    // contributes nothing on a Saturday rather than counting as unmet.
+    // contributes nothing on a Saturday rather than counting as unmet — and a
+    // paused habit is excluded, never missed.
     getHabitDayTotals(userId, date, settings),
     prisma.meal.findMany({ where: { userId, date }, select: { entries: true } }),
     prisma.workout.findMany({
       where: { userId, date, status: "completed" },
-      select: { durationMin: true, caloriesBurned: true },
+      select: {
+        durationMin: true,
+        caloriesBurned: true,
+        type: true,
+        sets: { select: { reps: true, weightKg: true, completed: true } },
+      },
     }),
     prisma.healthMetric.findMany({
       where: { userId, date },
@@ -81,31 +120,75 @@ export async function recomputeDay(userId: string, date: DayKey): Promise<void> 
     // The score comes from the one central service — the same call the
     // Dashboard, Today, the calendar detail and Insights all make. This table
     // caches its answer; it does not compute a second one.
-    getDayScore(
-      userId,
-      date,
-      settings,
-      scoreOptionsFor(user ?? { scoreWeights: null, scoreOptionalTasks: false }),
-    ),
+    getDayScore(userId, date, settings, scoreOptions),
+    // Same memoised evaluation the score itself uses (identical arguments →
+    // request-level cache hit), read here for nutrition-target adherence.
+    evaluateGoalsForDate(userId, date, settings, {
+      scoreOptionalTasks: scoreOptions.scoreOptionalTasks ?? false,
+    }),
+    prisma.financeTransaction.findMany({
+      where: { userId, date },
+      select: { category: true, amountCents: true, amount: true },
+    }),
+    // findFirst, not findUnique: the soft-delete guard only filters the
+    // former, and a trashed journal page must not read as "journaled".
+    prisma.journalEntry.findFirst({
+      where: { userId, date },
+      select: { id: true },
+    }),
+    prisma.dayTypeOverride.findUnique({
+      where: { userId_date: { userId, date } },
+      select: { dayType: true },
+    }),
+    prisma.task.count({ where: { userId, createdAt: { gte: dayWindow.start, lt: dayWindow.end } } }),
+    prisma.task.count({
+      where: { userId, completedAt: { gte: dayWindow.start, lt: dayWindow.end } },
+    }),
+    prisma.task.count({ where: { userId, dueDate: date, status: "open" } }),
   ]);
 
   const plannedCount = items.length;
   const completedCount = items.filter((item) => item.status === "done").length;
   const skippedCount = items.filter((item) => item.status === "skipped").length;
-
-  // Excused days leave the denominator entirely; a deliberate skip stays in it,
-  // because the occurrence really was scheduled and really was not done.
-  const habitsDue = habitTotals.due;
-  const habitsDone = habitTotals.done;
+  const minutes = plannerMinuteFacts(items);
 
   const entries = meals.flatMap((meal) => meal.entries);
   const calories = round(sum(entries, (entry) => entry.calories), 0);
   const protein = round(sum(entries, (entry) => entry.protein), 1);
   const carbs = round(sum(entries, (entry) => entry.carbs), 1);
   const fat = round(sum(entries, (entry) => entry.fat), 1);
+  const fiber = round(sum(entries, (entry) => entry.fiber), 1);
+
+  // Nutrition-target adherence: the day's applicable, measured targets.
+  const nutritionEvaluations = goalEvaluations.filter(
+    (evaluation) =>
+      (evaluation.goal.domain === "nutrition" || evaluation.goal.source === "hydration") &&
+      evaluation.applicable &&
+      evaluation.outcome.hasData,
+  );
+  const nutritionTargetsTotal = nutritionEvaluations.length;
+  const nutritionTargetsMet = nutritionEvaluations.filter(
+    (evaluation) => evaluation.outcome.met,
+  ).length;
 
   const workoutMinutes = sum(workouts, (workout) => workout.durationMin);
   const caloriesBurned = sum(workouts, (workout) => workout.caloriesBurned ?? 0);
+  const workoutFacts = workoutDayFacts(workouts);
+
+  const override = dayTypeOverride?.dayType;
+  const dayType =
+    override === "training" || override === "rest"
+      ? override
+      : workouts.length > 0
+        ? "training"
+        : "rest";
+
+  const finance = financeDayFacts(
+    transactions.map((transaction) => ({
+      category: transaction.category,
+      amountCents: centsOrLegacy(transaction.amountCents, transaction.amount),
+    })),
+  );
 
   // A day can carry many rows per metric (samples, several devices); the one
   // aggregation module decides what the day's number is.
@@ -116,18 +199,43 @@ export async function recomputeDay(userId: string, date: DayKey): Promise<void> 
     plannedCount,
     completedCount,
     skippedCount,
-    habitsDue,
-    habitsDone,
+    plannedMinutes: minutes.plannedMinutes,
+    completedMinutes: minutes.completedMinutes,
+    categoryMinutes: JSON.stringify(minutes.categoryMinutes),
+    habitsDue: habitTotals.due,
+    habitsDone: habitTotals.done,
+    habitsSkipped: habitTotals.skipped,
+    habitsMissed: habitTotals.missed,
+    habitsPaused: habitTotals.paused,
     calories,
     protein,
     carbs,
     fat,
+    fiber,
+    mealCount: meals.length,
+    nutritionTargetsMet,
+    nutritionTargetsTotal,
     workoutCount: workouts.length,
     workoutMinutes,
     caloriesBurned,
+    workoutVolumeKg: workoutFacts.workoutVolumeKg,
+    workoutTypes: JSON.stringify(workoutFacts.workoutTypes),
+    dayType,
+    tasksCreated,
+    tasksCompleted,
+    tasksDueOpen,
+    spendCents: finance.spendCents,
+    incomeCents: finance.incomeCents,
+    transactionCount: finance.transactionCount,
+    spendByCategory: JSON.stringify(finance.spendByCategory),
+    hasJournal: journal !== null,
     steps: metricValue("steps"),
     sleepHours: metricValue("sleep_hours"),
     bodyWeight: metricValue("body_weight"),
+    restingHr: metricValue("resting_hr"),
+    hrv: metricValue("hrv"),
+    activeCalories: metricValue("active_calories"),
+    hydrationMl: metricValue("hydration_ml"),
     score: dayScore.score ?? 0,
     scoreApplicable: dayScore.totals.applicable,
     scoreCompleted: dayScore.totals.completed,
@@ -141,6 +249,16 @@ export async function recomputeDay(userId: string, date: DayKey): Promise<void> 
     create: { userId, date, ...data },
     update: data,
   });
+}
+
+/**
+ * The daily fact layer's read side: the stored summaries of a range as typed
+ * `DailyFact` records with null semantics resolved. O(days in range) — one
+ * indexed query plus an O(1) map per row; nothing here re-reads module data.
+ */
+export async function getDailyFacts(userId: string, from: DayKey, to: DayKey) {
+  const summaries = await getSummaries(userId, from, to);
+  return summaries.map(dailyFactFromSummary);
 }
 
 /** How many days recompute concurrently during a rebuild. */
@@ -162,6 +280,16 @@ async function recomputeDays(userId: string, days: DayKey[]): Promise<number> {
 /** Recompute a contiguous range — used by seeding, import and restore. */
 export async function rebuildSummaries(userId: string, from: DayKey, to: DayKey): Promise<number> {
   return recomputeDays(userId, dayRange(from, to));
+}
+
+/**
+ * Recompute an explicit, deduplicated set of days with the same bounded
+ * concurrency the rebuild uses — for writes that touch a handful of scattered
+ * days (a task edit moving a due date, an account delete taking its ledger).
+ * No ±6 expansion: callers use this for facts that live on their own day.
+ */
+export async function recomputeDaysFor(userId: string, dates: Iterable<DayKey>): Promise<number> {
+  return recomputeDays(userId, [...new Set(dates)].sort());
 }
 
 /**

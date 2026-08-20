@@ -6,6 +6,7 @@ import {
   WORKOUT_STATUSES,
   WORKOUT_STATUS_META,
   canTransition,
+  groupsFromSets,
   defaultRestSec,
   describeSetActual,
   describeSetTarget,
@@ -29,7 +30,7 @@ import {
   transitionsFrom,
   type SessionSet,
 } from "@/lib/logic/session";
-import { totalVolume } from "@/lib/logic/workouts";
+import { exerciseProgression, totalVolume } from "@/lib/logic/workouts";
 import {
   addSessionSetSchema,
   applyProgressionSchema,
@@ -51,6 +52,7 @@ function set(overrides: Partial<SessionSet> & { id: string }): SessionSet {
   return {
     exercise: "Squat",
     setNumber: 1,
+    supersetGroup: null,
     reps: null,
     weightKg: null,
     durationSec: null,
@@ -396,6 +398,7 @@ describe("planning sets from a template", () => {
       targetReps: 8,
       targetWeightKg: 60,
       restSec: 120,
+      supersetGroup: null,
       sortOrder: 0,
     });
     // The numbers are the plan, not the outcome — nothing here says "done".
@@ -503,11 +506,14 @@ describe("planning a template with groups", () => {
       { exercise: "Squat", sets: 2, reps: 8, weightKg: 60, restSec: 120 },
       { exercise: "Bench", sets: 2, reps: 10, weightKg: 40 },
     ]);
+    // supersetGroup: null on every row IS the pinned behaviour — an
+    // ungrouped template stamps no group, so nothing about the session
+    // changes beyond the (null) column riding along.
     expect(planned).toEqual([
-      { exercise: "Squat", setNumber: 1, targetReps: 8, targetWeightKg: 60, restSec: 120, sortOrder: 0 },
-      { exercise: "Squat", setNumber: 2, targetReps: 8, targetWeightKg: 60, restSec: 120, sortOrder: 1 },
-      { exercise: "Bench", setNumber: 1, targetReps: 10, targetWeightKg: 40, restSec: null, sortOrder: 2 },
-      { exercise: "Bench", setNumber: 2, targetReps: 10, targetWeightKg: 40, restSec: null, sortOrder: 3 },
+      { exercise: "Squat", setNumber: 1, targetReps: 8, targetWeightKg: 60, restSec: 120, supersetGroup: null, sortOrder: 0 },
+      { exercise: "Squat", setNumber: 2, targetReps: 8, targetWeightKg: 60, restSec: 120, supersetGroup: null, sortOrder: 1 },
+      { exercise: "Bench", setNumber: 1, targetReps: 10, targetWeightKg: 40, restSec: null, supersetGroup: null, sortOrder: 2 },
+      { exercise: "Bench", setNumber: 2, targetReps: 10, targetWeightKg: 40, restSec: null, supersetGroup: null, sortOrder: 3 },
     ]);
   });
 });
@@ -540,8 +546,8 @@ describe("the template's group map", () => {
 describe("planning sets from a past workout", () => {
   it("turns last time's results into this time's targets", () => {
     const planned = planSetsFromWorkout([
-      { exercise: "Squat", setNumber: 1, reps: 8, weightKg: 60, restSec: 90, sortOrder: 0 },
-      { exercise: "Squat", setNumber: 2, reps: 7, weightKg: 60, restSec: 90, sortOrder: 1 },
+      { exercise: "Squat", setNumber: 1, reps: 8, weightKg: 60, restSec: 90, supersetGroup: null, sortOrder: 0 },
+      { exercise: "Squat", setNumber: 2, reps: 7, weightKg: 60, restSec: 90, supersetGroup: null, sortOrder: 1 },
     ]);
     expect(planned[0].targetReps).toBe(8);
     expect(planned[0].targetWeightKg).toBe(60);
@@ -550,11 +556,13 @@ describe("planning sets from a past workout", () => {
 
   it("re-sorts and re-indexes so the order is contiguous", () => {
     const planned = planSetsFromWorkout([
-      { exercise: "B", setNumber: 1, reps: 5, weightKg: 20, restSec: null, sortOrder: 9 },
-      { exercise: "A", setNumber: 1, reps: 5, weightKg: 20, restSec: null, sortOrder: 2 },
+      { exercise: "B", setNumber: 1, reps: 5, weightKg: 20, restSec: null, supersetGroup: "A", sortOrder: 9 },
+      { exercise: "A", setNumber: 1, reps: 5, weightKg: 20, restSec: null, supersetGroup: null, sortOrder: 2 },
     ]);
     expect(planned.map((row) => row.exercise)).toEqual(["A", "B"]);
     expect(planned.map((row) => row.sortOrder)).toEqual([0, 1]);
+    // The superset key travels with the set into the new plan.
+    expect(planned.map((row) => row.supersetGroup)).toEqual([null, "A"]);
   });
 });
 
@@ -873,5 +881,85 @@ describe("session validation", () => {
       expect(parsed.data.exercises[0].group).toBe("A");
       expect(parsed.data.exercises[1].group).toBeUndefined();
     }
+  });
+});
+
+describe("set-level superset groups", () => {
+  it("a grouped template stamps its key onto the planned sets", () => {
+    const planned = planSetsFromTemplate([
+      { exercise: "Bench", sets: 2, group: "A" },
+      { exercise: "Row", sets: 2, group: "A" },
+      { exercise: "Curls", sets: 2 },
+    ]);
+    expect(planned.map((row) => [row.exercise, row.supersetGroup])).toEqual([
+      ["Bench", "A"],
+      ["Row", "A"],
+      ["Bench", "A"],
+      ["Row", "A"],
+      ["Curls", null],
+      ["Curls", null],
+    ]);
+  });
+
+  it("a lone exercise with a group letter is not a superset", () => {
+    const planned = planSetsFromTemplate([{ exercise: "Bench", sets: 2, group: "A" }]);
+    expect(planned.every((row) => row.supersetGroup === null)).toBe(true);
+  });
+
+  it("groupsFromSets reads the sets themselves, so ad-hoc grouping works", () => {
+    const groups = groupsFromSets([
+      set({ id: "1", exercise: "Bench", supersetGroup: "A" }),
+      set({ id: "2", exercise: "Row", supersetGroup: "A" }),
+      set({ id: "3", exercise: "Curls", supersetGroup: null }),
+    ]);
+    expect(groups).toEqual({ Bench: "A", Row: "A" });
+
+    // Merged over a template's map, the set-level key wins — a mid-session
+    // regroup does not consult the template again.
+    const merged = { ...{ Bench: "B", Curls: "C" }, ...groups };
+    expect(sessionBlocks(
+      [
+        set({ id: "1", exercise: "Bench", supersetGroup: "A" }),
+        set({ id: "2", exercise: "Row", supersetGroup: "A" }),
+      ],
+      merged,
+    )[0].label).toBe("Superset A");
+  });
+});
+
+describe("exercise progression shaping", () => {
+  it("folds a day's sets into top weight, best 1RM, reps and volume", () => {
+    const points = exerciseProgression([
+      { date: "2026-03-02", reps: 8, weightKg: 60 },
+      { date: "2026-03-02", reps: 8, weightKg: 62.5 },
+      { date: "2026-03-02", reps: 6, weightKg: 65 },
+      { date: "2026-03-09", reps: 8, weightKg: 65 },
+    ]);
+    expect(points).toHaveLength(2);
+    expect(points[0]).toMatchObject({
+      date: "2026-03-02",
+      topWeightKg: 65,
+      sets: 3,
+      totalReps: 22,
+      volumeKg: 8 * 60 + 8 * 62.5 + 6 * 65,
+    });
+    // Best 1RM of the day can come from a lighter set with more reps.
+    expect(points[0].estOneRepMaxKg).toBeGreaterThan(75);
+    expect(points[1].date).toBe("2026-03-09");
+  });
+
+  it("bodyweight days chart as null weight, never zero", () => {
+    const points = exerciseProgression([{ date: "2026-03-02", reps: 12, weightKg: null }]);
+    expect(points[0].topWeightKg).toBeNull();
+    expect(points[0].estOneRepMaxKg).toBeNull();
+    expect(points[0].totalReps).toBe(12);
+  });
+
+  it("sorts by date regardless of input order", () => {
+    const points = exerciseProgression([
+      { date: "2026-03-09", reps: 5, weightKg: 100 },
+      { date: "2026-03-02", reps: 5, weightKg: 95 },
+    ]);
+    expect(points.map((point) => point.date)).toEqual(["2026-03-02", "2026-03-09"]);
   });
 });

@@ -62,8 +62,24 @@
  * v12 — goal milestones (`goalMilestones`, remapped under their goal) and the
  *      habit pause window (`pausedFrom`/`pausedUntil` riding the existing
  *      habits table). An older file simply has neither.
+ * v13 — `Goal.dayType` (all | training | rest) riding the existing goals
+ *      table, for targets that vary between training and rest days, and
+ *      `WorkoutSet.supersetGroup` riding the existing workoutSets table so
+ *      superset grouping survives without the template, plus the new
+ *      `dayTypeOverrides` table (the manual training/rest answer per day).
+ *      Bumped because an older app's restore would silently drop the
+ *      columns and the table alike.
+ * v14 — the `anomalyPreferences` table (per-category mute + dismissal count
+ *      for anomaly nudges). Bumped for the same reason as v13: an older
+ *      app's restore would silently drop the table.
+ * v15 — the `automationRules` table (the rules engine's definitions). Rules
+ *      restore DISABLED with their review cleared — a rule must be dry-run
+ *      against the destination account's data before it may run there.
+ *      Execution logs are deliberately not exported: they reference record
+ *      ids that do not survive remapping, and they are an operational audit
+ *      trail, not user data.
  *
- * A v1–v11 file restores into a v12 app unchanged: the missing tables simply
+ * A v1–v12 file restores into a v13 app unchanged: the missing tables simply
  * have no rows, the new columns take their defaults (a v7 health batch arrives
  * with `protectedRows = 0` and `formatVersion = 1` — which is exactly true of
  * it, because the importer that wrote it protected nothing and was version 1),
@@ -72,7 +88,7 @@
  * one from the same migration — which is how those records behaved when the
  * older backup was taken.
  *
- * A v12 file restored by an older app loses only the new parts, which is
+ * A v12/v13 file restored by an older app loses only the new parts, which is
  * why the version was bumped rather than left alone: `inspectBackup` refuses a
  * file newer than the app reading it, and that refusal is the honest answer.
  *
@@ -84,7 +100,7 @@
  * still holds its unique keys (import keys, budget categories, journal
  * dates…) and would otherwise block the very rows being restored.
  */
-export const BACKUP_VERSION = 12;
+export const BACKUP_VERSION = 15;
 
 export interface BackupMetadata {
   /** Schema version of the backup format itself. */
@@ -139,6 +155,9 @@ export const BACKUP_TABLES = [
   "goals",
   "goalEntries",
   "goalMilestones",
+  "dayTypeOverrides",
+  "anomalyPreferences",
+  "automationRules",
   "scheduleRules",
   "scheduleRuleDays",
   "scheduleOverrides",

@@ -173,47 +173,10 @@ export function describeServing(food: FoodLike, quantity: number, unit: string):
   return describeAmount(food, quantity, unit);
 }
 
-// --- goal estimation --------------------------------------------------------
-
-const ACTIVITY_FACTORS: Record<string, number> = {
-  sedentary: 1.2,
-  light: 1.375,
-  moderate: 1.55,
-  active: 1.725,
-  athlete: 1.9,
-};
-
-/**
- * Mifflin–St Jeor BMR + activity factor. Used only to *suggest* starting goals
- * in Settings; the user's explicit goals always win.
- */
-export function estimateDailyCalories(input: {
-  weightKg: number;
-  heightCm: number;
-  age: number;
-  sex?: string | null;
-  activityLevel?: string | null;
-}): number {
-  const { weightKg, heightCm, age } = input;
-  if (!weightKg || !heightCm || !age) return 2000;
-  const base = 10 * weightKg + 6.25 * heightCm - 5 * age;
-  const bmr = input.sex === "female" ? base - 161 : base + 5;
-  const factor = ACTIVITY_FACTORS[input.activityLevel ?? "moderate"] ?? 1.55;
-  return Math.round((bmr * factor) / 10) * 10;
-}
-
-/** Suggested macro targets from a calorie goal (30/40/30 split by default). */
-export function suggestMacroGoals(calories: number): {
-  protein: number;
-  carbs: number;
-  fat: number;
-} {
-  return {
-    protein: Math.round((calories * 0.3) / 4),
-    carbs: Math.round((calories * 0.4) / 4),
-    fat: Math.round((calories * 0.3) / 9),
-  };
-}
+// Note: the Mifflin–St Jeor calorie estimator and macro-split suggester that
+// lived here were removed with the nutrition-targets checkpoint. Targets are
+// user-defined by design — the app does not compute calorie targets from body
+// data anywhere.
 
 export const LB_PER_KG = 2.20462;
 
@@ -223,4 +186,53 @@ export function kgToLb(kg: number): number {
 
 export function lbToKg(lb: number): number {
   return lb / LB_PER_KG;
+}
+
+// ---------------------------------------------------------------------------
+// Training vs rest days — the descriptive comparison
+// ---------------------------------------------------------------------------
+
+export interface DayTypeSideSummary {
+  /** Days with food logged. */
+  days: number;
+  avgCalories: number | null;
+  avgProtein: number | null;
+}
+
+export interface DayTypeComparison {
+  training: DayTypeSideSummary;
+  rest: DayTypeSideSummary;
+}
+
+/**
+ * Average intake on training vs rest days, over days that HAVE food logged —
+ * an unlogged day is unknown and joins neither side. Purely descriptive: the
+ * numbers say what happened; nothing here prescribes what should.
+ * O(days) over the caller's window.
+ */
+export function compareDayTypes(
+  days: Array<{
+    calories: number;
+    protein: number;
+    workoutCount: number;
+    override: "training" | "rest" | null;
+  }>,
+): DayTypeComparison {
+  const sides = {
+    training: { days: 0, calories: 0, protein: 0 },
+    rest: { days: 0, calories: 0, protein: 0 },
+  };
+  for (const day of days) {
+    if (day.calories <= 0) continue; // nothing logged — unknown, not zero
+    const side = day.override ?? (day.workoutCount > 0 ? "training" : "rest");
+    sides[side].days += 1;
+    sides[side].calories += day.calories;
+    sides[side].protein += day.protein;
+  }
+  const summarize = (side: { days: number; calories: number; protein: number }) => ({
+    days: side.days,
+    avgCalories: side.days > 0 ? Math.round(side.calories / side.days) : null,
+    avgProtein: side.days > 0 ? Math.round((side.protein / side.days) * 10) / 10 : null,
+  });
+  return { training: summarize(sides.training), rest: summarize(sides.rest) };
 }

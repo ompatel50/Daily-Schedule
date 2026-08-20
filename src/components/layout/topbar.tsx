@@ -73,7 +73,8 @@ export function Topbar({
           <Command />
         </Button>
 
-        <Button size="sm" className="touch-target gap-1.5" aria-label="Quick add" onClick={() => openQuickAdd()}>
+        {/* The persistent capture affordance — always visible, phones included. */}
+        <Button size="sm" className="touch-target gap-1.5" aria-label="Capture" onClick={() => openQuickAdd()}>
           <Plus />
           <span className="hidden sm:inline">Add</span>
         </Button>

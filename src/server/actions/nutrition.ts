@@ -19,6 +19,7 @@ import {
   type ActionResult,
 } from "@/lib/validation";
 import { materializeFood } from "@/server/food";
+import { dispatchAutomationEvent, mealContext } from "@/server/automation";
 import { recomputeDay } from "@/server/summaries";
 
 /** A Prisma food row in the shape the nutrition maths expects. */
@@ -179,6 +180,13 @@ export async function logFood(
   });
 
   await recomputeDay(user.id, date);
+  await dispatchAutomationEvent(user.id, {
+    module: "meal",
+    event: "created",
+    recordId: mealId,
+    context: mealContext({ type: mealType, date }),
+    date,
+  });
   revalidateAll();
   return succeed({ mealId, duplicate: false });
 }
@@ -353,6 +361,9 @@ export async function saveFoodItem(input: unknown): Promise<ActionResult<{ id: s
     brand: rest.brand ?? null,
     description: rest.description ?? notes ?? null,
     servingLabel: rest.servingLabel ?? null,
+    // The scan path pre-fills this, so a future scan of the same product
+    // resolves locally before any provider is asked.
+    barcode: rest.barcode ?? null,
     userId: user.id,
     isCustom: true,
     // A hand-entered food is its own provider: it has no external id, so the

@@ -114,6 +114,10 @@ model User {
   healthMetrics            HealthMetric[]
   healthRecords            HealthRecord[]
   goals                    Goal[]
+  dayTypeOverrides         DayTypeOverride[]
+  anomalyPreferences       AnomalyPreference[]
+  automationRules          AutomationRule[]
+  automationExecutions     AutomationExecution[]
   daySummaries             CalendarDaySummary[]
   journalEntries           JournalEntry[]
   reminders                Reminder[]
@@ -889,6 +893,12 @@ model WorkoutSet {
   targetReps     Int?
   targetWeightKg Float?
 
+  /// Superset/circuit key ("A", "B", …) carried on the SET so grouping
+  /// survives without the template and works for ad-hoc sessions. Stamped
+  /// from the template at session start; editable mid-session. Null =
+  /// ungrouped — every row before this column existed.
+  supersetGroup String?
+
   /// Defaults true so a workout logged after the fact is complete on arrival —
   /// which is how every row before Phase 10 was written. A session creates its
   /// sets with `false` and ticks them off.
@@ -1332,6 +1342,12 @@ model Goal {
   /// weekly regardless of this field; see resolveGoalPeriod().
   period    String @default("daily")
 
+  /// all | training | rest — which kind of day this goal applies to. A day is
+  /// "training" when it has a completed workout (manual override in the
+  /// nutrition↔workout linkage). Lets targets vary by day type: two goals for
+  /// the same metric, one per day type. "all" is the historical behaviour.
+  dayType   String @default("all")
+
   /// Where the number comes from. The app fills goals in from data it already
   /// has rather than asking the user to tick a box it can already prove:
   /// manual | workout_count | workout_minutes | workout_distance | steps |
@@ -1378,6 +1394,118 @@ model Goal {
 /// reminder feed, deduplicated by the same delivery ledger as every other
 /// reminder. Both sides are user-scoped; the action layer verifies the goal
 /// belongs to the caller before writing a row.
+/// A manual answer to "is this a training day?", outranking the derived
+/// classification (any completed workout = training). One row per day per
+/// user; deleting the row falls back to the derived answer. Day-typed
+/// nutrition targets and their day-score gating read through this.
+model DayTypeOverride {
+  id     String @id @default(cuid())
+  userId String
+  user   User   @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  date    String // YYYY-MM-DD (operational day, like every date-only record)
+  /// training | rest
+  dayType String
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@unique([userId, date])
+}
+
+/// A user-defined automation: "when <trigger>, if <conditions>, do
+/// <actions>". The three definition columns hold JSON validated by
+/// src/lib/logic/automation.ts (bounded condition depth, bounded action
+/// count, no delete verb exists in the vocabulary). Rules are created
+/// DISABLED; enabling requires a dry run of the exact current definition
+/// (`reviewedHash`). Repeated failures disable a rule with a reason rather
+/// than letting it fail silently forever.
+model AutomationRule {
+  id     String @id @default(cuid())
+  userId String
+  user   User   @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  name    String
+  enabled Boolean @default(false)
+
+  /// JSON AutomationTrigger
+  trigger    String
+  /// JSON ConditionNode tree, depth-bounded
+  conditions String @default("{\"all\":[]}")
+  /// JSON AutomationAction[]
+  actions    String
+
+  /// SHA-256 of the definition at the last dry run — enabling requires the
+  /// current definition to match, so no rule runs unreviewed.
+  reviewedHash String?
+
+  consecutiveFailures Int     @default(0)
+  /// Why the engine disabled this rule (null while healthy).
+  disabledReason      String?
+  lastRunAt           DateTime?
+  /// matched | no_match | error
+  lastStatus          String?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  executions AutomationExecution[]
+
+  @@index([userId, enabled])
+}
+
+/// One rule firing: what triggered it, what matched, what was done (with
+/// resulting record ids and previous values — the undo handle). Kept as an
+/// audit log; undoing stamps `undoneAt` rather than deleting the entry.
+model AutomationExecution {
+  id     String @id @default(cuid())
+  userId String
+  user   User   @relation(fields: [userId], references: [id], onDelete: Cascade)
+  ruleId String
+  rule   AutomationRule @relation(fields: [ruleId], references: [id], onDelete: Cascade)
+
+  firedAt DateTime @default(now())
+  /// JSON snapshot of the triggering event
+  trigger String
+  /// JSON: the context values the conditions matched against
+  matched String @default("{}")
+  /// JSON AutomationActionResult[]: per-action outcome, created record ids,
+  /// previous field values for reverts
+  actions String @default("[]")
+  /// success | error | undone
+  status  String
+  error   String?
+  undoneAt DateTime?
+
+  /// For tick-evaluated triggers (fact/date/anomaly): `<ruleId>:<day>`,
+  /// so a maintenance tick that runs more than once a day cannot re-fire
+  /// the same rule for the same operational day. Null for record triggers.
+  dedupKey String?
+
+  @@index([userId, ruleId, firedAt])
+  @@index([userId, dedupKey])
+}
+
+/// Per-user, per-category state for anomaly nudges: mute switch, dismissal
+/// count (each dismissal raises that category's detection threshold — see
+/// src/lib/logic/anomalies.ts), and the one-time clinician-note stamp for
+/// the resting-HR observation.
+model AnomalyPreference {
+  id     String @id @default(cuid())
+  userId String
+  user   User   @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  /// resting_hr | sleep_debt | habit_streak | workout_frequency | spending
+  category   String
+  muted      Boolean @default(false)
+  dismissals Int     @default(0)
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@unique([userId, category])
+}
+
 model GoalMilestone {
   id     String @id @default(cuid())
   userId String
@@ -1443,19 +1571,77 @@ model CalendarDaySummary {
 
   habitsDue  Int @default(0)
   habitsDone Int @default(0)
+  /// Deliberate "didn't do it today" logs among the due opportunities.
+  habitsSkipped Int @default(0)
+  /// Due opportunities that ended the day unmet (never counts paused days).
+  habitsMissed Int @default(0)
+  /// Habits sitting inside a pause window — excluded, NEVER missed.
+  habitsPaused Int @default(0)
 
   calories Float @default(0)
   protein  Float @default(0)
   carbs    Float @default(0)
   fat      Float @default(0)
+  fiber    Float @default(0)
+  /// Discriminates "ate exactly the above" from "logged nothing": the macro
+  /// columns are unknown — not zero — when this is 0. The DailyFact view
+  /// (src/lib/logic/daily-facts.ts) resolves that to null for analyses.
+  mealCount Int @default(0)
+
+  /// Nutrition-target adherence for the day: how many applicable targets had
+  /// data and how many of those were met. 0/0 = no targets or nothing logged.
+  nutritionTargetsMet   Int @default(0)
+  nutritionTargetsTotal Int @default(0)
 
   workoutCount   Int @default(0)
   workoutMinutes Int @default(0)
   caloriesBurned Int @default(0)
+  /// Σ reps × weight over completed sets — 0 for cardio-only days.
+  workoutVolumeKg Float @default(0)
+  /// JSON array of the day's distinct completed workout types.
+  workoutTypes String @default("[]")
+  /// training | rest, resolved through the one day-type resolver
+  /// (override wins, else any completed workout). Null on rows written
+  /// before this column existed; a rebuild fills it.
+  dayType String?
+
+  /// Planner minutes: timed blocks only (all-day/untimed blocks count in
+  /// plannedCount but carry no minutes — the utilisation view's rule).
+  plannedMinutes   Int @default(0)
+  completedMinutes Int @default(0)
+  /// JSON object: schedule category → planned minutes (timed blocks only).
+  categoryMinutes String @default("{}")
+
+  /// Tasks: created during the operational day, completed during it, and
+  /// due that day while still open at recompute time ("overdue" is
+  /// present-knowledge — task events are not historically journaled).
+  tasksCreated   Int @default(0)
+  tasksCompleted Int @default(0)
+  tasksDueOpen   Int @default(0)
+
+  /// Finance, integer cents. Spend/income exclude the bookkeeping
+  /// categories (transfer, adjustment) exactly as budgets and insights do.
+  /// Zero means "no rows that day", which for a finance-tracking account is
+  /// a real zero; accounts that never track money read all-zero here and
+  /// the analyses in Phase 2 must treat all-zero finance histories as
+  /// untracked, not thrifty.
+  spendCents       Int @default(0)
+  incomeCents      Int @default(0)
+  transactionCount Int @default(0)
+  /// JSON object: finance category → spend cents (magnitudes).
+  spendByCategory String @default("{}")
+
+  /// Whether a journal entry exists for the day.
+  hasJournal Boolean @default(false)
 
   steps      Float?
   sleepHours Float?
   bodyWeight Float?
+  restingHr  Float?
+  hrv        Float?
+  /// Active energy for the day (kcal), from the health metrics.
+  activeCalories Float?
+  hydrationMl    Float?
 
   /// 0–100 day score for the heatmap, produced by src/server/day-score.ts.
   ///

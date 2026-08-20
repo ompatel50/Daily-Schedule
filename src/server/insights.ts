@@ -3,11 +3,17 @@
  * app-facing server surface. See src/server/facts.ts for the reasoning.
  */
 import { prisma } from "@/lib/db";
-import { type DayKey, dayRange, daysBetween, formatDay } from "@/lib/date";
+import { type DayKey, dayRange, daysBetween, formatDay, shiftDay } from "@/lib/date";
+import {
+  CORRELATION_WINDOW_DAYS,
+  type CorrelationReport,
+  computeCorrelations,
+} from "@/lib/logic/correlations";
 import { type ScheduleSettings, getStatusForDate } from "@/lib/logic/schedule";
+import { type SpendingReport, computeSpendingReport } from "@/lib/logic/spending";
 import { getHabitViews } from "@/server/habits";
 import { loadSchedules, toSchedulable } from "@/server/schedule";
-import { getSummaries } from "@/server/summaries";
+import { getDailyFacts, getSummaries } from "@/server/summaries";
 
 /**
  * The weekly review.
@@ -60,6 +66,33 @@ export interface WeeklyReview {
   notes: Array<{ date: DayKey; content: string }>;
   /** One factual sentence naming the area with the most missed opportunities. */
   focus: string;
+}
+
+/**
+ * Correlation insights over the daily fact layer: one bounded, indexed read
+ * of the last `CORRELATION_WINDOW_DAYS` summaries, folded by the pure engine
+ * (see src/lib/logic/correlations.ts for the honesty rules — explicit
+ * candidates, 30-pair floor, FDR correction, no imputation). Everything runs
+ * server-side against this user's own rows; nothing leaves the database.
+ */
+export async function getCorrelationReport(
+  userId: string,
+  today: DayKey,
+): Promise<CorrelationReport> {
+  const from = shiftDay(today, -(CORRELATION_WINDOW_DAYS - 1));
+  const facts = await getDailyFacts(userId, from, today);
+  return computeCorrelations(facts, { from, to: today });
+}
+
+/**
+ * The finance-specific correlation pass — same bounded window, same pure
+ * rigour (see src/lib/logic/spending.ts), same privacy posture: one
+ * server-side read of this user's own rows.
+ */
+export async function getSpendingReport(userId: string, today: DayKey): Promise<SpendingReport> {
+  const from = shiftDay(today, -(CORRELATION_WINDOW_DAYS - 1));
+  const facts = await getDailyFacts(userId, from, today);
+  return computeSpendingReport(facts, { from, to: today });
 }
 
 export async function getWeeklyReview(

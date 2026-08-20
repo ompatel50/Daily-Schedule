@@ -6155,3 +6155,930 @@ row-scoped name, two-step purge, the topbar/page heading collision on
 /review). Browser verification: nonce CSP live-probed (hydration, charts,
 theme, cookie headers), 390 px overflow sweep clean on /review,
 /settings/trash, /settings/data, /finance, /planner.
+
+# Master update: capture, depth, intelligence, automation
+
+> Two phases on branch `claude/personal-os-master-update-v1ex1p`, started
+> from `main` after PR #25 merged. Standing rules: additive and reversible
+> migrations, pure logic in `src/lib/logic`, data access in `src/server`,
+> never duplicated across components, no placeholder UI, multi-user
+> isolation everywhere, each checkpoint ends green (typecheck, lint, unit +
+> integration, targeted E2E, browser verification) with this file updated.
+
+## Checkpoint checklist (master update)
+
+| #   | Checkpoint                                    | Status |
+|-----|-----------------------------------------------|--------|
+| 1.1 | Cross-module search verification              | ✅ done |
+| 1.2 | Quick-capture everywhere                      | ✅ done |
+| 1.3 | Barcode scanning for food                     | ✅ done |
+| 1.4 | Nutrition targets                             | ✅ done |
+| 1.5 | Workout depth                                 | ✅ done |
+| 1.6 | Nutrition ↔ workout linkage                   | ✅ done |
+| 2.1 | Unified daily fact layer                      | ✅ done |
+| 2.2 | Correlation insights                          | ✅ done |
+| 2.3 | Spending triggers                             | ✅ done |
+| 2.4 | Anomaly nudges                                | ✅ done |
+| 2.5 | Automations: rules engine core                | ✅ done |
+| 2.6 | Rule builder UI, library, integration pass    | ✅ done |
+
+## Checkpoint 1.1 — cross-module search verification
+
+### The audit, before any change
+
+`buildSearchHits` / `searchEverything` turned out to be far broader than the
+task assumed — the Preview-3 Phase 14 and later hosted-upgrade phases had
+already extended it. Coverage found on entry (21 sources): planner items
+(title), tasks (title), projects (name), tags (name, with usage counts),
+inbox items (title+notes), documents (name+issuer), routines/schedule
+templates (name), habits (name), goals (label), bills (name), accounts
+(name), transactions (payee+notes), budgets (category key), savings goals
+(name), workouts (name), health metrics (fixed vocabulary, matched in
+memory, one grouped query), health records (title+subtitle+kind), workout
+templates (name), foods (searchKey), meal templates (name), journal
+(title+content).
+
+**Missing from the required roster: logged meals and reminders.** Everything
+else on the task's list was already spanned. Also missing: any exact-match
+or recency weighting — group order was fixed declaration order, within-group
+order was whatever the fetch's orderBy produced.
+
+Soft-delete was already respected everywhere: `searchEverything` reads
+through the guarded client (src/lib/soft-delete.ts), which AND-merges
+`deletedAt: null` into every findMany on the 16 guarded models. Bounding was
+already per-module (`take: limit`, default 8, shared by all sources).
+
+### What changed
+
+* **Meals** search on their free text only — `label` + `notes`, never `type`:
+  "lunch" is fixed vocabulary that would return every lunch ever logged.
+  Hit → `/nutrition?date=<meal's day>`. **Reminders** search on
+  `title` + `message`; the hit shows the repeat kind, the next fire day
+  (resolved in the *user's* timezone via `createStableDateKey` in the server
+  — the pure layer does no timezone math on instants) and an "off" marker
+  when disabled. A block-born reminder (scheduleItemId set, block live)
+  deep-links its planner day; otherwise the hit lands on
+  `/settings#reminders` (new anchor on the notifications panel, the
+  `#backup` precedent). The to-one block include selects `deletedAt` and the
+  server nulls the link when the block is trashed — the documented
+  soft-delete boundary pattern.
+* **Ranking** (pure, in `buildSearchHits`, which now takes the typed term):
+  exactness levels — whole-title match > prefix > word-start > mid-word >
+  secondary-field-only — dominate; recency (halving per week of distance
+  from the user's today, past or future) breaks ties within a level. Groups
+  stay contiguous (the palette renders sections); a group floats above
+  declaration order only on title-match strength, never on recency alone.
+  Sorts are stable, so fetch order breaks remaining ties. The palette and
+  the assistant's `search` tool both pass the term through.
+* **Bounding** unchanged and now pinned by an integration test: every module
+  capped at the shared limit, a noisy module cannot starve a quiet one.
+* **Palette**: new groups render automatically (the component maps whatever
+  groups arrive, cmdk provides the keyboard navigation); verified in the
+  browser.
+
+### Performance decision, documented
+
+Every one of the ~23 per-keystroke queries is (a) pre-filtered by an indexed
+`userId` column, (b) capped with `take`, and (c) debounced 180 ms in the
+palette. The text matchers are `ILIKE '%term%'`, which no btree can serve —
+a pg_trgm GIN index could, but adding `CREATE EXTENSION` to a migration
+makes deploys depend on database superuser policy, a real portability cost
+against a query set that is already bounded per user per module. Decision:
+no new indexes; the matcher's *filter* columns (userId scoping) were audited
+and all already indexed — Meal has `(userId, date)` + `(userId, deletedAt)`,
+Reminder `(userId, enabled)` + `(userId, deletedAt)`.
+
+### Verification
+
+* Unit: tests/search.test.ts **9 → 18** — the two new sources' hit shapes
+  (meal label/type titling, reminder repeat/off subtitles, the planner
+  deep-link), and the ranking contract: exact floats its group, equal
+  strength keeps declaration order, exact > prefix > substring within a
+  group, recency breaks ties, recency alone never reorders groups.
+* Integration: new tests/integration/search.test.ts (7) — meals matched on
+  label/notes and NOT on type; reminders matched on title/message with the
+  fire day resolved; the block-born reminder's planner day carried, and
+  nulled when the block is trashed; trashed rows (task, meal, reminder,
+  planner block) invisible with a live control; the per-module bound with a
+  noisy module not starving a quiet one; meals/reminders never crossing
+  users.
+* E2E: new tests/e2e/search-palette.spec.ts — the palette loop a browser
+  alone can prove: capture → `/` shortcut → debounced server search →
+  grouped section → keyboard-only selection → navigation → cleanup.
+* Typecheck, lint, full unit + integration suites green; browser-verified
+  (palette groups for the new sources, ranking, keyboard navigation,
+  reminder anchor).
+
+## Checkpoint 1.2 — quick-capture everywhere
+
+### Shape
+
+* **Pure grammar** — `src/lib/logic/capture.ts`. `parseCapture(input, {baseDate,
+  nowMinute})` classifies one line into planner / task / expense / income /
+  health / nutrition / workout / habit / inbox and returns a typed draft plus
+  `alternates` (non-empty = ambiguous, the UI must ask). `parseCaptureAs`
+  re-reads the same text under a user-chosen intent. The planner grammar is
+  untouched and remains the default for unmarked text — `parseQuickAdd` was
+  only refactored to EXPORT its three token extractors (`extractPriority`,
+  `extractHashTokens`, `extractDateToken`) so the new parsers share them
+  instead of duplicating; its 16 tests pass unchanged and a capture test
+  asserts byte-identical planner output.
+* **Intent markers**, leading-verb based: `todo|task|remember to` → task;
+  `got paid|received|earned|refund*|income` (checked BEFORE `paid`) → income;
+  `spent|bought|paid` or a leading signed amount → expense; a health alias
+  (`weight|bw|resting hr|rhr|steps|slept|sleep|water|hydration|glucose|blood
+  pressure|bp|body fat|hrv…`, longest first, every target asserted to be a
+  MANUAL_ENTRY_METRIC) followed by a reading → health; `ate|had` → nutrition
+  (items split on commas/"and", quantities incl. attached units "100g",
+  meal word or wall-clock inference); cardio verbs with distance/duration →
+  workout; `NxM [weight]` shorthand → strength workout; `did|skipped` →
+  habit; `note|inbox` prefix → inbox. A recognised verb whose numbers are
+  missing ("spent a lovely day", "ran errands") routes to INBOX with the raw
+  text — never force-fit. "did bench 3x8 135" surfaces habit + workout as an
+  explicit disambiguation.
+* **Server** — `src/server/actions/capture.ts`. `previewCapture` resolves
+  what only the database can: habit candidates (contains-either-way, with
+  the day's already-logged status), food candidates per phrase (LOCAL
+  catalogue only — preview keystrokes never fan out to external providers;
+  naive singular fallback so "eggs" finds "Egg"), the account list with a
+  last-used default. `commitCapture` is a zod-validated ROUTER: every branch
+  calls the module's existing action (`createScheduleItem`, `saveTask`,
+  `saveTransaction`, `logHealthMetric`, `logFood` per item with client
+  idempotency keys, `saveWorkout` with expanded set rows, `logHabit`,
+  `saveInboxItem`) — no second write path, so ownership guards, validation,
+  `recomputeDay` and revalidation all come from the one implementation.
+  Unit handling: bare workout weights resolve via the user's unitSystem,
+  explicit `kg|lb` win (lbToKg); explicit health units convert through the
+  one health unit table (`toCanonical`/`toDisplay`), never ad-hoc math.
+* **UI** — `src/components/capture/capture-dialog.tsx` replaces the planner
+  quick-add dialog behind the same store state, `n` shortcut, palette action
+  ("Capture anything") and the always-visible topbar button (the mobile
+  affordance; label now "Capture", sidebar button likewise). Live parse per
+  keystroke; the intent is shown with a change-Select; ambiguity renders
+  choice buttons and blocks commit; EVERY parsed field is editable (per-
+  intent field grids over a field-override map, render-time reset per the
+  react.dev pattern). Habit and food resolution is debounced 300 ms through
+  `previewCapture`; unresolved foods and unknown habits block commit with a
+  plain way out (pick a match, remove the item, or switch to Inbox). The
+  planner commit button keeps its historical "Add item" label.
+* Planner capture still ignores #tags exactly as text quick-add always did —
+  now stated in the dialog instead of silent.
+
+### Verification
+
+* Unit **1,293 → 1,365**: tests/capture.test.ts — a 40-row fixture table of
+  realistic phrasings across all nine intents, near-misses that must land in
+  Inbox, the planner byte-compatibility check, per-intent field parsing
+  (money, health units, sleep durations, bp, food quantities, cardio/strength
+  numbers), ambiguity + parseCaptureAs, and the alias→manual-metric roster
+  assertion. quick-add tests unchanged (16).
+* Integration **+17**: tests/integration/capture.test.ts — routing per intent
+  through the real actions (task with tags, expense/income cents dual-write,
+  imperial and explicit-unit health conversion, non-manual metric refusal,
+  food resolution + logFood snapshot + idempotency-key retry, strength
+  expansion with lb→kg and the planner mirror, habit fuzzy preview with
+  logged-status and cross-user refusal, inbox raw-text, planner block, and
+  the historical `quickAddScheduleItem` regression).
+* E2E: new tests/e2e/capture.spec.ts — `n` → todo → Task surface; planner
+  text behaving as before with editable Start/End; a near-miss landing in
+  Inbox with the raw text; the phone-width topbar Capture button opening the
+  dialog. Existing planner specs keep passing (the "Add item" label was
+  deliberately preserved).
+* Typecheck, lint (0 errors; 2 new warnings, both instances of the two
+  documented warn-level react-hooks rules in their established dialog/search
+  patterns), build green; browser-verified.
+
+## Checkpoint 1.3 — barcode scanning for food
+
+### The audit, before any change
+
+Barcode scanning was **already substantially built** (the hosted-upgrade
+"Phase 24" work, which this task statement predates): `FoodItem.barcode`
+with an index, `NormalizedFood.barcode` (USDA `gtinUpc`, OFF `code`),
+`lookupFoodByBarcode` (local rows first — offline-capable — then OFF),
+`lookupBarcodeAction` with the 8–14-digit gate, and a scanner dialog using
+the native `BarcodeDetector` (camera starts only on explicit click, every
+track stopped on close, EAN/UPC formats only), wired into the food search.
+Manual entry was already never gated.
+
+What the checkpoint required and was MISSING: (1) a **bundled fallback
+decoder** — engines without `BarcodeDetector` (Safari, Firefox) had no live
+scanning at all, only manual entry; (2) **USDA in the resolution chain** —
+OFF was the only remote source, though USDA Branded records carry a
+GTIN/UPC; (3) the **unknown-barcode → create-it-manually offer** with the
+code pre-filled.
+
+### What changed
+
+* **Bundled fallback decoder**: `@zxing/browser` + `@zxing/library`
+  (pure-JS, no external service — decoding stays on-device), lazy-imported
+  only when the native detector is absent AND the camera is started, so the
+  chunk is never paid elsewhere. It attaches to the dialog's own video
+  element — the existing getUserMedia/stop lifecycle is unchanged, and
+  `IScannerControls.stop()` joins the one `stopCamera`. Live scanning now
+  needs only a camera; the unsupported message shrank to the no-camera case.
+* **Provider chain**: `lookupFoodByBarcode` now falls through OFF → USDA
+  (`search(code, {preferBranded})`, match verified against the normalised
+  record's own GTIN, zero-padding-insensitive — a fuzzy text hit can never
+  impersonate the product). Failure semantics preserved: outage ≠ missing
+  product, and USDA can rescue an OFF outage. Caching/refresh behaviour
+  untouched — a scanned pick is cached with its barcode on first log
+  (`materializeFood`/`cacheFood`), which is what makes the next scan local.
+* **Unknown barcode**: a definitive miss now offers "Add it as a custom
+  food" — `CustomFoodDialog` gained a controlled mode (`open`/`onOpenChange`
+  /`initialBarcode`/`onSaved`) and an optional barcode field
+  (`foodItemSchema.barcode`, 8–14 digits, written by `saveFoodItem`); saving
+  loops straight back into the lookup, which now resolves the new local row
+  into the log dialog. Its NumberField labels also gained real htmlFor/id
+  pairing en route.
+
+### Verification
+
+* Unit: tests/food-lookup.test.ts **+4** — USDA GTIN fallback on an OFF
+  miss, zero-padding-insensitive matching, fuzzy-hit refusal (a USDA text
+  hit with a different GTIN never impersonates), OFF-outage rescue. All
+  existing lookup/blending/provider tests pass unchanged (175 across the
+  food suites).
+* Integration: new tests/integration/barcode.test.ts (3) — custom food with
+  barcode → local resolution round trip (no network touched), malformed
+  barcode refused, cross-user invisibility of the local pass.
+* E2E: new tests/e2e/barcode.spec.ts — the deterministic headless flow:
+  create a custom food WITH its barcode through the real dialog, resolve it
+  through the scanner's manual entry into the log dialog; and graceful
+  degradation (headless has no camera; manual entry stays first-class).
+  Live camera decoding is untestable headless by design (camera only starts
+  from a user click) — the decode→lookup seam is unit-covered.
+* Typecheck, lint (0 errors, warning count unchanged), build green. The new
+  packages added no `npm audit` advisories (the 3 documented prisma-chain
+  highs remain the only ones).
+
+## Checkpoint 1.4 — nutrition targets
+
+### The audit, and the architectural decision (documented deliberately)
+
+"Logging exists; there is nothing to log against" was no longer true: the
+app already stores nutrition targets as **Goal rows** (domain `nutrition`,
+sources `calories|protein|carbs|fat|fiber|hydration` auto-measured from
+logged data, direction gte/lte/range), the nutrition page's stat cards and
+the dashboard already read them via `getGoalMap`, and the day score already
+scores them — through the goals category, because the score's documented
+architecture says nutrition/training/health ARE goals and a separate
+category would count the same record twice (src/lib/logic/day-score.ts).
+
+**Decision: keep that architecture.** Nutrition targets stay Goal rows — no
+parallel NutritionTarget model, no fourth score category, no fork of
+`computeDayScore`. Adherence feeds the existing day-score category system
+exactly as the checkpoint requires (weights, exclusions and partial credit
+all come from the one calculator), and "integration with the existing Goals
+model" is inherent rather than optional glue. What was genuinely missing —
+day-type variance, a first-class targets surface with water/fibre, and the
+wellbeing constraints — is what this checkpoint built.
+
+### What changed
+
+* **Day-type variance** — additive migration `goal_day_type`:
+  `Goal.dayType TEXT NOT NULL DEFAULT 'all'` (`all | training | rest`).
+  A day is *training* when it has a completed workout (the 1.6 linkage adds
+  the manual override). Pure gate in `src/lib/logic/goals.ts`
+  (`dayTypeOfFacts`, `goalAppliesOnDayType`) applied inside
+  `buildGoalEvaluation` against the DATE's own facts; streak synthesis
+  skips gated days so a training-only target never inflates or breaks a
+  streak across rest days. The day score shows the honest exclusion — a
+  training-day target on a rest day reads `rest_day`, never a miss.
+  `getGoalMap(date)` became day-aware: the date's variant outranks the
+  "all" fallback (one extra count query, only when a variant exists), so
+  the stat cards and dashboard measure against the set that applies.
+* **The Targets surface** — `getNutritionTargets(date)` (server view-model:
+  every nutrition/hydration goal, the date's day type, consumed per target
+  with **null for an unlogged day — unknown, never zero**) + `TargetsCard`
+  on the nutrition page: per-target neutral progress ("1,850 of 2,200 kcal
+  · 350 kcal left" / "120 kcal over" / "met" / "in range" — pure
+  `describeTargetRemaining`), which variant applies today, and an editor
+  dialog (add/remove targets for calories, protein, carbs, fat, fibre,
+  water; at least / at most / between; every day / training / rest;
+  duplicate metric+day-type refused). The dashboard's calories card hint
+  gained the same neutral remainder. Backup **v12 → v13** (`dayType` rides
+  the goals table; an older app would silently drop it — the documented
+  bump rule).
+* **Wellbeing constraints, enforced not just avoided**: the targets editor
+  states "Targets are yours to set — nothing here is suggested or computed
+  from your body." And the one place that DID compute calorie targets from
+  body weight — Settings' "Suggest nutrition goals" button (Mifflin–St Jeor
+  × activity factor writing calorie/macro goals) — was **removed**, along
+  with `estimateDailyCalories`/`suggestMacroGoals` and their tests: the
+  checkpoint's non-negotiable rules out exactly this feature, and keeping a
+  second surface that does it would make the new copy a lie. No streaks
+  are shown for targets, no over-target alerts exist, unlogged days are
+  excluded from scoring as `no_data`.
+
+### Verification
+
+* Unit **1,365 → 1,379 (net)**: goals suite +11 — day-type classification
+  and gating (incl. the gate reading the date's facts, not the week's; a
+  rest-day exclusion never reading as a miss), neutral phrasing for
+  lte/gte/range/unlogged, the target roster asserting every metric is
+  auto-measured and none manual; backup version test moved to v13;
+  estimator tests removed with the estimator.
+* Integration **+8** (tests/integration/nutrition-targets.test.ts): the
+  editor's write path with dayType; the day-aware goal map flipping between
+  variants when a workout completes; the view-model's null-for-unlogged and
+  variant flags; day-score integration (met target scores; unlogged day
+  excluded `no_data`; training-day target excluded `rest_day` until a
+  workout flips the day); the v13 export/restore round trip; cross-user
+  emptiness. Two existing tests updated for the deliberate version bump.
+* E2E: new tests/e2e/nutrition-targets.spec.ts — set an "at most" calorie
+  target through the real dialog (the user-defined statement asserted),
+  neutral progress on the card, remove it again. Full targeted set green.
+* Typecheck, lint (0 errors), build green; browser-verified.
+
+## Checkpoint 1.5 — workout depth
+
+### The audit, before any change
+
+The task statement predates the hosted-upgrade work: most of this checkpoint
+already existed. **Rest timers** — `setSessionRest` HAS a UI (the session
+panel's "Default rest" RestControl), plus per-exercise overrides
+(`setExerciseRest`), a visible countdown DERIVED from `completedAt` stamps
+(`restState` — survives reload/navigation by construction, no ticking
+state), and an edge-triggered rest-over cue. **Session flow** — the live
+panel advances through blocks, logs against targets, and handles deviation
+(add/remove set, over/under-target outcomes, progression estimates applied
+only by explicit tap). **Supersets** — template exercises carry `group` +
+`restSec` (editor inputs exist), `planSetsFromTemplate` round-robins
+grouped exercises, `sessionBlocks` folds them, and `restSecAfterSet` keeps
+the timer silent inside a round. **Templates** therefore already cover
+superset and rest configuration. Genuinely missing: grouping only lived in
+template JSON (nothing for ad-hoc sessions, no mid-session regroup), no
+per-exercise progression view anywhere, and the rest-over notification used
+`new Notification` — which throws inside an installed PWA (the exact defect
+Phase 11 fixed for reminders).
+
+### What changed
+
+* **Set-level superset groups** — additive migration
+  `workout_set_superset_group`: `WorkoutSet.supersetGroup TEXT?` (rides
+  backup v13; existing rows null = ungrouped, existing workouts unaffected).
+  `planSetsFromTemplate` stamps real groups (a lone exercise with a letter
+  is not a superset) onto created set rows; "repeat workout" carries them
+  forward; new `setExerciseGroup` action (open-session + ownership guarded)
+  regroups mid-session from a small per-exercise selector in the panel —
+  ad-hoc sessions can superset with no template and no edit dialog. The
+  panel now derives its group map from the sets themselves
+  (`groupsFromSets`); once any set carries a key the sets are the whole
+  truth, so clearing a template's group sticks (the template map only
+  covers sessions opened before stamping existed).
+* **Per-exercise progression** — pure `exerciseProgression` folds completed
+  sets into one point per day (top set, best Epley 1RM, reps, volume;
+  bodyweight days are null weight, never zero) + `getExerciseProgression`
+  action (completed sets of completed workouts, one-year window, capped —
+  O(window sets), stated in its docstring) + `ProgressionCard` on the
+  workouts page: exercise picker, top-set/est-1RM `TrendLineChart` in the
+  user's display unit, session/volume/best summary line.
+* **PWA-correct rest-over notification** — new shared
+  `src/lib/client-notifications.ts` (`showSystemNotification`: SW
+  registration first — the only path an installed PWA supports — bare
+  constructor fallback), now used by BOTH the reminder watcher (refactored
+  onto it, behaviour identical) and the session panel's rest-over cue, with
+  an OS-level tag per rest so duplicates collapse. Documented honestly in
+  code: a backgrounded tab lands the cue late but never lost; a CLOSED tab
+  cannot be reached — nothing on this platform schedules a Web Push for an
+  arbitrary instant and the daily cron cannot hit a 90-second window, so
+  pretending otherwise would be the pretend-scheduling Phase 11 removed.
+
+### Verification
+
+* Unit **1,379 → 1,382 files-measured total**: session suite +3 grouping tests — template stamping (round-robin
+  with keys, lone-letter not a superset, pinned byte-identical ungrouped
+  expansion), `groupsFromSets` + set-level precedence through
+  `sessionBlocks`, group survival through `planSetsFromWorkout`; +3
+  progression shaping (per-day folding with best-1RM-from-lighter-set,
+  null-not-zero bodyweight days, date ordering).
+* Integration **+4** (tests/integration/workout-depth.test.ts): template →
+  real set rows stamped in round-robin order; mid-session regroup +
+  clearing sticking; refusal on closed and foreign sessions; the
+  progression query excluding incomplete sets, planned workouts and other
+  users.
+* E2E: rest-timer.spec.ts (the session round trip) green against the
+  rebuilt app; full unit suite green. Typecheck, lint (0 errors), build
+  green; browser-verified.
+
+## Checkpoint 1.6 — nutrition ↔ workout linkage
+
+### What changed
+
+1.4 already derived a day's type from completed workouts and applied
+day-typed targets automatically; this checkpoint added the missing half —
+the manual override — and the surfaces.
+
+* **Manual override** — new `DayTypeOverride` model (additive migration
+  `day_type_override`; one row per user per day, unique `(userId, date)`;
+  rides backup v13 as its own table, remapped per user on restore).
+  `setDayTypeOverride` (src/server/actions/day-type.ts) upserts or clears
+  it and recomputes the day — day-typed targets gate the day score, so an
+  override changes the score honestly.
+* **One resolver** — `getDayType(userId, date)` in queries.ts (override
+  wins, else any completed workout = training) now backs the goal map and
+  the targets view-model; goal evaluation reads the same answer through
+  facts (`GoalFacts.dayTypeOverride`, loaded per-day by
+  `measureFactsByDay`, consulted by `dayTypeOfFacts`) — so the gate, the
+  streak synthesis, the score exclusions, the stat cards and the Targets
+  card cannot disagree by construction.
+* **The nutrition page shows the day type** — a classification row on the
+  Targets card: "Training day (2 completed workouts)" / "Rest day (no
+  completed workout)" / "(set by you)", with a Select to treat the day as
+  training or rest, or revert to Auto. The card's description continues to
+  name which target set applies.
+* **Descriptive summary** — `compareDayTypes` (pure, O(days)): average
+  calories and protein on training vs rest days over the last 28 days,
+  computed from the summary cache + overrides, counting only days with
+  food logged (an unlogged day is unknown and joins neither side).
+  Rendered as a two-sided block on the Targets card. Strictly descriptive
+  — it reports the relationship and stops; no advice, per the checkpoint's
+  explicit constraint.
+
+### Verification
+
+* Unit: goals +2 (override outranks derivation both ways; gating through
+  the override), nutrition +3 (`compareDayTypes` — logged-days-only
+  averaging, override reassignment, empty sides as null never zero).
+* Integration +4 (tests/integration/nutrition-targets.test.ts): the
+  override flipping the resolved type, the goal map and the targets view,
+  then clearing back to derivation; the day score gating through the
+  override (a training target scoring on an overridden day with NO workout
+  logged); the comparison respecting overrides and skipping unlogged days;
+  cross-user isolation + the backup round trip of the overrides table.
+* E2E: nutrition-targets.spec.ts +1 — the override loop through the real
+  Select (day type shown with provenance, "(set by you)" appears,
+  reverting to Auto clears it).
+* Typecheck, lint (0 errors), build green; browser-verified.
+
+## Checkpoint 2.1 — unified daily fact layer
+
+### The documented decision: extend `CalendarDaySummary`, no parallel table
+
+The task allowed a new `DailyFact` model or extending the existing summary
+and asked for the choice to be deliberate. **Extended.** The summary is
+already one row per (userId, operational day), already recomputed
+incrementally by every write path (`recomputeDay`), already idempotent
+(upsert), already rebuildable in O(days) with bounded concurrency
+(`REBUILD_CONCURRENCY = 8`), and already the thing the calendar and
+insights read. A parallel table would need the identical trigger network,
+rebuild machinery and day-key semantics — a hand-maintained twin of exactly
+the kind the standing rules forbid. The cost is a wider row; the analyses
+read a bounded window of them. The decision and the null-semantics contract
+live in the module docstring of `src/lib/logic/daily-facts.ts`.
+
+### What changed
+
+* **Migration `daily_fact_columns`** (additive, defaulted — old rows stay
+  valid): planner minutes (`plannedMinutes`, `completedMinutes`,
+  `categoryMinutes` JSON), habit buckets (`habitsSkipped`, `habitsMissed`,
+  `habitsPaused`), nutrition depth (`fiber`, `mealCount`,
+  `nutritionTargetsMet/Total`), workout depth (`workoutVolumeKg`,
+  `workoutTypes` JSON, `dayType`), tasks (`tasksCreated`, `tasksCompleted`,
+  `tasksDueOpen`), finance (`spendCents`, `incomeCents`,
+  `transactionCount`, `spendByCategory` JSON), `hasJournal`, and nullable
+  health columns (`restingHr`, `hrv`, `activeCalories`, `hydrationMl`).
+* **`src/lib/logic/daily-facts.ts`** (pure) — the typed `DailyFact` record
+  and `dailyFactFromSummary`, which resolves the null semantics the storage
+  cannot express: **missing data is explicitly null, never zero** — macros
+  null unless `mealCount > 0`, score null unless `scoreApplicable > 0`,
+  adherence null unless targets applied, health nullable end to end;
+  counts are true zeros ("nothing happened" is a fact for a count), with
+  the finance caveat documented (untracked money is a history-wide
+  question for the analyses, not a per-day one). Plus the fold helpers
+  `recomputeDay` uses: `plannerMinuteFacts` (timed non-skipped blocks,
+  cross-midnight via the shared span math), `financeDayFacts`
+  (sign-split magnitudes in cents; `BOOKKEEPING_CATEGORIES`
+  transfer/adjustment counted but never spend/income),
+  `workoutDayFacts` (volume over completed sets, bodyweight = no invented
+  weight; distinct types first-seen). JSON cells parse defensively —
+  a corrupt cell degrades to empty, never throws a page down.
+* **`recomputeDay`** widened to one 13-way parallel read: goal evaluations
+  come from the SAME memoised `evaluateGoalsForDate` call the day score
+  makes (request-level cache hit, no second evaluation); task counts go
+  through `operationalDayWindow` (createdAt/completedAt are instants — the
+  4 AM reset is honoured, never hand-subtracted hours); day type stored
+  override-first (same rule as `getDayType`); journal presence read via
+  guarded `findFirst` (a trashed page must not read as "journaled");
+  habit totals gained a `paused` bucket (`getHabitDayTotals`) so paused
+  days are never due or missed. `getDailyFacts(userId, from, to)` is the
+  read side: one indexed query + O(1) map per row.
+* **Trigger-network completion** — finance, task and journal writes never
+  recomputed (their data wasn't summarised before); now they do, each for
+  exactly the days its facts live on: `saveTransaction` (both days on a
+  date edit), `deleteTransaction` (pair-aware), `transferBetweenAccounts`,
+  `setAccountBalance`, `markBillPaid`, `deleteFinanceAccount` (distinct
+  ledger dates), `saveTask`/`completeTask`/`reopenTask`/`dropTask`/
+  `deleteTask`/`rollTaskForward` (created/completed instants via
+  `operationalDayOf`, due dates directly; helper `taskFactDays`),
+  `scheduleTaskOnPlanner` (closed a pre-existing gap: the created block
+  never recomputed its day), the journal empty-page delete path, and the
+  Trash restore paths (task graphs, transactions, accounts, workouts, and
+  any day-keyed row generically). New `recomputeDaysFor(userId, dates)`
+  centralises the dedup + bounded-concurrency fan-out.
+
+### Performance
+
+* Daily path: `recomputeDay` is ~13 indexed single-day reads + 1 upsert —
+  nothing reads unbounded history. Writes recompute at most a handful of
+  days (a task delete: created + completed + due days of the affected
+  rows).
+* Rebuild measured on the seeded dev database: **60 days in 506 ms
+  (~8 ms/day)** at concurrency 8 — O(days), unchanged shape from before
+  the widening.
+
+### Verification
+
+* Unit +18 (tests/daily-facts.test.ts): null resolution (unlogged vs
+  logged-zero-kcal day, score, adherence, day-type whitelist, defensive
+  JSON), planner minute rules (cross-midnight, all-day/skipped/point
+  blocks), finance sign-split + bookkeeping exclusion, workout volume over
+  completed sets only. Suite 1,387 → 1,405.
+* Integration +16 (tests/integration/daily-facts.test.ts): incremental
+  correctness through the REAL actions (a saved transaction lands in the
+  summary with no manual recompute; a date edit recomputes both days; a
+  delete takes it back out; transfers/adjustments count but never spend),
+  task counts through the operational window (an 06:00 UTC creation lands
+  on the previous New York day), journal presence round trip, pause-aware
+  habit buckets, day type stored with override, target adherence cached
+  from the shared evaluation, recompute idempotence (identical row
+  modulo `updatedAt`), bulk rebuild filling wiped rows, cross-user
+  isolation. Suite → 544, all green.
+* E2E: finance-depth, task-planner-links, trash round-trips, review-data
+  (10 tests) re-run green over the new wiring; browser-verified /,
+  /calendar, /finance, /tasks, /nutrition, /today on the production build
+  (no console errors beyond the self-hosted Vercel-insights 404).
+* Typecheck, lint (0 errors, 63-warning baseline), build green.
+
+## Checkpoint 2.2 — correlation insights
+
+### What changed
+
+* **`src/lib/logic/correlations.ts`** — the pure statistical engine, with
+  every honesty rule enforced in code and named by a documented constant:
+  * `CORRELATION_CANDIDATES` — the explicit candidate set (13 pairs:
+    sleep↔score, sleep↔training volume, sleep↔habit completion,
+    training-day↔habits/score, planner load↔tasks/score, nutrition-target
+    adherence↔steps/active calories, hydration↔score, and three lag-1
+    "next morning" pairs: steps→sleep, training→sleep, training→resting
+    HR). Nothing outside this list is ever tested; adding a pair is a code
+    change that grows the correction.
+  * `MIN_PAIRED_OBSERVATIONS = 30` — below the floor a pair is *pending*
+    ("not enough data yet"), never a hedged weak insight.
+  * Spearman rank correlation (average-rank ties) with the two-tailed
+    t-approximation — **pinned against scipy to 8–10 decimal places** in
+    the unit suite, including tie handling. Effect size (ρ) reported on
+    every finding with a strength band.
+  * `benjaminiHochberg` q-values across every pair actually tested;
+    findings surface only at q ≤ `CORRELATION_FDR` (0.05). The unit suite
+    includes a raw-p ≈ 0.02 noise pair that the correction kills.
+  * `MAX_DOMINANT_SHARE = 0.9` — a guard browser verification surfaced:
+    47 zero-task days plus one active day gave Spearman ρ = +1.00. A pair
+    where one value takes > 90 % of either side now carries no evidence
+    (p = 1, still counted by the correction).
+  * Missing stays missing: a day where either side is null drops from that
+    pair; the descriptive group means are computed over the SAME pairs the
+    statistic used. Sentences are built by `describeFinding` /
+    `describeSplit` / `describeEvidence` — correlational verbs only
+    ("moved together"), sample size and window on every finding.
+* **`getCorrelationReport(userId, today)`** (src/server/insights.ts): one
+  bounded indexed read of the last `CORRELATION_WINDOW_DAYS = 180` daily
+  facts → the pure engine. All server-side, user-scoped, nothing external.
+* **`CorrelationsCard`** (src/components/insights/correlations-card.tsx),
+  mounted on /insights: findings with headline, group-means sentence,
+  "ρ = +0.96 (strong) · 45 paired days · last 180 days" evidence line and
+  Inspect links into each variable's module page; the empty state is
+  honest and specific (either "n pairs have data but nothing clears the
+  bar" or "not enough data yet" with per-pair progress toward 30).
+
+### Verification
+
+* Unit +16 (tests/correlations.test.ts): Spearman vs scipy (clean ranking,
+  ties, the 40-day fixture at p = 1.38e-9), t-tail vs scipy, BH against
+  the standard worked example (raw p = 0.039 → q = 0.21, suppressed),
+  min-sample gating at exactly 29 vs 30, never-impute pairing, lag
+  alignment across a history gap (42 pairs from 44 days), the dominance
+  guard, binary group means, empty history, and a language test asserting
+  no causal/prescriptive phrasing. Suite 1,405 → 1,421.
+* Integration +4 (tests/integration/correlations.test.ts): honest
+  fresh-account state through the real read path, a stored association
+  surfacing with sample and window, the 180-day window bound (out-of-window
+  rows never join), user isolation.
+* E2E +1 (tests/e2e/insights.spec.ts): the card renders exactly one honest
+  state, with evidence lines and no causal phrasing.
+* Browser-verified on the production build with seeded correlated data:
+  findings render with correct sentences and links; the ρ = +1.00 artifact
+  is gone after the dominance guard (screenshot-verified before/after).
+* Typecheck, lint (0 errors, 63-warning baseline), build green.
+
+## Checkpoint 2.3 — spending triggers
+
+### What changed
+
+* **`src/lib/logic/spending.ts`** — the finance-specific correlation pass,
+  REUSING the 2.2 statistics (`spearman`, `benjaminiHochberg`, the floor,
+  FDR and dominance-guard constants are imported, not re-derived — the
+  "same statistical bar" requirement enforced by construction). Specific to
+  finance:
+  * **Category level, not just totals**: total daily spend plus per-category
+    series are tested separately. Categories qualify by activity —
+    `qualifyingFloor(days)` = max(8 active days, enough that zeros stay
+    inside the dominance guard) — capped to the top
+    `SPENDING_CATEGORY_LIMIT = 5` by spend, so the tested set stays
+    explicit and bounded rather than category × context exploding.
+  * **The tracked-history gate** (`SPENDING_TRACKED_MIN_DAYS = 10` days
+    with a transaction in the window): the daily-facts caveat enforced — a
+    zero-spend day is only a real observation for someone who records
+    money here; below the gate the report is `untracked` and nothing is
+    computed.
+  * **Explicit context set** (`SPENDING_CONTEXTS`): planned time (schedule
+    density), training days, sleep, weekends, days with meals logged.
+    Documented omissions: time-of-day (the ledger stores dates; an entry
+    timestamp measures typing, not spending) and travel days (no schema
+    signal) are not tested rather than proxied badly.
+  * **Descriptive and neutral**: group means in currency ("Your dining
+    spend averaged $36.76 on weekend days (25) and $8.35 on weekday days
+    (61)"), correlational verbs, no moralising and no savings advice — the
+    unit suite asserts the copy never matches advice/moralising patterns.
+* **`getSpendingReport(userId, today)`** (src/server/insights.ts): same
+  bounded 180-day read of the daily facts, all server-side and user-scoped.
+* **`SpendingPatternsCard`** (src/components/finance/spending-patterns-card.tsx)
+  on /finance: findings with the evidence line and Inspect links; honest
+  untracked and nothing-significant states. Card description states
+  "descriptive associations … never causes and never advice".
+
+### Verification
+
+* Unit +6 (tests/spending.test.ts): the tracked gate (9 ledger days →
+  untracked; empty history → untracked, never a zero-spend "pattern"),
+  weekend↔dining surfacing at category level in cents while steady
+  groceries stay suppressed, rarely-active categories held out by the
+  qualifying floor, missing contexts dropped (60 of 90 sleep days pair),
+  and the neutral-language assertions. Suite 1,421 → 1,427.
+* Integration +3 (tests/integration/spending.test.ts): fresh account
+  untracked through the real read path, stored weekend–dining association
+  surfacing with n = 84, user isolation.
+* E2E +1 (tests/e2e/spending-patterns.spec.ts): the card renders one
+  honest state with no advisory copy.
+* Browser-verified on the production build with seeded ledger days:
+  total and category-level weekend findings render with correct group
+  means, ρ, n, window and links (screenshot).
+* Typecheck, lint (0 errors, 63-warning baseline), build green; full unit
+  suite 1,427 green.
+
+## Checkpoint 2.4 — anomaly nudges
+
+### What changed
+
+* **`src/lib/logic/anomalies.ts`** — the pure detection engine over the
+  daily fact layer. Robust baselines everywhere: rolling median with
+  scaled-MAD dispersion (×1.4826), so one wild day cannot drag a baseline;
+  spending compares weekly totals against prior weeks, which is the
+  seasonal handling the data supports (the weekday cycle is the dominant
+  one at personal scale). Five detectors, each with a documented history
+  gate — a new account clears none and gets silence, not fabrication:
+  * `resting_hr` — a ≥4-of-5-day run above median + k·MAD of the prior
+    30 days (≥20 measured), with a minimum 2 bpm band when readings are
+    ultra-steady;
+  * `sleep_debt` — ≥5 h accumulated below the 30-day median across the
+    last 7 nights (≥20 baseline / ≥5 recent measured);
+  * `habit_streak` — a ≥21-day streak that broke yesterday (computed from
+    the real habit engine: streak as of two days ago, missed as of
+    yesterday), phrased factually;
+  * `workout_frequency` — the current fortnight at or below half the
+    median of the three prior fortnights (baseline ≥3/fortnight);
+  * `spending` — a category week above median + k·MAD of 8 prior weeks
+    (≥6 active) AND ≥1.5× the median.
+  Deliberate omission, documented in code: **no calorie anomaly detector**
+  — that would be the "you went over" alert the 1.4 wellbeing constraint
+  forbids.
+* **Delivery through the existing reminder ledger** — anomaly signals join
+  `getReminderFeedFor` as a new occurrence kind ("anomaly"), so the in-tab
+  watcher and the scheduled push runner both deliver them claim-first,
+  exactly-once, with zero new scheduling machinery. Hard rate limit:
+  `ANOMALY_WEEKLY_LIMIT = 3` per rolling week (the ledger's 7-day sweep IS
+  the rolling window), priority health → behaviour → money; dedup via keys
+  embedding a coarse window (the week, or the habit break date). The feed
+  fold is never-fatal.
+* **Dismissal informs sensitivity; per-category mute** — new
+  `AnomalyPreference` model (additive migration `anomaly_preference`;
+  unique (userId, category); rides backup v14). Each dismissal raises
+  that category's threshold (`+0.5·k` per dismissal, capped at +2; habit
+  streaks +7 days floor per dismissal) and claims the ledger key so no
+  channel re-delivers the occurrence. Muting skips the detector entirely.
+  Actions in src/server/actions/anomalies.ts.
+* **The Observations card** (/insights, client component): every current
+  observation with dismiss buttons and the mute panel — the always-visible
+  record, so a nudge missed as a toast is never lost. Honest empty states
+  ("baselines still forming" vs "nothing unusual").
+* **Health constraint enforced in copy and tests**: observations about the
+  user's own numbers, never diagnosis; the resting-HR nudge carries ONE
+  brief clinician sentence (`CLINICIAN_NOTE`), only while the category has
+  never been dismissed — after the first dismissal it never returns.
+* Backup format v13 → **v14** (`anomalyPreferences` table; older files
+  restore unchanged; the version-history docstring extended).
+
+### Verification
+
+* Unit +17 (tests/anomalies.test.ts): scaled MAD, each detector's fire and
+  gate cases, dismissal-raised thresholds (including clinician-note
+  retirement), the weekly budget with priority order, delivered-key dedup
+  keeping observations visible, mutes, the empty account, and a copy sweep
+  asserting no diagnosis/alarm/advice language. Suite 1,427 → 1,444.
+* Integration +7 (tests/integration/anomalies.test.ts): detection through
+  the real read path with the clinician flag; the reminder feed emitting
+  the anomaly occurrence and the ledger claim silencing it (second claim
+  collides); dismissal incrementing the preference and stripping the note;
+  mute stopping the detector; isolation; the v14 backup round trip.
+  Full integration suite 558 green (one stale v13 pin updated).
+* E2E +1 (tests/e2e/observations.spec.ts): the card's honest state and the
+  five mute switches.
+* Browser-verified on the production build with a seeded HR run: the
+  observation renders with the neutral sentence + one clinician note, and
+  the live dismissal loop works (toast confirms, preference row written).
+* Typecheck, lint (0 errors, 63-warning baseline), build green.
+
+## Checkpoint 2.5 — automations: rules engine core
+
+### What changed
+
+* **Models** (additive migration `automation_rules`): `AutomationRule`
+  (JSON trigger/conditions/actions columns validated by the pure module;
+  `reviewedHash` for the mandatory dry run; failure counters +
+  `disabledReason`; unique per user) and `AutomationExecution` (the audit
+  log: trigger snapshot, matched context, per-action outcomes with created
+  ids and previous values — the undo handles; `dedupKey` for
+  once-per-day tick firing).
+* **`src/lib/logic/automation.ts`** — the pure core, safety by
+  construction:
+  * Triggers: record created/updated per module (transaction, task,
+    planner block, habit log, meal, workout, health metric, inbox), a
+    DailyFact threshold, a date rule (weekdays or a specific date), and an
+    anomaly firing from 2.4. Documented scope decision: "schedule event
+    starting/ending" maps to record triggers on planner blocks (marking a
+    block done IS its end in a manual-first app) plus the date trigger —
+    no minute-level server scheduler exists and none was pretended.
+  * Conditions: field comparisons (eq/neq/contains/gt/…/in), text
+    matching, weekday and date-range filters, composable ALL/ANY with
+    `MAX_CONDITION_DEPTH = 3` and a 20-node cap — rejected at parse.
+  * Actions: set category, create task/inbox/reminder/planner-block,
+    log a habit (never overwriting an existing log), link a transaction
+    to a bill, notify (through the classic-reminder → delivery-ledger
+    path). **There is no delete verb** — `parseActions` whitelists, so
+    "rules never delete" holds by construction, and a unit test sweeps
+    the vocabulary for delete-ish verbs.
+  * Loop prevention: `selfTriggerProblem` rejects direct self-triggering
+    at save; `MAX_AUTOMATION_DEPTH = 2` bounds cascades at runtime (a
+    rule-produced record evaluates rules once more; ITS products never).
+  * `definitionFingerprint` — the dry-run-before-enable mechanism.
+* **`src/server/automation.ts`** — the executor.
+  `dispatchAutomationEvent` never throws (a broken rule cannot break a
+  save); every execution is logged with resulting record ids; a rule that
+  errors `RULE_FAILURE_LIMIT = 3` times in a row disables itself with the
+  error as its reason. Undo (`undoExecution`/`undoRuleBatch`): created
+  records go to the Trash through the ordinary soft-delete (restorable);
+  the habit-log exception is removed outright (documented — logs are not
+  trash-kept); field changes revert to the recorded previous value;
+  idempotent via `undoneAt`. Dry run replays the trigger against the last
+  30 days of real rows/facts, writing nothing.
+* **Execution wiring** — the server action path on write:
+  saveTransaction (created/updated), saveTask (created/updated),
+  createScheduleItem (+ quick-add, which delegates to it — quick-capture
+  writes trigger rules through the same path), setScheduleItemStatus
+  (updated — the block lifecycle event), logHabit, logFood, saveWorkout,
+  logHealthMetric, saveInboxItem. Tick triggers (fact/date/anomaly) run in
+  `runDailyAutomations`, folded into the EXISTING /api/reminders/run
+  maintenance tick — no new scheduler — deduplicated per rule per
+  operational day.
+* **Actions** (src/server/actions/automation.ts): save (always disabled;
+  self-trigger rejected; behavioural edits re-disable and void the
+  review), dryRun (stamps `reviewedHash`), setEnabled (refuses without a
+  matching review), delete (explicit, confirmed in UI — the USER deletes
+  rules; rules delete nothing), undo one execution / a rule's batch.
+* Backup v14 → **v15**: `automationRules` exported; on restore rules
+  arrive DISABLED with the review cleared — they must be dry-run against
+  the destination account's data before running. Execution logs are
+  deliberately not exported (documented: operational audit trail whose
+  record ids do not survive remapping).
+
+### Verification
+
+* Unit +16 (tests/automation.test.ts): trigger/condition/action parsing
+  bounds, the no-delete vocabulary sweep, self-trigger rejection (created
+  and updated forms) with the classic cross-module rules allowed,
+  condition evaluation (case-insensitivity, missing-field = no match,
+  AND/OR composition, weekday/date-range, empty-ANY-matches-nothing),
+  template clamping, fingerprint stability. Suite 1,444 → 1,460.
+* Integration +14 (tests/integration/automation.test.ts): the mandatory
+  dry-run flow (save disabled → enable refused → preview against real
+  data writes nothing → enable; behavioural edit re-disables);
+  self-trigger rejected at save; a real saveTransaction firing
+  set_category + link_bill + create_task with previous values and created
+  ids on the log; non-matching writes leaving no trace; the depth bound
+  (A→inbox→B→task, then silence — exactly 2 tasks, 1 inbox, 1 execution
+  each); undo reverting the category and trashing the task, refused the
+  second time; three failures self-disabling with the reason; tick
+  fact-threshold firing once then deduped, missing metrics never
+  crossing, anomaly trigger creating from a live observation; user
+  isolation; the v15 round trip restoring disabled-pending-review.
+  Full integration suite 572 green.
+* Typecheck, lint (0 errors, 63-warning baseline), build green;
+  browser-verified the key pages with the dispatch wiring live. (The
+  builder UI, starter library, and the measured performance numbers are
+  checkpoint 2.6.)
+
+## Checkpoint 2.6 — rule builder UI, library, and integration pass
+
+### What changed
+
+* **The builder** (src/components/automation/rule-builder-dialog.tsx),
+  comprehensible without documentation: three labelled sections — When…
+  (trigger type + per-type fields), If… (field/operator/value rows with an
+  all/any toggle, weekday chips for date rules), Then… (up to five action
+  rows with per-verb fields) — and the rule's **plain-English summary
+  rendered live at the top** from the pure `describeRule` ("When a
+  transaction is created, if payee contains “planet”, set the category to
+  health and link it to its matching bill."). Definitions the simple form
+  cannot represent (hand-nested condition groups) switch to direct JSON
+  editing rather than silently flattening. The save button stays disabled
+  while the summary slot shows a validation error.
+* **The rules surface** (/settings/rules, linked from Settings): each rule
+  with its sentence, enable switch (server-guarded by the dry-run
+  requirement), last-run status + date, a "needs dry run" badge, the
+  self-disable reason when present; per-rule **Dry run** (preview dialog:
+  candidates examined, matches with rendered action previews, an Enable
+  button inside the preview — enabling happens FROM the review),
+  **History** (every execution with trigger context, outcomes, per-run
+  Undo and Undo-all), **Edit**, and a two-step **Delete**.
+* **Starter library** — four templates (merchant categorisation,
+  recurring-transaction linking to bills, post-workout habit logging,
+  low-sleep schedule protection) as `STARTER_RULES`
+  (src/lib/logic/automation-library.ts). Presented as optional cards with
+  edit hints; adding one uses the ordinary save path, so it is stored
+  DISABLED and only runs after review + dry run. A unit test parses every
+  template through the same validation as hand-built rules.
+* **Anomaly trigger wiring**: the builder offers the anomaly trigger with
+  the five 2.4 categories (engine support landed in 2.5; integration test
+  covers an observation firing a rule).
+* **Quick-capture verification**: integration test — a palette quick-add
+  ("Gym session 6pm") fires a schedule_item rule exactly once, the block's
+  category is set, and nothing cascades (field updates are not creation
+  events).
+* **Docs**: docs/quick-capture.md (the capture grammar, surface by
+  surface, with the never-lost inbox rule) and docs/automation-rules.md
+  (triggers, conditions, actions, the safety model, the starter library,
+  backups, performance) — user-facing, linked to each other.
+
+### Performance (measured)
+
+`saveTransaction` mean over 25 writes on the integration benchmark
+(Postgres 16, same box): **20.4 ms → 23.2 ms** and **16.9 ms → 25.6 ms**
+across two runs (without rules → with five enabled rules, one of which
+matched and wrote an inbox item + execution log per run — i.e. most of the
+delta is the matched rule doing real work, not evaluation). With no
+enabled rules the dispatch is a single indexed `findMany` that returns
+empty. The benchmark asserts the overhead stays under 250 ms to catch an
+accidental O(history) regression.
+
+### Verification (and the full-phase regression sweep)
+
+* Unit +5 (describeRule sentences for record/fact/anomaly triggers, the
+  starter library parsing + the four promised keys, builder field
+  metadata): suite **1,465** green (was 1,285 at the start of the master
+  update).
+* Integration +2 (quick-capture fires rules without loops; the measured
+  performance benchmark): suite **574** green (was ~485).
+* E2E +1 (tests/e2e/automation-rules.spec.ts: build in the dialog watching
+  the live summary, save disabled, dry run, enable from the preview, the
+  four starter cards, add-a-starter, delete cleanup) — and the **full E2E
+  suite: 154 passed, 1 skipped** across every module touched in both
+  phases.
+* Typecheck, lint (0 errors, 63-warning baseline), build green;
+  browser-verified the Automations page and the builder dialog
+  (screenshots: validation state, When/If/Then sections, review footer).
+
+## Master update — phase record
+
+Both phases complete. Phase 1 (capture & depth): search coverage audit,
+unified quick-capture, barcode depth, nutrition targets with the wellbeing
+constraint enforced (suggest-from-body-weight removed), workout depth,
+nutrition↔workout linkage. Phase 2 (intelligence & automation): the
+unified daily fact layer (one row per user per operational day, missing
+data explicitly null), correlation insights and spending triggers under
+one statistical-honesty bar (30-pair floor, Spearman vs scipy, BH
+correction, dominance guard, no imputation), anomaly nudges on robust
+baselines through the reminder ledger (rate-limited, dismissal-aware,
+observation-only health copy), and the rules engine (never deletes,
+dry-run-before-enable, logged, undoable, self-disabling, loop-bounded, no
+new scheduler). Backups v12 → v15 across the update, every migration
+additive. Suites over the update: unit 1,285 → 1,465; integration ~485 →
+574; E2E 154 green.
+
+Post-sweep fix: CI caught 4 lint errors a local `tail`-filtered lint run
+had masked (three unescaped apostrophes in the new rules UI JSX, one
+`module` loop variable in a test tripping `no-assign-module-variable`).
+Fixed; the lint baseline is now 0 errors / 64 warnings (the one addition
+is a `react-hooks/set-state-in-effect` warning on the builder dialog's
+open-reset effect — the same warn-level rule class as the documented
+existing instances).

@@ -8,6 +8,7 @@ import { SectionCard } from "@/components/shared/section-card";
 import { StatCard } from "@/components/shared/stat-card";
 import { Skeleton } from "@/components/ui/skeleton";
 import { WorkoutManager, type WorkoutView } from "@/components/workouts/workout-manager";
+import { ProgressionCard } from "@/components/workouts/progression-card";
 import { SessionPanel, type SessionView } from "@/components/workouts/session-panel";
 import { WORKOUT_TYPE_META, type WorkoutType } from "@/lib/enums";
 import { formatDay, formatDuration, isDayKey, lastNDays, shiftDay } from "@/lib/date";
@@ -100,6 +101,7 @@ export default async function WorkoutsPage({
           id: set.id,
           exercise: set.exercise,
           setNumber: set.setNumber,
+          supersetGroup: set.supersetGroup,
           reps: set.reps,
           weightKg: set.weightKg,
           durationSec: set.durationSec,
@@ -213,6 +215,8 @@ export default async function WorkoutsPage({
         </div>
 
         <div className="space-y-6 lg:col-span-2">
+          <ProgressionCard exercises={exerciseNames} unitSystem={user.unitSystem} />
+
           <SectionCard
             title="Training load"
             icon={Activity}

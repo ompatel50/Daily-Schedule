@@ -125,3 +125,57 @@ export function expandTemplateExercises(exercises: TemplateExercise[]): SetLike[
   }
   return rows;
 }
+
+// ---------------------------------------------------------------------------
+// Per-exercise progression — weight, reps and volume over time
+// ---------------------------------------------------------------------------
+
+export interface ExerciseProgressionPoint {
+  date: string;
+  /** Heaviest completed set of the day. Null when the day was bodyweight. */
+  topWeightKg: number | null;
+  /** Epley estimate from the day's best set. Null without a weighted set. */
+  estOneRepMaxKg: number | null;
+  totalReps: number;
+  /** Σ reps × weight over the day's completed sets. */
+  volumeKg: number;
+  sets: number;
+}
+
+/**
+ * Fold one exercise's completed sets into one point per day.
+ * O(rows) — the caller bounds the window; this never re-reads history.
+ */
+export function exerciseProgression(
+  rows: Array<{ date: string; reps: number | null; weightKg: number | null }>,
+): ExerciseProgressionPoint[] {
+  const byDate = new Map<string, ExerciseProgressionPoint>();
+  for (const row of rows) {
+    const point =
+      byDate.get(row.date) ??
+      ({
+        date: row.date,
+        topWeightKg: null,
+        estOneRepMaxKg: null,
+        totalReps: 0,
+        volumeKg: 0,
+        sets: 0,
+      } satisfies ExerciseProgressionPoint);
+    point.sets += 1;
+    point.totalReps += row.reps ?? 0;
+    if (row.weightKg !== null && row.weightKg > 0) {
+      point.volumeKg += (row.reps ?? 0) * row.weightKg;
+      if (point.topWeightKg === null || row.weightKg > point.topWeightKg) {
+        point.topWeightKg = row.weightKg;
+      }
+      if (row.reps !== null && row.reps > 0) {
+        const orm = estimateOneRepMax(row.weightKg, row.reps);
+        if (point.estOneRepMaxKg === null || orm > point.estOneRepMaxKg) {
+          point.estOneRepMaxKg = orm;
+        }
+      }
+    }
+    byDate.set(row.date, point);
+  }
+  return Array.from(byDate.values()).sort((a, b) => a.date.localeCompare(b.date));
+}

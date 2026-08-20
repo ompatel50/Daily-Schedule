@@ -49,6 +49,7 @@ import {
   type ActionResult,
   type SeriesScope,
 } from "@/lib/validation";
+import { dispatchAutomationEvent, scheduleItemContext } from "@/server/automation";
 import { scheduleSettingsFor } from "@/server/schedule";
 import {
   extendSeriesFor,
@@ -175,6 +176,13 @@ export async function createScheduleItem(input: unknown): Promise<ActionResult<{
   }
 
   await touchDays(user.id, touched);
+  await dispatchAutomationEvent(user.id, {
+    module: "schedule_item",
+    event: "created",
+    recordId: parent.id,
+    context: scheduleItemContext(parent),
+    date: data.date,
+  });
   revalidateAll();
   return succeed({ id: parent.id });
 }
@@ -622,7 +630,17 @@ export async function setScheduleItemStatus(
     data: { status, completedAt: status === "done" ? new Date() : null },
   });
 
-  await touchDays(user.id, [operationalDayOfRecord(item, resetFor(user))]);
+  const day = operationalDayOfRecord(item, resetFor(user));
+  await touchDays(user.id, [day]);
+  // A status change IS the block's lifecycle event ("done" ends it) — the
+  // schedule-event trigger surface for the rules engine.
+  await dispatchAutomationEvent(user.id, {
+    module: "schedule_item",
+    event: "updated",
+    recordId: item.id,
+    context: scheduleItemContext({ ...item, status }),
+    date: day,
+  });
   revalidateAll();
   return succeed({ status, taskOffer: await taskOfferFor(user.id, item, status) });
 }

@@ -276,6 +276,8 @@ export interface HabitDayTotals {
   skipped: number;
   excused: number;
   pending: number;
+  /** Habits inside a pause window — excluded from the denominator entirely. */
+  paused: number;
   restOrUnscheduled: number;
 }
 
@@ -303,6 +305,7 @@ export async function getHabitDayTotals(
     skipped: 0,
     excused: 0,
     pending: 0,
+    paused: 0,
     restOrUnscheduled: 0,
   };
   if (habits.length === 0) return totals;
@@ -354,6 +357,10 @@ export async function getHabitDayTotals(
         break;
       case "excused":
         totals.excused += 1;
+        break;
+      case "paused":
+        // Never due, never missed — the pause window removes the requirement.
+        totals.paused += 1;
         break;
       case "future":
         break;

@@ -2,11 +2,10 @@ import { describe, expect, it } from "vitest";
 
 import {
   baseUnitsFor,
+  compareDayTypes,
   describeServing,
-  estimateDailyCalories,
   macroSplit,
   macrosFor,
-  suggestMacroGoals,
   totalMacros,
   type FoodLike,
 } from "@/lib/logic/nutrition";
@@ -131,27 +130,34 @@ describe("describeServing", () => {
   });
 });
 
-describe("goal estimation", () => {
-  it("produces a plausible calorie target", () => {
-    const calories = estimateDailyCalories({
-      weightKg: 80,
-      heightCm: 180,
-      age: 30,
-      sex: "male",
-      activityLevel: "moderate",
-    });
-    expect(calories).toBeGreaterThan(2400);
-    expect(calories).toBeLessThan(3200);
+describe("training vs rest comparison", () => {
+  const day = (
+    calories: number,
+    workoutCount: number,
+    override: "training" | "rest" | null = null,
+  ) => ({ calories, protein: calories / 10, workoutCount, override });
+
+  it("averages logged days per side; unlogged days join neither", () => {
+    const result = compareDayTypes([
+      day(2000, 1),
+      day(2200, 2),
+      day(1600, 0),
+      day(0, 1), // trained but logged nothing — unknown, excluded
+      day(0, 0),
+    ]);
+    expect(result.training).toEqual({ days: 2, avgCalories: 2100, avgProtein: 210 });
+    expect(result.rest).toEqual({ days: 1, avgCalories: 1600, avgProtein: 160 });
   });
 
-  it("falls back to a sane default with missing inputs", () => {
-    expect(estimateDailyCalories({ weightKg: 0, heightCm: 0, age: 0 })).toBe(2000);
+  it("an override moves a day to the other side", () => {
+    const result = compareDayTypes([day(2000, 1, "rest"), day(1500, 0, "training")]);
+    expect(result.rest.days).toBe(1);
+    expect(result.rest.avgCalories).toBe(2000);
+    expect(result.training.avgCalories).toBe(1500);
   });
 
-  it("splits macros to roughly the target calories", () => {
-    const macros = suggestMacroGoals(2400);
-    const kcal = macros.protein * 4 + macros.carbs * 4 + macros.fat * 9;
-    expect(kcal).toBeGreaterThan(2350);
-    expect(kcal).toBeLessThan(2450);
+  it("no logged days at all reports empty sides, not zeros", () => {
+    const result = compareDayTypes([day(0, 1)]);
+    expect(result.training).toEqual({ days: 0, avgCalories: null, avgProtein: null });
   });
 });

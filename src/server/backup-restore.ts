@@ -86,6 +86,9 @@ const MODEL_BY_TABLE: Record<BackupTable, string> = {
   goals: "Goal",
   goalEntries: "GoalEntry",
   goalMilestones: "GoalMilestone",
+  dayTypeOverrides: "DayTypeOverride",
+  anomalyPreferences: "AnomalyPreference",
+  automationRules: "AutomationRule",
   scheduleRules: "ScheduleRule",
   scheduleRuleDays: "ScheduleRuleDay",
   scheduleOverrides: "ScheduleOverride",
@@ -567,6 +570,36 @@ export async function restoreBackupForUser(
     if (!mapped) return null;
     if (!inFile("goals", row.goalId)) return null;
     mapped.goalId = map(row.goalId);
+    return own(mapped);
+  });
+
+  // Day-type overrides are plain per-user, per-day rows — no foreign keys
+  // beyond the owner.
+  prepare("dayTypeOverrides", (row) => {
+    const mapped = withId(row);
+    if (!mapped) return null;
+    return own(mapped);
+  });
+
+  // Anomaly preferences: same shape — one row per category, owner-only.
+  prepare("anomalyPreferences", (row) => {
+    const mapped = withId(row);
+    if (!mapped) return null;
+    return own(mapped);
+  });
+
+  // Automation rules restore DISABLED with their review cleared: a rule may
+  // only run after a dry run against THIS account's data (the mandatory
+  // pre-enable review). Health/failure counters reset with it.
+  prepare("automationRules", (row) => {
+    const mapped = withId(row);
+    if (!mapped) return null;
+    mapped.enabled = false;
+    mapped.reviewedHash = null;
+    mapped.consecutiveFailures = 0;
+    mapped.disabledReason = null;
+    mapped.lastRunAt = null;
+    mapped.lastStatus = null;
     return own(mapped);
   });
 

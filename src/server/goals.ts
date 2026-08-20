@@ -17,6 +17,7 @@ import {
   describeGoalTarget,
   emptyFacts,
   evaluateGoal,
+  goalAppliesOnDayType,
   isWeeklyGoal,
   measureGoal,
   newlyReachedMilestones,
@@ -64,6 +65,7 @@ function toGoalLike(goal: GoalRow): GoalLike {
     period: goal.period,
     source: goal.source,
     sourceRef: goal.sourceRef,
+    dayType: goal.dayType,
   };
 }
 
@@ -320,6 +322,9 @@ function buildGoalCompletions(
 
   if (goal.source !== "manual") {
     for (const [date, facts] of factsByDay) {
+      // A day the goal's day-type gate excludes was never an opportunity —
+      // synthesising a completion there would inflate streaks.
+      if (!goalAppliesOnDayType(goal, facts)) continue;
       const measurement = measureGoalSafe(goal, facts);
       if (measurement) byDate.set(date, { date, status: "done" });
     }

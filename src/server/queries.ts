@@ -24,13 +24,14 @@ import { emptySearchRows, type SearchRows } from "@/lib/logic/search";
 import { operationalDayWhere } from "@/lib/logic/operational-day";
 import { comparePlannerSpans } from "@/lib/logic/schedule-span";
 import {
+  createStableDateKey,
   describeSchedule,
   resetMinuteOf,
   resolveEffectiveSchedule,
   type DayStatus,
   type ScheduleMode,
 } from "@/lib/logic/schedule";
-import { totalMacros } from "@/lib/logic/nutrition";
+import { compareDayTypes, totalMacros } from "@/lib/logic/nutrition";
 import { parseJson, sum } from "@/lib/utils";
 import { getDayScore, scoreOptionsFor } from "@/server/day-score";
 import { evaluateGoalsForDate } from "@/server/goals";
@@ -518,6 +519,7 @@ export async function getGoalRows() {
       period: goal.period,
       source: goal.source,
       sourceRef: goal.sourceRef,
+      dayType: goal.dayType,
     };
 
     return {
@@ -554,10 +556,151 @@ export async function getGoalRows() {
   });
 }
 
-export async function getGoalMap() {
-  const goals = await getGoals();
-  return new Map(goals.filter((goal) => goal.active).map((goal) => [goal.metric, goal]));
+/**
+ * Active goals keyed by metric, for target displays. With day-type variants
+ * (a training-day and a rest-day calorie target), the DATE's variant wins and
+ * the "all" goal is the fallback — so the nutrition page and dashboard show
+ * the target that actually applies today. One extra count query, and only
+ * when a variant exists at all.
+ */
+export async function getGoalMap(date?: DayKey) {
+  const user = await getCurrentUser();
+  const goals = (await getGoals()).filter((goal) => goal.active);
+
+  const hasVariants = goals.some((goal) => goal.dayType !== "all");
+  let dayType: "training" | "rest" | null = null;
+  if (hasVariants) {
+    const day = date ?? scheduleSettingsFor(user).today;
+    dayType = (await getDayType(user.id, day)).dayType;
+  }
+
+  const map = new Map<string, (typeof goals)[number]>();
+  for (const goal of goals) {
+    if (goal.dayType !== "all" && goal.dayType !== dayType) continue;
+    const current = map.get(goal.metric);
+    // A day-type-specific goal outranks the "all" fallback for its metric.
+    if (!current || (current.dayType === "all" && goal.dayType !== "all")) {
+      map.set(goal.metric, goal);
+    }
+  }
+  return map;
 }
+
+/**
+ * One day's type — the manual override when one exists, else derived from
+ * completed workouts. THE resolver: everything that answers "is this a
+ * training day?" (goal gating reads it via facts, the goal map and the
+ * targets view-model read it here) agrees by construction.
+ */
+export async function getDayType(
+  userId: string,
+  date: DayKey,
+): Promise<{ dayType: "training" | "rest"; overridden: boolean; trainedCount: number }> {
+  const [override, trained] = await Promise.all([
+    prisma.dayTypeOverride.findUnique({ where: { userId_date: { userId, date } } }),
+    prisma.workout.count({ where: { userId, date, status: "completed" } }),
+  ]);
+  if (override?.dayType === "training" || override?.dayType === "rest") {
+    return { dayType: override.dayType, overridden: true, trainedCount: trained };
+  }
+  return { dayType: trained > 0 ? "training" : "rest", overridden: false, trainedCount: trained };
+}
+
+/**
+ * The nutrition page's Targets view-model: every active nutrition target
+ * (macro goals + the hydration goal), the date's day type, and what was
+ * consumed against each. `consumed: null` when nothing was logged — unknown,
+ * never zero.
+ */
+export async function getNutritionTargets(date: DayKey) {
+  const user = await getCurrentUser();
+  const comparisonFrom = shiftDay(date, -27);
+  const [goals, dayTypeInfo, meals, hydrationRows, windowSummaries, windowOverrides] =
+    await Promise.all([
+      prisma.goal.findMany({
+        where: {
+          userId: user.id,
+          active: true,
+          archivedAt: null,
+          OR: [{ domain: "nutrition" }, { source: "hydration" }],
+        },
+        orderBy: [{ metric: "asc" }, { dayType: "asc" }],
+      }),
+      getDayType(user.id, date),
+      getMealsForDay(date),
+      prisma.healthMetric.findMany({ where: { userId: user.id, date, type: "hydration_ml" } }),
+      // For the descriptive training-vs-rest comparison: the summary cache
+      // already holds per-day calories/protein/workoutCount — O(28) rows.
+      getSummaries(user.id, comparisonFrom, date),
+      prisma.dayTypeOverride.findMany({
+        where: { userId: user.id, date: { gte: comparisonFrom, lte: date } },
+        select: { date: true, dayType: true },
+      }),
+    ]);
+
+  const { dayType, overridden, trainedCount } = dayTypeInfo;
+  const overrideByDate = new Map(windowOverrides.map((row) => [row.date, row.dayType]));
+  const comparison = compareDayTypes(
+    windowSummaries.map((summary) => ({
+      calories: summary.calories,
+      protein: summary.protein,
+      workoutCount: summary.workoutCount,
+      override:
+        overrideByDate.get(summary.date) === "training"
+          ? ("training" as const)
+          : overrideByDate.get(summary.date) === "rest"
+            ? ("rest" as const)
+            : null,
+    })),
+  );
+  const totals = totalMacros(meals.flatMap((meal) => meal.entries));
+  const anyFood = meals.some((meal) => meal.entries.length > 0);
+  const hydration = aggregateDay("hydration_ml", hydrationRows as HealthRowLike[])?.value ?? null;
+
+  const consumedFor = (source: string): number | null => {
+    switch (source) {
+      case "calories":
+        return anyFood ? totals.calories : null;
+      case "protein":
+        return anyFood ? totals.protein : null;
+      case "carbs":
+        return anyFood ? totals.carbs : null;
+      case "fat":
+        return anyFood ? totals.fat : null;
+      case "fiber":
+        return anyFood ? totals.fiber : null;
+      case "hydration":
+        return hydration;
+      default:
+        return null;
+    }
+  };
+
+  return {
+    date,
+    dayType,
+    overridden,
+    trainedCount,
+    comparison,
+    hasVariants: goals.some((goal) => goal.dayType !== "all"),
+    rows: goals.map((goal) => ({
+      id: goal.id,
+      metric: goal.metric,
+      label: goal.label,
+      target: goal.target,
+      targetMax: goal.targetMax,
+      direction: goal.direction,
+      unit: goal.unit,
+      dayType: goal.dayType,
+      period: goal.period,
+      source: goal.source,
+      consumed: consumedFor(goal.source),
+      applies: goal.dayType === "all" || goal.dayType === dayType,
+    })),
+  };
+}
+
+export type NutritionTargetsView = Awaited<ReturnType<typeof getNutritionTargets>>;
 
 export async function getJournalEntry(date: DayKey) {
   const user = await getCurrentUser();
@@ -607,7 +750,7 @@ export async function getDayOverview(date: DayKey = today()) {
       include: { sets: { orderBy: { sortOrder: "asc" } } },
     }),
     prisma.healthMetric.findMany({ where: { userId: user.id, date } }),
-    getGoalMap(),
+    getGoalMap(date),
     evaluateGoalsForDate(user.id, date, settings),
     getJournalEntry(date),
     getSummaries(user.id, weekStart, weekEnd),
@@ -708,6 +851,8 @@ export async function searchEverything(query: string, limit = 8): Promise<Search
     tags,
     healthMetrics,
     healthRecords,
+    meals,
+    reminders,
   ] = await Promise.all([
       prisma.scheduleItem.findMany({
         where: { userId: user.id, title: { contains: term, mode: "insensitive" } },
@@ -844,6 +989,44 @@ export async function searchEverything(query: string, limit = 8): Promise<Search
         take: limit,
         select: { id: true, kind: true, title: true, subtitle: true, date: true },
       }),
+      // Logged meals match on their free text only. `type` is a fixed
+      // vocabulary ("lunch") that would return every lunch ever logged —
+      // discovery of meal *kinds* belongs to Foods and Meal templates.
+      prisma.meal.findMany({
+        where: {
+          userId: user.id,
+          OR: [
+            { label: { contains: term, mode: "insensitive" } },
+            { notes: { contains: term, mode: "insensitive" } },
+          ],
+        },
+        orderBy: { date: "desc" },
+        take: limit,
+        select: { id: true, date: true, type: true, label: true },
+      }),
+      prisma.reminder.findMany({
+        where: {
+          userId: user.id,
+          OR: [
+            { title: { contains: term, mode: "insensitive" } },
+            { message: { contains: term, mode: "insensitive" } },
+          ],
+        },
+        orderBy: { remindAt: "desc" },
+        take: limit,
+        select: {
+          id: true,
+          title: true,
+          repeat: true,
+          enabled: true,
+          remindAt: true,
+          // A block-born reminder deep-links its planner day. `deletedAt`
+          // rides along because Prisma cannot filter a to-one include —
+          // the mapping below nulls the link when the block sits in the
+          // Trash (src/lib/soft-delete.ts documents this boundary).
+          scheduleItem: { select: { date: true, deletedAt: true } },
+        },
+      }),
     ]);
 
   return {
@@ -885,6 +1068,20 @@ export async function searchEverything(query: string, limit = 8): Promise<Search
     documents,
     healthMetrics,
     healthRecords: healthRecords.map((record) => ({ ...record, date: record.date as DayKey })),
+    meals: meals.map((meal) => ({ ...meal, date: meal.date as DayKey })),
+    // The fire day resolves in the USER's timezone here — the pure hit
+    // builder never does timezone math on an instant.
+    reminders: reminders.map((reminder) => ({
+      id: reminder.id,
+      title: reminder.title,
+      repeat: reminder.repeat,
+      enabled: reminder.enabled,
+      day: createStableDateKey(reminder.remindAt, user.timezone),
+      blockDate:
+        reminder.scheduleItem && reminder.scheduleItem.deletedAt === null
+          ? (reminder.scheduleItem.date as DayKey)
+          : null,
+    })),
     tags: tags.map((tag) => ({
       id: tag.id,
       name: tag.name,

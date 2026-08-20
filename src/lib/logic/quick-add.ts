@@ -82,28 +82,31 @@ function parseClock(raw: string): number | null {
   return hours * 60 + mins;
 }
 
-export function parseQuickAdd(input: string, baseDate: DayKey = today()): ParsedQuickAdd {
-  let text = ` ${input.trim()} `;
-  let date = baseDate;
-  let startMinute: number | null = null;
-  let endMinute: number | null = null;
-  let category: ScheduleCategory | null = null;
-  let priority: Priority = "medium";
-  const tags: string[] = [];
-
-  // A string strips its first literal occurrence; a RegExp strips by pattern.
-  const strip = (pattern: RegExp | string) => {
-    text = text.replace(pattern, " ");
+/**
+ * Pull `!priority` out of `text`. Shared by the planner grammar and the
+ * capture parsers (src/lib/logic/capture.ts) so the token means the same
+ * thing everywhere. Input/output text is space-padded working text.
+ */
+export function extractPriority(text: string): { text: string; priority: Priority | null } {
+  const match = /\s!(low|medium|high|urgent)\b/i.exec(text);
+  if (!match) return { text, priority: null };
+  return {
+    text: text.replace(match[0], " "),
+    priority: match[1].toLowerCase() as Priority,
   };
+}
 
-  // --- priority: !high / !urgent ------------------------------------------
-  const priorityMatch = /\s!(low|medium|high|urgent)\b/i.exec(text);
-  if (priorityMatch) {
-    priority = priorityMatch[1].toLowerCase() as Priority;
-    strip(priorityMatch[0]);
-  }
-
-  // --- tags: #tag ----------------------------------------------------------
+/**
+ * Pull `#hash` tokens out of `text` — schedule-category names become the
+ * category, everything else is a tag. Shared with the capture parsers.
+ */
+export function extractHashTokens(text: string): {
+  text: string;
+  category: ScheduleCategory | null;
+  tags: string[];
+} {
+  let category: ScheduleCategory | null = null;
+  const tags: string[] = [];
   for (const match of text.matchAll(/\s#([\w-]+)/g)) {
     const value = match[1].toLowerCase();
     if ((SCHEDULE_CATEGORIES as readonly string[]).includes(value)) {
@@ -112,37 +115,78 @@ export function parseQuickAdd(input: string, baseDate: DayKey = today()): Parsed
       tags.push(value);
     }
   }
-  strip(/\s#[\w-]+/g);
+  return { text: text.replace(/\s#[\w-]+/g, " "), category, tags };
+}
 
-  // --- explicit dates ------------------------------------------------------
+/**
+ * Pull one explicit date out of `text` — `tomorrow`/`yesterday`/`today`, a
+ * weekday name (always the NEXT occurrence), or a literal ISO date.
+ * `matched` distinguishes "the user said today" from "no date given" — the
+ * two produce the same DayKey but a task parser needs the difference to
+ * decide whether a due date was asked for. Shared with the capture parsers.
+ */
+export function extractDateToken(
+  text: string,
+  baseDate: DayKey,
+): { text: string; date: DayKey; matched: boolean } {
   if (/\btomorrow\b/i.test(text)) {
-    date = shiftDay(baseDate, 1);
-    strip(/\btomorrow\b/i);
-  } else if (/\byesterday\b/i.test(text)) {
-    date = shiftDay(baseDate, -1);
-    strip(/\byesterday\b/i);
-  } else if (/\btoday\b/i.test(text)) {
-    strip(/\btoday\b/i);
-  } else {
-    const weekdayMatch = /\b(next\s+)?(sunday|sun|monday|mon|tuesday|tues|tue|wednesday|wed|thursday|thurs|thu|friday|fri|saturday|sat)\b/i.exec(
+    return { text: text.replace(/\btomorrow\b/i, " "), date: shiftDay(baseDate, 1), matched: true };
+  }
+  if (/\byesterday\b/i.test(text)) {
+    return { text: text.replace(/\byesterday\b/i, " "), date: shiftDay(baseDate, -1), matched: true };
+  }
+  if (/\btoday\b/i.test(text)) {
+    return { text: text.replace(/\btoday\b/i, " "), date: baseDate, matched: true };
+  }
+  const weekdayMatch =
+    /\b(next\s+)?(sunday|sun|monday|mon|tuesday|tues|tue|wednesday|wed|thursday|thurs|thu|friday|fri|saturday|sat)\b/i.exec(
       text,
     );
-    if (weekdayMatch) {
-      const target = WEEKDAY_NAMES[weekdayMatch[2].toLowerCase()];
-      const current = weekdayOf(baseDate);
-      let delta = (target - current + 7) % 7;
-      if (delta === 0) delta = 7; // "monday" on a Monday means next Monday
-      if (weekdayMatch[1]) delta += delta <= 7 ? 0 : 7;
-      date = shiftDay(baseDate, delta);
-      strip(weekdayMatch[0]);
-    } else {
-      const isoMatch = /\b(\d{4}-\d{2}-\d{2})\b/.exec(text);
-      if (isoMatch) {
-        date = isoMatch[1];
-        strip(isoMatch[0]);
-      }
-    }
+  if (weekdayMatch) {
+    const target = WEEKDAY_NAMES[weekdayMatch[2].toLowerCase()];
+    const current = weekdayOf(baseDate);
+    let delta = (target - current + 7) % 7;
+    if (delta === 0) delta = 7; // "monday" on a Monday means next Monday
+    if (weekdayMatch[1]) delta += delta <= 7 ? 0 : 7;
+    return {
+      text: text.replace(weekdayMatch[0], " "),
+      date: shiftDay(baseDate, delta),
+      matched: true,
+    };
   }
+  const isoMatch = /\b(\d{4}-\d{2}-\d{2})\b/.exec(text);
+  if (isoMatch) {
+    return { text: text.replace(isoMatch[0], " "), date: isoMatch[1], matched: true };
+  }
+  return { text, date: baseDate, matched: false };
+}
+
+export function parseQuickAdd(input: string, baseDate: DayKey = today()): ParsedQuickAdd {
+  let text = ` ${input.trim()} `;
+  let startMinute: number | null = null;
+  let endMinute: number | null = null;
+  let priority: Priority = "medium";
+
+  // A string strips its first literal occurrence; a RegExp strips by pattern.
+  const strip = (pattern: RegExp | string) => {
+    text = text.replace(pattern, " ");
+  };
+
+  // --- priority: !high / !urgent ------------------------------------------
+  const priorityResult = extractPriority(text);
+  text = priorityResult.text;
+  if (priorityResult.priority) priority = priorityResult.priority;
+
+  // --- tags: #tag ----------------------------------------------------------
+  const hashResult = extractHashTokens(text);
+  text = hashResult.text;
+  let category: ScheduleCategory | null = hashResult.category;
+  const tags: string[] = hashResult.tags;
+
+  // --- explicit dates ------------------------------------------------------
+  const dateResult = extractDateToken(text, baseDate);
+  text = dateResult.text;
+  const date = dateResult.date;
 
   // --- time range: "6:30-7:30pm", "at 9am", "9am to 10am" -------------------
   const rangeMatch =

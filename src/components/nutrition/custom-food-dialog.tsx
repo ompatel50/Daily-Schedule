@@ -34,10 +34,29 @@ import { saveFoodItem } from "@/server/actions/nutrition";
 /**
  * Anything the bundled database doesn't have can be added here in ~20 seconds.
  * Custom foods behave exactly like built-in ones everywhere else.
+ *
+ * Two mounting modes: self-triggered (the page-header button, no props) or
+ * controlled (`open`/`onOpenChange`), which is how the barcode scanner offers
+ * "add it yourself" for an unknown code — `initialBarcode` pre-fills the
+ * code so the NEXT scan of that product resolves locally, and `onSaved`
+ * hands the new food id back to the caller.
  */
-export function CustomFoodDialog() {
+export function CustomFoodDialog({
+  open: controlledOpen,
+  onOpenChange,
+  initialBarcode,
+  onSaved,
+}: {
+  open?: boolean;
+  onOpenChange?: (open: boolean) => void;
+  initialBarcode?: string | null;
+  onSaved?: (food: { id: string; name: string }) => void;
+} = {}) {
   const router = useRouter();
-  const [open, setOpen] = React.useState(false);
+  const [selfOpen, setSelfOpen] = React.useState(false);
+  const controlled = controlledOpen !== undefined;
+  const open = controlled ? controlledOpen : selfOpen;
+  const setOpen = controlled ? (onOpenChange ?? (() => {})) : setSelfOpen;
   const [pending, startTransition] = React.useTransition();
 
   const [form, setForm] = React.useState({
@@ -56,7 +75,16 @@ export function CustomFoodDialog() {
     category: "other" as FoodCategory,
     notes: "",
     favorite: false,
+    barcode: "",
   });
+
+  // A scanner-provided code lands in the form when the dialog opens for it.
+  const barcodeSeed = open && controlled ? (initialBarcode ?? "") : "";
+  const [lastSeed, setLastSeed] = React.useState(barcodeSeed);
+  if (barcodeSeed !== lastSeed) {
+    setLastSeed(barcodeSeed);
+    if (barcodeSeed) setForm((current) => ({ ...current, barcode: barcodeSeed }));
+  }
 
   /** Optional micronutrients — collapsed, because most people skip them. */
   const [extras, setExtras] = React.useState({
@@ -85,11 +113,13 @@ export function CustomFoodDialog() {
         brand: form.brand || null,
         description: form.notes || null,
         notes: form.notes || null,
+        barcode: form.barcode || null,
         extraNutrients: Object.keys(extraNutrients).length > 0 ? extraNutrients : undefined,
       });
 
       if (result.ok) {
         toast.success(`${form.name} added to your food list`);
+        const savedName = form.name;
         setOpen(false);
         setForm((current) => ({
           ...current,
@@ -101,8 +131,10 @@ export function CustomFoodDialog() {
           protein: 0,
           carbs: 0,
           fat: 0,
+          barcode: "",
         }));
         setExtras({ saturatedFat: 0, cholesterol: 0, potassium: 0, calcium: 0, iron: 0 });
+        onSaved?.({ id: result.data.id, name: savedName });
         router.refresh();
       } else {
         toast.error(result.error);
@@ -112,11 +144,13 @@ export function CustomFoodDialog() {
 
   return (
     <Dialog open={open} onOpenChange={setOpen}>
-      <DialogTrigger asChild>
-        <Button variant="outline" size="sm">
-          <Plus /> Custom food
-        </Button>
-      </DialogTrigger>
+      {!controlled && (
+        <DialogTrigger asChild>
+          <Button variant="outline" size="sm">
+            <Plus /> Custom food
+          </Button>
+        </DialogTrigger>
+      )}
       <DialogContent className="max-h-[92vh] max-w-lg overflow-y-auto">
         <DialogHeader>
           <DialogTitle>Add a custom food</DialogTitle>
@@ -263,6 +297,21 @@ export function CustomFoodDialog() {
             />
           </div>
 
+          <div className="space-y-1.5">
+            <Label htmlFor="food-barcode">Barcode (optional)</Label>
+            <Input
+              id="food-barcode"
+              inputMode="numeric"
+              autoComplete="off"
+              value={form.barcode}
+              onChange={(event) => set("barcode", event.target.value.replace(/\D/g, "").slice(0, 14))}
+              placeholder="8–14 digits, printed under the bars"
+            />
+            <p className="text-xs text-muted-foreground">
+              With a barcode saved, scanning this product finds it instantly — offline too.
+            </p>
+          </div>
+
           <label className="flex cursor-pointer items-center gap-2 text-sm">
             <Checkbox
               checked={form.favorite}
@@ -295,10 +344,12 @@ function NumberField({
   value: number;
   onChange: (value: number) => void;
 }) {
+  const id = React.useId();
   return (
     <div className="space-y-1.5">
-      <Label>{label}</Label>
+      <Label htmlFor={id}>{label}</Label>
       <Input
+        id={id}
         type="number"
         min={0}
         step={0.1}

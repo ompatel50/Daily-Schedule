@@ -1,6 +1,6 @@
 import type { Metadata } from "next";
 import Link from "next/link";
-import { Database, Keyboard, Trash2 } from "lucide-react";
+import { Database, Keyboard, Trash2, Workflow } from "lucide-react";
 
 import { AssistantPanel } from "@/components/settings/assistant-panel";
 import { BackupPanel } from "@/components/settings/backup-panel";
@@ -21,7 +21,6 @@ import { getDemoStatus } from "@/server/demo";
 import { getTrashCount } from "@/server/trash";
 import { TRASH_RETENTION_DAYS } from "@/lib/soft-delete";
 import { getGoalRows, getHabitOptions, getUser } from "@/server/queries";
-import { getLatestMetricValues } from "@/server/health";
 import { scheduleSettingsFor } from "@/server/schedule";
 
 export const metadata: Metadata = { title: "Settings" };
@@ -30,16 +29,14 @@ export const dynamic = "force-dynamic";
 export default async function SettingsPage() {
   const user = await getUser();
   const settings = scheduleSettingsFor(user);
-  const [goals, habits, latest, demoStatus, recoveryCodesRemaining, trashCount] =
+  const [goals, habits, demoStatus, recoveryCodesRemaining, trashCount] =
     await Promise.all([
       getGoalRows(),
       getHabitOptions(),
-      getLatestMetricValues(),
       getDemoStatus(user.id),
       countRemainingRecoveryCodes(user.id),
       getTrashCount(),
     ]);
-  const weight = latest.get("body_weight");
   const onboarding = parseOnboardingState(user.onboardingState);
 
   return (
@@ -64,7 +61,6 @@ export default async function SettingsPage() {
             dayEndHour: user.dayEndHour,
             dayResetMinute: user.dayResetMinute,
           }}
-          latestWeight={weight?.value ?? null}
         />
 
         <GoalsPanel
@@ -82,7 +78,10 @@ export default async function SettingsPage() {
           }}
         />
 
-        <NotificationsPanel />
+        {/* Anchored so reminder search hits can land here directly. */}
+        <div id="reminders">
+          <NotificationsPanel />
+        </div>
         <PushPanel />
         <SecurityPanel
           minPasswordLength={MIN_PASSWORD_LENGTH}
@@ -140,6 +139,27 @@ export default async function SettingsPage() {
               className="inline-flex min-h-9 items-center rounded-md border px-3 text-sm font-medium text-foreground transition-colors hover:bg-accent"
             >
               View your data
+            </Link>
+          </div>
+        </SectionCard>
+
+        <SectionCard
+          title="Automations"
+          icon={Workflow}
+          accent="text-domain-goal"
+          description="If-this-then-that rules over your own data"
+        >
+          <div className="flex flex-wrap items-center justify-between gap-3 text-sm text-muted-foreground">
+            <p>
+              Categorise merchants, link recurring charges to bills, log habits after workouts,
+              protect short-sleep days. Rules never delete anything, log every run, and only
+              enable after a dry run against your real data.
+            </p>
+            <Link
+              href="/settings/rules"
+              className="inline-flex min-h-9 items-center rounded-md border px-3 text-sm font-medium text-foreground transition-colors hover:bg-accent"
+            >
+              Open automations
             </Link>
           </div>
         </SectionCard>

@@ -44,7 +44,8 @@ export interface ReminderOccurrence {
     | "document"
     | "milestone"
     | "low_balance"
-    | "budget";
+    | "budget"
+    | "anomaly";
   title: string;
   message: string | null;
   /**

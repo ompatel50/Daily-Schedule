@@ -203,12 +203,23 @@ async function getDayScoreImpl(
 
   for (const evaluation of goals) {
     if (!evaluation.applicable) {
+      // A day-type-gated target reads as what it is: a training-day target on
+      // a rest day is a rest-day exclusion, the mirror case simply doesn't
+      // apply today. Neither is ever a miss.
+      const dayTypeReason =
+        evaluation.goal.dayType === "training" ? ("rest_day" as const) : ("not_scheduled" as const);
       exclusions.push({
         id: evaluation.goal.id,
         label: evaluation.goal.label,
         category: "goals",
-        reason: exclusionReasonFor(evaluation.status),
-        detail: evaluation.summary,
+        reason: evaluation.dayTypeExcluded
+          ? dayTypeReason
+          : exclusionReasonFor(evaluation.status),
+        detail: evaluation.dayTypeExcluded
+          ? evaluation.goal.dayType === "training"
+            ? "Training-day target — no completed workout today"
+            : "Rest-day target — today has a workout"
+          : evaluation.summary,
       });
       continue;
     }

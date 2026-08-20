@@ -104,6 +104,8 @@ export interface SessionSet {
   id: string;
   exercise: string;
   setNumber: number;
+  /** Superset/circuit key carried on the set itself; null = ungrouped. */
+  supersetGroup: string | null;
   reps: number | null;
   weightKg: number | null;
   durationSec: number | null;
@@ -423,6 +425,8 @@ export interface PlannedSet {
   targetReps: number | null;
   targetWeightKg: number | null;
   restSec: number | null;
+  /** Superset/circuit key, stamped onto the created sets. */
+  supersetGroup: string | null;
   sortOrder: number;
 }
 
@@ -499,6 +503,9 @@ export function planSetsFromTemplate(exercises: TemplateExerciseLike[]): Planned
           targetReps: numberOrNull(exercise.reps),
           targetWeightKg: numberOrNull(exercise.weightKg),
           restSec: numberOrNull(exercise.restSec),
+          // Only real groups (2+ members) are stamped — a lone exercise with
+          // a group letter is not a superset.
+          supersetGroup: block.length > 1 ? groupKeyOf(exercise) : null,
           sortOrder: order,
         });
         order += 1;
@@ -539,7 +546,12 @@ export function templateGroups(exercises: TemplateExerciseLike[]): Record<string
  * time's target, which is the progression model most people actually use.
  */
 export function planSetsFromWorkout(
-  sets: Array<Pick<SessionSet, "exercise" | "setNumber" | "reps" | "weightKg" | "restSec" | "sortOrder">>,
+  sets: Array<
+    Pick<
+      SessionSet,
+      "exercise" | "setNumber" | "reps" | "weightKg" | "restSec" | "supersetGroup" | "sortOrder"
+    >
+  >,
 ): PlannedSet[] {
   return sets
     .slice()
@@ -550,8 +562,24 @@ export function planSetsFromWorkout(
       targetReps: set.reps ?? null,
       targetWeightKg: set.weightKg ?? null,
       restSec: set.restSec ?? null,
+      supersetGroup: set.supersetGroup ?? null,
       sortOrder: index,
     }));
+}
+
+/**
+ * Group map derived from the sets themselves. Merged OVER a template's group
+ * map by callers, so a mid-session grouping edit (or an ad-hoc session with
+ * no template at all) wins without the template being consulted again.
+ */
+export function groupsFromSets(
+  sets: Array<Pick<SessionSet, "exercise" | "supersetGroup">>,
+): Record<string, string> {
+  const groups: Record<string, string> = {};
+  for (const set of sets) {
+    if (set.supersetGroup) groups[set.exercise] = set.supersetGroup;
+  }
+  return groups;
 }
 
 function numberOrNull(value: unknown): number | null {

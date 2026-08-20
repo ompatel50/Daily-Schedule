@@ -1,7 +1,8 @@
 "use client";
 
 import * as React from "react";
-import { Barcode, Camera, CameraOff, Loader2, Search } from "lucide-react";
+import type { IScannerControls } from "@zxing/browser";
+import { Barcode, Camera, CameraOff, Loader2, Plus, Search } from "lucide-react";
 
 import { Button } from "@/components/ui/button";
 import {
@@ -14,18 +15,21 @@ import {
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { cn } from "@/lib/utils";
+import { CustomFoodDialog } from "@/components/nutrition/custom-food-dialog";
 import { lookupBarcodeAction, type FoodResultView } from "@/server/actions/food-search";
 
 /**
- * Barcode scanning for the food search, with no dependency and no upload:
- * the native `BarcodeDetector` API decodes frames entirely inside the browser,
- * so no image or camera frame ever leaves the device — only the digits go to
- * the barcode lookup, exactly as if they had been typed.
+ * Barcode scanning for the food search, with no upload: frames decode
+ * entirely inside the browser — the native `BarcodeDetector` API where the
+ * engine has one, and a bundled ZXing decoder (lazy-loaded, ~local only)
+ * everywhere else — so no image or camera frame ever leaves the device.
+ * Only the digits go to the barcode lookup, exactly as if they were typed.
  *
  * The camera starts only from a direct click on "Start camera", never on
  * mount or on the dialog opening, and every track is stopped the moment the
- * dialog closes. Browsers without `BarcodeDetector` or a camera get the same
- * lookup through manual entry.
+ * dialog closes. Browsers without a camera get the same lookup through
+ * manual entry, and an unknown code offers "add it as a custom food" with
+ * the digits pre-filled so the next scan resolves locally.
  */
 
 /** The minimal slice of the (not yet in TypeScript's DOM lib) native API. */
@@ -84,19 +88,24 @@ function BarcodeScannerDialog({
   onClose: () => void;
   onFound: (food: FoodResultView) => void;
 }) {
-  const detectorSupported = React.useMemo(() => barcodeDetectorCtor() !== null, []);
+  // Live scanning needs a camera; the DECODER is never the blocker — engines
+  // without the native BarcodeDetector get the bundled ZXing fallback.
   const cameraSupported = React.useMemo(() => cameraAvailable(), []);
-  const scanSupported = detectorSupported && cameraSupported;
+  const scanSupported = cameraSupported;
 
   const videoRef = React.useRef<HTMLVideoElement | null>(null);
   const streamRef = React.useRef<MediaStream | null>(null);
   const detectorRef = React.useRef<BarcodeDetectorLike | null>(null);
+  const zxingControlsRef = React.useRef<IScannerControls | null>(null);
   const timerRef = React.useRef<number | null>(null);
   const detectBusyRef = React.useRef(false);
 
   const [phase, setPhase] = React.useState<CameraPhase>("idle");
   const [manual, setManual] = React.useState("");
   const [message, setMessage] = React.useState<string | null>(null);
+  /** A code every reachable source answered "no such product" for. */
+  const [unknownCode, setUnknownCode] = React.useState<string | null>(null);
+  const [addOpen, setAddOpen] = React.useState(false);
   const [looking, startLookup] = React.useTransition();
 
   const stopCamera = React.useCallback(() => {
@@ -104,6 +113,8 @@ function BarcodeScannerDialog({
       window.clearInterval(timerRef.current);
       timerRef.current = null;
     }
+    zxingControlsRef.current?.stop();
+    zxingControlsRef.current = null;
     // Stopping every track is what turns the camera light off.
     streamRef.current?.getTracks().forEach((track) => track.stop());
     streamRef.current = null;
@@ -117,20 +128,34 @@ function BarcodeScannerDialog({
   const lookup = React.useCallback(
     (code: string) => {
       setMessage(null);
+      setUnknownCode(null);
       startLookup(async () => {
         const response = await lookupBarcodeAction(code);
         if (response.food) {
           onFound(response.food);
           return;
         }
-        setMessage(
-          response.notice
-            ? `${response.notice.label}: ${response.notice.message}`
-            : `No product with barcode ${code} was found. You can add it as a custom food instead.`,
-        );
+        if (response.notice) {
+          setMessage(`${response.notice.label}: ${response.notice.message}`);
+          return;
+        }
+        // A definitive miss — offer manual creation, pre-filled with the code.
+        setUnknownCode(code);
+        setMessage(`No product with barcode ${code} was found.`);
       });
     },
     [onFound],
+  );
+
+  /** Found a plausible retail code on a frame — stop and look it up. */
+  const onScanned = React.useCallback(
+    (code: string) => {
+      stopCamera();
+      setPhase("idle");
+      setManual(code);
+      lookup(code);
+    },
+    [lookup, stopCamera],
   );
 
   const detectFrame = React.useCallback(async () => {
@@ -143,25 +168,47 @@ function BarcodeScannerDialog({
       const code = found
         .map((barcode) => barcode.rawValue.trim())
         .find((value) => BARCODE_PATTERN.test(value));
-      if (code) {
-        stopCamera();
-        setPhase("idle");
-        setManual(code);
-        lookup(code);
-      }
+      if (code) onScanned(code);
     } catch {
       // A frame that fails to decode is just the next frame's problem.
     } finally {
       detectBusyRef.current = false;
     }
-  }, [lookup, stopCamera]);
+  }, [onScanned]);
+
+  /**
+   * The bundled fallback decoder for engines without `BarcodeDetector`
+   * (Safari, Firefox). Lazy-imported so its chunk is paid only here, only
+   * when actually needed; it attaches to OUR already-running video element
+   * and never opens a stream of its own. Decoding stays fully on-device.
+   */
+  const startZxing = React.useCallback(
+    async (video: HTMLVideoElement) => {
+      const [{ BrowserMultiFormatReader }, { BarcodeFormat, DecodeHintType }] =
+        await Promise.all([import("@zxing/browser"), import("@zxing/library")]);
+      const hints = new Map();
+      hints.set(DecodeHintType.POSSIBLE_FORMATS, [
+        BarcodeFormat.EAN_13,
+        BarcodeFormat.EAN_8,
+        BarcodeFormat.UPC_A,
+        BarcodeFormat.UPC_E,
+      ]);
+      const reader = new BrowserMultiFormatReader(hints);
+      zxingControlsRef.current = await reader.decodeFromVideoElement(video, (result) => {
+        const text = result?.getText().trim();
+        if (text && BARCODE_PATTERN.test(text)) onScanned(text);
+      });
+    },
+    [onScanned],
+  );
 
   /** Runs only from the button's own click — never on mount or open. */
   const startCamera = React.useCallback(async () => {
+    if (!cameraAvailable()) return;
     const ctor = barcodeDetectorCtor();
-    if (!ctor || !cameraAvailable()) return;
 
     setMessage(null);
+    setUnknownCode(null);
     setPhase("starting");
     try {
       const stream = await navigator.mediaDevices.getUserMedia({
@@ -177,14 +224,18 @@ function BarcodeScannerDialog({
       }
       video.srcObject = stream;
       await video.play();
-      try {
-        detectorRef.current = new ctor({ formats: BARCODE_FORMATS });
-      } catch {
-        // An engine that rejects the format list still detects with defaults.
-        detectorRef.current = new ctor();
+      if (ctor) {
+        try {
+          detectorRef.current = new ctor({ formats: BARCODE_FORMATS });
+        } catch {
+          // An engine that rejects the format list still detects with defaults.
+          detectorRef.current = new ctor();
+        }
+        timerRef.current = window.setInterval(() => void detectFrame(), DETECT_INTERVAL_MS);
+      } else {
+        await startZxing(video);
       }
       setPhase("scanning");
-      timerRef.current = window.setInterval(() => void detectFrame(), DETECT_INTERVAL_MS);
     } catch (error) {
       stopCamera();
       const denied =
@@ -192,7 +243,7 @@ function BarcodeScannerDialog({
         (error.name === "NotAllowedError" || error.name === "SecurityError");
       setPhase(denied ? "denied" : "failed");
     }
-  }, [detectFrame, stopCamera]);
+  }, [detectFrame, startZxing, stopCamera]);
 
   const cameraOn = phase === "scanning" || phase === "starting";
   const manualValid = BARCODE_PATTERN.test(manual);
@@ -263,9 +314,8 @@ function BarcodeScannerDialog({
             </div>
           ) : (
             <p className="rounded-lg border border-dashed px-3 py-2.5 text-sm text-muted-foreground">
-              {!cameraSupported
-                ? "This browser has no camera access here, so live scanning isn't available. Type the digits printed under the bars instead — the lookup is the same."
-                : "This browser can't read barcodes from a camera preview (it has no built-in barcode detector). Type the digits printed under the bars instead — the lookup is the same."}
+              This browser has no camera access here, so live scanning isn&apos;t available.
+              Type the digits printed under the bars instead — the lookup is the same.
             </p>
           )}
 
@@ -295,12 +345,37 @@ function BarcodeScannerDialog({
           </div>
 
           {message && (
-            <p className="rounded-lg border border-dashed px-3 py-2 text-sm text-muted-foreground">
-              {message}
-            </p>
+            <div className="space-y-2 rounded-lg border border-dashed px-3 py-2 text-sm text-muted-foreground">
+              <p>{message}</p>
+              {unknownCode && (
+                <Button
+                  type="button"
+                  variant="outline"
+                  size="sm"
+                  onClick={() => setAddOpen(true)}
+                >
+                  <Plus /> Add it as a custom food
+                </Button>
+              )}
+            </div>
           )}
         </div>
       </DialogContent>
+
+      {/* Unknown code → manual creation, pre-filled with the digits so the
+          next scan of this product resolves locally. Saving loops straight
+          back into the lookup, which now hits the new local row. */}
+      {unknownCode && (
+        <CustomFoodDialog
+          open={addOpen}
+          onOpenChange={setAddOpen}
+          initialBarcode={unknownCode}
+          onSaved={() => {
+            setAddOpen(false);
+            lookup(unknownCode);
+          }}
+        />
+      )}
     </Dialog>
   );
 }
