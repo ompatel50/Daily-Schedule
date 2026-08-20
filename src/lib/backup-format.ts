@@ -69,6 +69,9 @@
  *      `dayTypeOverrides` table (the manual training/rest answer per day).
  *      Bumped because an older app's restore would silently drop the
  *      columns and the table alike.
+ * v14 — the `anomalyPreferences` table (per-category mute + dismissal count
+ *      for anomaly nudges). Bumped for the same reason as v13: an older
+ *      app's restore would silently drop the table.
  *
  * A v1–v12 file restores into a v13 app unchanged: the missing tables simply
  * have no rows, the new columns take their defaults (a v7 health batch arrives
@@ -91,7 +94,7 @@
  * still holds its unique keys (import keys, budget categories, journal
  * dates…) and would otherwise block the very rows being restored.
  */
-export const BACKUP_VERSION = 13;
+export const BACKUP_VERSION = 14;
 
 export interface BackupMetadata {
   /** Schema version of the backup format itself. */
@@ -147,6 +150,7 @@ export const BACKUP_TABLES = [
   "goalEntries",
   "goalMilestones",
   "dayTypeOverrides",
+  "anomalyPreferences",
   "scheduleRules",
   "scheduleRuleDays",
   "scheduleOverrides",

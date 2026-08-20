@@ -226,7 +226,7 @@ describe("backup v13", () => {
       version: number;
       data: Record<string, Array<{ dayType?: string }>>;
     };
-    expect(file.version).toBe(13);
+    expect(file.version).toBe(14);
     expect(file.data.goals[0]?.dayType).toBe("training");
 
     // Restore into the OTHER account and confirm the column survives.

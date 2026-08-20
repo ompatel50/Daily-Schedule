@@ -6178,7 +6178,7 @@ theme, cookie headers), 390 px overflow sweep clean on /review,
 | 2.1 | Unified daily fact layer                      | ✅ done |
 | 2.2 | Correlation insights                          | ✅ done |
 | 2.3 | Spending triggers                             | ✅ done |
-| 2.4 | Anomaly nudges                                | ⏳ |
+| 2.4 | Anomaly nudges                                | ✅ done |
 | 2.5 | Automations: rules engine core                | ⏳ |
 | 2.6 | Rule builder UI, library, integration pass    | ⏳ |
 
@@ -6826,3 +6826,75 @@ live in the module docstring of `src/lib/logic/daily-facts.ts`.
   means, ρ, n, window and links (screenshot).
 * Typecheck, lint (0 errors, 63-warning baseline), build green; full unit
   suite 1,427 green.
+
+## Checkpoint 2.4 — anomaly nudges
+
+### What changed
+
+* **`src/lib/logic/anomalies.ts`** — the pure detection engine over the
+  daily fact layer. Robust baselines everywhere: rolling median with
+  scaled-MAD dispersion (×1.4826), so one wild day cannot drag a baseline;
+  spending compares weekly totals against prior weeks, which is the
+  seasonal handling the data supports (the weekday cycle is the dominant
+  one at personal scale). Five detectors, each with a documented history
+  gate — a new account clears none and gets silence, not fabrication:
+  * `resting_hr` — a ≥4-of-5-day run above median + k·MAD of the prior
+    30 days (≥20 measured), with a minimum 2 bpm band when readings are
+    ultra-steady;
+  * `sleep_debt` — ≥5 h accumulated below the 30-day median across the
+    last 7 nights (≥20 baseline / ≥5 recent measured);
+  * `habit_streak` — a ≥21-day streak that broke yesterday (computed from
+    the real habit engine: streak as of two days ago, missed as of
+    yesterday), phrased factually;
+  * `workout_frequency` — the current fortnight at or below half the
+    median of the three prior fortnights (baseline ≥3/fortnight);
+  * `spending` — a category week above median + k·MAD of 8 prior weeks
+    (≥6 active) AND ≥1.5× the median.
+  Deliberate omission, documented in code: **no calorie anomaly detector**
+  — that would be the "you went over" alert the 1.4 wellbeing constraint
+  forbids.
+* **Delivery through the existing reminder ledger** — anomaly signals join
+  `getReminderFeedFor` as a new occurrence kind ("anomaly"), so the in-tab
+  watcher and the scheduled push runner both deliver them claim-first,
+  exactly-once, with zero new scheduling machinery. Hard rate limit:
+  `ANOMALY_WEEKLY_LIMIT = 3` per rolling week (the ledger's 7-day sweep IS
+  the rolling window), priority health → behaviour → money; dedup via keys
+  embedding a coarse window (the week, or the habit break date). The feed
+  fold is never-fatal.
+* **Dismissal informs sensitivity; per-category mute** — new
+  `AnomalyPreference` model (additive migration `anomaly_preference`;
+  unique (userId, category); rides backup v14). Each dismissal raises
+  that category's threshold (`+0.5·k` per dismissal, capped at +2; habit
+  streaks +7 days floor per dismissal) and claims the ledger key so no
+  channel re-delivers the occurrence. Muting skips the detector entirely.
+  Actions in src/server/actions/anomalies.ts.
+* **The Observations card** (/insights, client component): every current
+  observation with dismiss buttons and the mute panel — the always-visible
+  record, so a nudge missed as a toast is never lost. Honest empty states
+  ("baselines still forming" vs "nothing unusual").
+* **Health constraint enforced in copy and tests**: observations about the
+  user's own numbers, never diagnosis; the resting-HR nudge carries ONE
+  brief clinician sentence (`CLINICIAN_NOTE`), only while the category has
+  never been dismissed — after the first dismissal it never returns.
+* Backup format v13 → **v14** (`anomalyPreferences` table; older files
+  restore unchanged; the version-history docstring extended).
+
+### Verification
+
+* Unit +17 (tests/anomalies.test.ts): scaled MAD, each detector's fire and
+  gate cases, dismissal-raised thresholds (including clinician-note
+  retirement), the weekly budget with priority order, delivered-key dedup
+  keeping observations visible, mutes, the empty account, and a copy sweep
+  asserting no diagnosis/alarm/advice language. Suite 1,427 → 1,444.
+* Integration +7 (tests/integration/anomalies.test.ts): detection through
+  the real read path with the clinician flag; the reminder feed emitting
+  the anomaly occurrence and the ledger claim silencing it (second claim
+  collides); dismissal incrementing the preference and stripping the note;
+  mute stopping the detector; isolation; the v14 backup round trip.
+  Full integration suite 558 green (one stale v13 pin updated).
+* E2E +1 (tests/e2e/observations.spec.ts): the card's honest state and the
+  five mute switches.
+* Browser-verified on the production build with a seeded HR run: the
+  observation renders with the neutral sentence + one clinician note, and
+  the live dismissal loop works (toast confirms, preference row written).
+* Typecheck, lint (0 errors, 63-warning baseline), build green.

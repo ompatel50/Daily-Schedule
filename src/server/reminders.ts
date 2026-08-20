@@ -3,10 +3,13 @@ import { shiftDay, weekRange } from "@/lib/date";
 import { FINANCE_CATEGORY_META, type FinanceCategory } from "@/lib/enums";
 import { budgetPeriodOf, budgetPeriodWindow } from "@/lib/logic/finance";
 import { centsOrLegacy, centsOrLegacyNullable, formatCents, toCents } from "@/lib/logic/money";
+import { CLINICIAN_NOTE } from "@/lib/logic/anomalies";
 import {
+  DUE_REMINDER_MINUTE,
   budgetThresholdReminderKey,
   dueReminderKey,
   lowBalanceReminderKey,
+  minuteToWallClock,
   resolveBudgetThresholdReminder,
   resolveClassicReminder,
   resolveDueReminder,
@@ -14,6 +17,7 @@ import {
   resolveScheduleReminder,
   type ReminderOccurrence,
 } from "@/lib/logic/reminders";
+import { getAnomalyContextFor } from "@/server/anomalies";
 import { evaluateGoalsForDate } from "@/server/goals";
 import { getHabitViews } from "@/server/habits";
 import { scheduleSettingsFor } from "@/server/schedule";
@@ -431,6 +435,27 @@ export async function getReminderFeedFor(user: {
       deliveredKeys,
     });
     if (resolved.ok) occurrences.push(resolved.occurrence);
+  }
+
+  // Anomaly nudges — deviations from the user's own baselines, already
+  // rate-limited, deduplicated and mute-filtered by the anomaly engine
+  // (src/lib/logic/anomalies.ts); the ledger claim below the feed keeps
+  // delivery exactly-once like every other occurrence. Never fatal: an
+  // anomaly failure must not cost the reminders their feed.
+  try {
+    const { report } = await getAnomalyContextFor(user, settings);
+    for (const signal of report.signals) {
+      occurrences.push({
+        key: signal.key,
+        kind: "anomaly",
+        title: signal.title,
+        message: signal.clinicianNote ? `${signal.message} ${CLINICIAN_NOTE}` : signal.message,
+        fireAt: minuteToWallClock(date, DUE_REMINDER_MINUTE),
+        reminderId: null,
+      });
+    }
+  } catch {
+    // Facts unavailable (mid-migration, fresh restore) — skip this pass.
   }
 
   occurrences.sort((a, b) => a.fireAt.localeCompare(b.fireAt));

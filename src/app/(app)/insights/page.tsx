@@ -14,6 +14,7 @@ import {
 
 import { MetricEntry } from "@/components/health/metric-entry";
 import { CorrelationsCard } from "@/components/insights/correlations-card";
+import { ObservationsCard } from "@/components/insights/observations-card";
 import { TrendAreaChart, TrendLineChart } from "@/components/shared/charts";
 import { PageHeader } from "@/components/shared/page-header";
 import { SectionCard } from "@/components/shared/section-card";
@@ -30,6 +31,7 @@ import {
   getUser,
   getWindowStats,
 } from "@/server/queries";
+import { getAnomalyContextFor } from "@/server/anomalies";
 import { getMetricSeries } from "@/server/health";
 import { getCorrelationReport, getWeeklyReview } from "@/server/insights";
 import { scheduleSettingsFor } from "@/server/schedule";
@@ -65,6 +67,7 @@ export default async function InsightsPage() {
       getWeeklyReview(user.id, week.start, week.end, settings),
       getCorrelationReport(user.id, date),
     ]);
+  const anomalies = await getAnomalyContextFor(user, settings);
 
   const calorieGoal = goals.get("calories")?.target ?? 0;
   const workoutGoal = goals.get("workouts_per_week")?.target ?? 0;
@@ -310,6 +313,14 @@ export default async function InsightsPage() {
               </div>
             )}
           </SectionCard>
+
+          <ObservationsCard
+            observations={anomalies.report.observations}
+            ready={anomalies.report.ready}
+            muted={Object.entries(anomalies.preferences)
+              .filter(([, preference]) => preference?.muted)
+              .map(([category]) => category as never)}
+          />
 
           <CorrelationsCard report={correlations} />
 

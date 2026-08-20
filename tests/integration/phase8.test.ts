@@ -8,6 +8,7 @@
 import { beforeAll, beforeEach, describe, expect, it } from "vitest";
 
 import { prisma } from "@/lib/prisma";
+import { BACKUP_VERSION } from "@/lib/backup-format";
 import { shiftDay, weekRange, type DayKey } from "@/lib/date";
 import { exportBackup, importBackup } from "@/server/actions/backup";
 import { saveGoalMilestone, deleteGoalMilestone } from "@/server/actions/goals";
@@ -361,8 +362,9 @@ describe("goal milestones", () => {
     const exported = await exportBackup();
     expect(exported.ok).toBe(true);
     if (!exported.ok) return;
-    // v13: Goal.dayType joined the format (master update, checkpoint 1.4).
-    expect(exported.data.version).toBe(13);
+    // The format version marches with the master update (v13 day types,
+    // v14 anomaly preferences); the pin lives in tests/backup.test.ts.
+    expect(exported.data.version).toBe(BACKUP_VERSION);
     expect(exported.data.data.goalMilestones).toHaveLength(1);
 
     actAs(bob);

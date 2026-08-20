@@ -115,6 +115,7 @@ model User {
   healthRecords            HealthRecord[]
   goals                    Goal[]
   dayTypeOverrides         DayTypeOverride[]
+  anomalyPreferences       AnomalyPreference[]
   daySummaries             CalendarDaySummary[]
   journalEntries           JournalEntry[]
   reminders                Reminder[]
@@ -1408,6 +1409,26 @@ model DayTypeOverride {
   updatedAt DateTime @updatedAt
 
   @@unique([userId, date])
+}
+
+/// Per-user, per-category state for anomaly nudges: mute switch, dismissal
+/// count (each dismissal raises that category's detection threshold — see
+/// src/lib/logic/anomalies.ts), and the one-time clinician-note stamp for
+/// the resting-HR observation.
+model AnomalyPreference {
+  id     String @id @default(cuid())
+  userId String
+  user   User   @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  /// resting_hr | sleep_debt | habit_streak | workout_frequency | spending
+  category   String
+  muted      Boolean @default(false)
+  dismissals Int     @default(0)
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@unique([userId, category])
 }
 
 model GoalMilestone {

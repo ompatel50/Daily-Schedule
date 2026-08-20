@@ -87,6 +87,7 @@ const MODEL_BY_TABLE: Record<BackupTable, string> = {
   goalEntries: "GoalEntry",
   goalMilestones: "GoalMilestone",
   dayTypeOverrides: "DayTypeOverride",
+  anomalyPreferences: "AnomalyPreference",
   scheduleRules: "ScheduleRule",
   scheduleRuleDays: "ScheduleRuleDay",
   scheduleOverrides: "ScheduleOverride",
@@ -574,6 +575,13 @@ export async function restoreBackupForUser(
   // Day-type overrides are plain per-user, per-day rows — no foreign keys
   // beyond the owner.
   prepare("dayTypeOverrides", (row) => {
+    const mapped = withId(row);
+    if (!mapped) return null;
+    return own(mapped);
+  });
+
+  // Anomaly preferences: same shape — one row per category, owner-only.
+  prepare("anomalyPreferences", (row) => {
     const mapped = withId(row);
     if (!mapped) return null;
     return own(mapped);
