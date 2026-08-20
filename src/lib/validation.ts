@@ -27,7 +27,7 @@ import {
 import { ASSISTANT_LIMITS, ASSISTANT_MODES } from "./logic/assistant";
 import { FOOD_PROVIDERS } from "./logic/food";
 import { parseRule } from "./logic/recurrence";
-import { GOAL_COMPARISONS, GOAL_SOURCES } from "./logic/goals";
+import { GOAL_COMPARISONS, GOAL_DAY_TYPES, GOAL_SOURCES } from "./logic/goals";
 import { TEMPLATE_APPLY_MODES } from "./logic/planner";
 import { DAYPARTS, OVERRIDE_KINDS, SCHEDULE_MODES } from "./logic/schedule";
 import { NUTRIENT_BASES } from "./logic/servings";
@@ -433,6 +433,8 @@ export const goalSchema = z.object({
   period: z.enum(["daily", "weekly", "monthly"]).default("daily"),
   source: z.enum(GOAL_SOURCES).default("manual"),
   sourceRef: z.string().max(60).nullable().optional(),
+  /** all | training | rest — which kind of day the goal applies to. */
+  dayType: z.enum(GOAL_DAY_TYPES).default("all"),
   startDate: dayKey.nullable().optional(),
   endDate: dayKey.nullable().optional(),
   active: z.boolean().default(true),

@@ -37,6 +37,7 @@ import {
   shiftDay,
 } from "@/lib/date";
 import { describeDueDistance } from "@/lib/logic/due";
+import { describeTargetRemaining } from "@/lib/logic/goals";
 import { formatCents } from "@/lib/logic/money";
 import { parseOnboardingState } from "@/lib/logic/onboarding";
 import { trendDelta } from "@/lib/logic/scoring";
@@ -79,7 +80,8 @@ export default async function DashboardPage() {
     metricSummary,
   } = overview;
 
-  const calorieGoal = goals.get("calories")?.target ?? 0;
+  const calorieTargetGoal = goals.get("calories") ?? null;
+  const calorieGoal = calorieTargetGoal?.target ?? 0;
   const stepGoal = goals.get("steps")?.target ?? 0;
   const workoutGoal = goals.get("workouts_per_week")?.target ?? 0;
 
@@ -201,7 +203,11 @@ export default async function DashboardPage() {
           }
           hint={
             nutrition.totals.calories > 0
-              ? `${formatNumber(nutrition.totals.calories)} today`
+              ? // Against the day's target when one is set — consumed and the
+                // neutral remainder ("350 kcal left" / "120 kcal over").
+                calorieTargetGoal
+                ? `${formatNumber(nutrition.totals.calories)} today · ${describeTargetRemaining(calorieTargetGoal, nutrition.totals.calories)}`
+                : `${formatNumber(nutrition.totals.calories)} today`
               : "nothing logged today"
           }
           icon={Apple}

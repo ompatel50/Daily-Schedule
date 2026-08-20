@@ -2,7 +2,7 @@
 
 import * as React from "react";
 import { useRouter } from "next/navigation";
-import { Loader2, Save, Sparkles } from "lucide-react";
+import { Loader2, Save } from "lucide-react";
 import { toast } from "sonner";
 
 import { Button } from "@/components/ui/button";
@@ -16,10 +16,9 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import { SectionCard } from "@/components/shared/section-card";
-import { estimateDailyCalories, lbToKg, suggestMacroGoals } from "@/lib/logic/nutrition";
 import { formatMinute, minuteToTimeValue, parseTimeToMinute } from "@/lib/date";
 import { formatResetTime, MAX_DAY_RESET_MINUTE } from "@/lib/logic/operational-day";
-import { saveGoal, saveSettings } from "@/server/actions/health";
+import { saveSettings } from "@/server/actions/health";
 import { User } from "lucide-react";
 
 export interface SettingsValues {
@@ -47,11 +46,9 @@ function supportedTimezones(): string[] {
 
 export function SettingsForm({
   initial,
-  latestWeight,
 }: {
   initial: SettingsValues;
   /** Latest logged body weight, in the user's display unit. */
-  latestWeight: number | null;
 }) {
   const router = useRouter();
   const [form, setForm] = React.useState(initial);
@@ -69,43 +66,6 @@ export function SettingsForm({
         router.refresh();
       } else {
         toast.error(result.error);
-      }
-    });
-  }
-
-  /** Fill calorie/macro goals from the profile using Mifflin–St Jeor. */
-  function suggestGoals() {
-    if (!form.birthDate || !form.heightCm || latestWeight === null) {
-      toast.error("Add your birth date, height and a body weight entry first");
-      return;
-    }
-
-    const age = new Date().getFullYear() - new Date(form.birthDate).getFullYear();
-    const weightKg = form.unitSystem === "metric" ? latestWeight : lbToKg(latestWeight);
-    const calories = estimateDailyCalories({
-      weightKg,
-      heightCm: form.heightCm,
-      age,
-      sex: form.sex,
-      activityLevel: form.activityLevel,
-    });
-    const macros = suggestMacroGoals(calories);
-
-    startTransition(async () => {
-      const results = await Promise.all([
-        saveGoal({ domain: "nutrition", metric: "calories", label: "Daily calories", target: calories, unit: "kcal", direction: "gte", period: "daily", active: true }),
-        saveGoal({ domain: "nutrition", metric: "protein", label: "Daily protein", target: macros.protein, unit: "g", direction: "gte", period: "daily", active: true }),
-        saveGoal({ domain: "nutrition", metric: "carbs", label: "Daily carbs", target: macros.carbs, unit: "g", direction: "gte", period: "daily", active: true }),
-        saveGoal({ domain: "nutrition", metric: "fat", label: "Daily fat", target: macros.fat, unit: "g", direction: "gte", period: "daily", active: true }),
-      ]);
-
-      if (results.every((result) => result.ok)) {
-        toast.success(`Goals set to ${calories} kcal`, {
-          description: `${macros.protein}g protein · ${macros.carbs}g carbs · ${macros.fat}g fat`,
-        });
-        router.refresh();
-      } else {
-        toast.error("Couldn't save all goals");
       }
     });
   }
@@ -293,17 +253,6 @@ export function SettingsForm({
           </p>
         </div>
 
-        <div className="flex flex-wrap items-center justify-between gap-3 rounded-lg border bg-muted/30 px-3 py-3">
-          <div>
-            <p className="text-sm font-medium">Suggest nutrition goals</p>
-            <p className="text-xs text-muted-foreground">
-              Estimates daily calories and a 30/40/30 macro split from your profile and latest weight.
-            </p>
-          </div>
-          <Button variant="outline" size="sm" onClick={suggestGoals} disabled={pending}>
-            <Sparkles /> Calculate
-          </Button>
-        </div>
       </div>
     </SectionCard>
   );

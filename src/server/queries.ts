@@ -519,6 +519,7 @@ export async function getGoalRows() {
       period: goal.period,
       source: goal.source,
       sourceRef: goal.sourceRef,
+      dayType: goal.dayType,
     };
 
     return {
@@ -555,10 +556,108 @@ export async function getGoalRows() {
   });
 }
 
-export async function getGoalMap() {
-  const goals = await getGoals();
-  return new Map(goals.filter((goal) => goal.active).map((goal) => [goal.metric, goal]));
+/**
+ * Active goals keyed by metric, for target displays. With day-type variants
+ * (a training-day and a rest-day calorie target), the DATE's variant wins and
+ * the "all" goal is the fallback — so the nutrition page and dashboard show
+ * the target that actually applies today. One extra count query, and only
+ * when a variant exists at all.
+ */
+export async function getGoalMap(date?: DayKey) {
+  const user = await getCurrentUser();
+  const goals = (await getGoals()).filter((goal) => goal.active);
+
+  const hasVariants = goals.some((goal) => goal.dayType !== "all");
+  let dayType: "training" | "rest" | null = null;
+  if (hasVariants) {
+    const day = date ?? scheduleSettingsFor(user).today;
+    const trained = await prisma.workout.count({
+      where: { userId: user.id, date: day, status: "completed" },
+    });
+    dayType = trained > 0 ? "training" : "rest";
+  }
+
+  const map = new Map<string, (typeof goals)[number]>();
+  for (const goal of goals) {
+    if (goal.dayType !== "all" && goal.dayType !== dayType) continue;
+    const current = map.get(goal.metric);
+    // A day-type-specific goal outranks the "all" fallback for its metric.
+    if (!current || (current.dayType === "all" && goal.dayType !== "all")) {
+      map.set(goal.metric, goal);
+    }
+  }
+  return map;
 }
+
+/**
+ * The nutrition page's Targets view-model: every active nutrition target
+ * (macro goals + the hydration goal), the date's day type, and what was
+ * consumed against each. `consumed: null` when nothing was logged — unknown,
+ * never zero.
+ */
+export async function getNutritionTargets(date: DayKey) {
+  const user = await getCurrentUser();
+  const [goals, trained, meals, hydrationRows] = await Promise.all([
+    prisma.goal.findMany({
+      where: {
+        userId: user.id,
+        active: true,
+        archivedAt: null,
+        OR: [{ domain: "nutrition" }, { source: "hydration" }],
+      },
+      orderBy: [{ metric: "asc" }, { dayType: "asc" }],
+    }),
+    prisma.workout.count({ where: { userId: user.id, date, status: "completed" } }),
+    getMealsForDay(date),
+    prisma.healthMetric.findMany({ where: { userId: user.id, date, type: "hydration_ml" } }),
+  ]);
+
+  const dayType: "training" | "rest" = trained > 0 ? "training" : "rest";
+  const totals = totalMacros(meals.flatMap((meal) => meal.entries));
+  const anyFood = meals.some((meal) => meal.entries.length > 0);
+  const hydration = aggregateDay("hydration_ml", hydrationRows as HealthRowLike[])?.value ?? null;
+
+  const consumedFor = (source: string): number | null => {
+    switch (source) {
+      case "calories":
+        return anyFood ? totals.calories : null;
+      case "protein":
+        return anyFood ? totals.protein : null;
+      case "carbs":
+        return anyFood ? totals.carbs : null;
+      case "fat":
+        return anyFood ? totals.fat : null;
+      case "fiber":
+        return anyFood ? totals.fiber : null;
+      case "hydration":
+        return hydration;
+      default:
+        return null;
+    }
+  };
+
+  return {
+    date,
+    dayType,
+    hasVariants: goals.some((goal) => goal.dayType !== "all"),
+    rows: goals.map((goal) => ({
+      id: goal.id,
+      metric: goal.metric,
+      label: goal.label,
+      target: goal.target,
+      targetMax: goal.targetMax,
+      direction: goal.direction,
+      unit: goal.unit,
+      dayType: goal.dayType,
+      period: goal.period,
+      source: goal.source,
+      consumed: consumedFor(goal.source),
+      applies: goal.dayType === "all" || goal.dayType === dayType,
+    })),
+  };
+}
+
+export type NutritionTargetsView = Awaited<ReturnType<typeof getNutritionTargets>>;
 
 export async function getJournalEntry(date: DayKey) {
   const user = await getCurrentUser();
@@ -608,7 +707,7 @@ export async function getDayOverview(date: DayKey = today()) {
       include: { sets: { orderBy: { sortOrder: "asc" } } },
     }),
     prisma.healthMetric.findMany({ where: { userId: user.id, date } }),
-    getGoalMap(),
+    getGoalMap(date),
     evaluateGoalsForDate(user.id, date, settings),
     getJournalEntry(date),
     getSummaries(user.id, weekStart, weekEnd),

@@ -155,10 +155,11 @@ describe("backup validation", () => {
     expect(result.warnings.join(" ")).not.toContain("unrecognised");
   });
 
-  it("v12 adds goal milestones and the habit pause window", () => {
+  it("v12 adds goal milestones and the habit pause window; v13 the goal day type", () => {
     // The bump exists so an older app refuses a newer file rather than
-    // silently dropping the parts it does not know.
-    expect(BACKUP_VERSION).toBe(12);
+    // silently dropping the parts it does not know. v13 carries Goal.dayType
+    // on the existing goals table (master update, checkpoint 1.4).
+    expect(BACKUP_VERSION).toBe(13);
     expect(BACKUP_TABLES).toContain("goalMilestones");
     // Milestones restore AFTER their goals — parents before children.
     expect(BACKUP_TABLES.indexOf("goalMilestones")).toBeGreaterThan(

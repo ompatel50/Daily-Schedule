@@ -3,10 +3,8 @@ import { describe, expect, it } from "vitest";
 import {
   baseUnitsFor,
   describeServing,
-  estimateDailyCalories,
   macroSplit,
   macrosFor,
-  suggestMacroGoals,
   totalMacros,
   type FoodLike,
 } from "@/lib/logic/nutrition";
@@ -128,30 +126,5 @@ describe("describeServing", () => {
 
   it("passes raw units through", () => {
     expect(describeServing(chicken, 150, "g")).toBe("150 g");
-  });
-});
-
-describe("goal estimation", () => {
-  it("produces a plausible calorie target", () => {
-    const calories = estimateDailyCalories({
-      weightKg: 80,
-      heightCm: 180,
-      age: 30,
-      sex: "male",
-      activityLevel: "moderate",
-    });
-    expect(calories).toBeGreaterThan(2400);
-    expect(calories).toBeLessThan(3200);
-  });
-
-  it("falls back to a sane default with missing inputs", () => {
-    expect(estimateDailyCalories({ weightKg: 0, heightCm: 0, age: 0 })).toBe(2000);
-  });
-
-  it("splits macros to roughly the target calories", () => {
-    const macros = suggestMacroGoals(2400);
-    const kcal = macros.protein * 4 + macros.carbs * 4 + macros.fat * 9;
-    expect(kcal).toBeGreaterThan(2350);
-    expect(kcal).toBeLessThan(2450);
   });
 });

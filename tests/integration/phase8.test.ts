@@ -361,7 +361,8 @@ describe("goal milestones", () => {
     const exported = await exportBackup();
     expect(exported.ok).toBe(true);
     if (!exported.ok) return;
-    expect(exported.data.version).toBe(12);
+    // v13: Goal.dayType joined the format (master update, checkpoint 1.4).
+    expect(exported.data.version).toBe(13);
     expect(exported.data.data.goalMilestones).toHaveLength(1);
 
     actAs(bob);

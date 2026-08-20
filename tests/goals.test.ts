@@ -2,7 +2,12 @@ import { describe, expect, it } from "vitest";
 
 import {
   buildGoalEvaluation,
+  dayTypeOfFacts,
   describeGoalTarget,
+  describeTargetRemaining,
+  goalAppliesOnDayType,
+  GOAL_SOURCES,
+  NUTRITION_TARGET_METRICS,
   emptyFacts,
   evaluateGoal,
   isWeeklyGoal,
@@ -350,5 +355,141 @@ describe("milestones", () => {
     expect(milestoneMet(milestone({ targetValue: 80 }), "lte", 75)).toBe(true);
     expect(milestoneMet(milestone({ targetValue: 80 }), "lte", 85)).toBe(false);
     expect(milestoneMet(milestone({ targetValue: 80 }), "gte", 85)).toBe(true);
+  });
+});
+
+describe("day-typed goals (training vs rest targets)", () => {
+  it("classifies a day from its completed workouts", () => {
+    expect(dayTypeOfFacts(facts({ workoutCount: 0 }))).toBe("rest");
+    expect(dayTypeOfFacts(facts({ workoutCount: 1 }))).toBe("training");
+  });
+
+  it("applies 'all' goals everywhere and typed goals only on matching days", () => {
+    const trainingDay = facts({ workoutCount: 1 });
+    const restDay = facts({ workoutCount: 0 });
+
+    expect(goalAppliesOnDayType(goal(), restDay)).toBe(true);
+    expect(goalAppliesOnDayType(goal({ dayType: "all" }), trainingDay)).toBe(true);
+    expect(goalAppliesOnDayType(goal({ dayType: "training" }), trainingDay)).toBe(true);
+    expect(goalAppliesOnDayType(goal({ dayType: "training" }), restDay)).toBe(false);
+    expect(goalAppliesOnDayType(goal({ dayType: "rest" }), restDay)).toBe(true);
+    expect(goalAppliesOnDayType(goal({ dayType: "rest" }), trainingDay)).toBe(false);
+  });
+
+  it("a training-day target on a rest day is excluded, never a miss", () => {
+    const config = settings({ today: MON });
+    const schedule = item({ rules: [rule({ mode: "every_day" })] });
+    const trainingProtein = goal({
+      label: "Protein (training days)",
+      source: "protein",
+      target: 180,
+      direction: "gte",
+      dayType: "training",
+    });
+
+    const evaluation = buildGoalEvaluation({
+      goal: trainingProtein,
+      date: MON,
+      occurrence: getOccurrenceForDate(schedule, MON, config),
+      status: getStatusForDate(schedule, MON, null, config).status,
+      facts: facts({ workoutCount: 0, protein: 90 }),
+      weekFacts: facts(),
+      weekly: null,
+      settings: config,
+    });
+
+    expect(evaluation.applicable).toBe(false);
+    expect(evaluation.dayTypeExcluded).toBe(true);
+  });
+
+  it("the same target applies once the day has a completed workout", () => {
+    const config = settings({ today: MON });
+    const schedule = item({ rules: [rule({ mode: "every_day" })] });
+    const trainingProtein = goal({
+      source: "protein",
+      target: 180,
+      direction: "gte",
+      dayType: "training",
+    });
+
+    const evaluation = buildGoalEvaluation({
+      goal: trainingProtein,
+      date: MON,
+      occurrence: getOccurrenceForDate(schedule, MON, config),
+      status: getStatusForDate(schedule, MON, null, config).status,
+      facts: facts({ workoutCount: 1, protein: 185 }),
+      weekFacts: facts(),
+      weekly: null,
+      settings: config,
+    });
+
+    expect(evaluation.applicable).toBe(true);
+    expect(evaluation.dayTypeExcluded).toBe(false);
+    expect(evaluation.outcome.met).toBe(true);
+  });
+
+  it("the day-type gate reads the DATE's facts, not the week's", () => {
+    const config = settings({ today: MON });
+    const schedule = item({ rules: [rule({ mode: "every_day" })] });
+    const restCalories = goal({
+      source: "calories",
+      target: 1800,
+      direction: "lte",
+      period: "weekly",
+      dayType: "rest",
+    });
+
+    const evaluation = buildGoalEvaluation({
+      goal: restCalories,
+      date: MON,
+      occurrence: getOccurrenceForDate(schedule, MON, config),
+      status: getStatusForDate(schedule, MON, null, config).status,
+      // The day itself is a training day even though the week has workouts
+      // spread around — the gate must look at the day.
+      facts: facts({ workoutCount: 1 }),
+      weekFacts: facts({ workoutCount: 4 }),
+      weekly: null,
+      settings: config,
+    });
+
+    expect(evaluation.dayTypeExcluded).toBe(true);
+  });
+});
+
+describe("target progress phrasing (neutral, numbers only)", () => {
+  const kcal = { direction: "lte", target: 2200, targetMax: null, unit: "kcal" };
+
+  it("says what is left or over — never judges", () => {
+    expect(describeTargetRemaining(kcal, 1850)).toBe("350 kcal left");
+    expect(describeTargetRemaining(kcal, 2320)).toBe("120 kcal over");
+    expect(describeTargetRemaining(kcal, 2200)).toBe("0 kcal left");
+  });
+
+  it("at-least targets count down to met", () => {
+    const protein = { direction: "gte", target: 160, targetMax: null, unit: "g" };
+    expect(describeTargetRemaining(protein, 120)).toBe("40 g to go");
+    expect(describeTargetRemaining(protein, 165)).toBe("met");
+  });
+
+  it("ranges report the distance to the band", () => {
+    const range = { direction: "range", target: 2000, targetMax: 2300, unit: "kcal" };
+    expect(describeTargetRemaining(range, 1800)).toBe("200 kcal to the range");
+    expect(describeTargetRemaining(range, 2100)).toBe("in range");
+    expect(describeTargetRemaining(range, 2400)).toBe("100 kcal over");
+  });
+
+  it("an unlogged day is unknown, not zero", () => {
+    expect(describeTargetRemaining(kcal, null)).toBe("not logged yet");
+  });
+});
+
+describe("nutrition target roster", () => {
+  it("every offered target is auto-measured — nothing manual, nothing body-derived", () => {
+    for (const entry of NUTRITION_TARGET_METRICS) {
+      expect(GOAL_SOURCES).toContain(entry.source);
+      expect(entry.source).not.toBe("manual");
+    }
+    const metrics = NUTRITION_TARGET_METRICS.map((entry) => entry.metric);
+    expect(metrics).toEqual(["calories", "protein", "carbs", "fat", "fiber", "hydration"]);
   });
 });

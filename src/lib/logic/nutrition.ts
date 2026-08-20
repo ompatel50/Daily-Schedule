@@ -173,47 +173,10 @@ export function describeServing(food: FoodLike, quantity: number, unit: string):
   return describeAmount(food, quantity, unit);
 }
 
-// --- goal estimation --------------------------------------------------------
-
-const ACTIVITY_FACTORS: Record<string, number> = {
-  sedentary: 1.2,
-  light: 1.375,
-  moderate: 1.55,
-  active: 1.725,
-  athlete: 1.9,
-};
-
-/**
- * Mifflin–St Jeor BMR + activity factor. Used only to *suggest* starting goals
- * in Settings; the user's explicit goals always win.
- */
-export function estimateDailyCalories(input: {
-  weightKg: number;
-  heightCm: number;
-  age: number;
-  sex?: string | null;
-  activityLevel?: string | null;
-}): number {
-  const { weightKg, heightCm, age } = input;
-  if (!weightKg || !heightCm || !age) return 2000;
-  const base = 10 * weightKg + 6.25 * heightCm - 5 * age;
-  const bmr = input.sex === "female" ? base - 161 : base + 5;
-  const factor = ACTIVITY_FACTORS[input.activityLevel ?? "moderate"] ?? 1.55;
-  return Math.round((bmr * factor) / 10) * 10;
-}
-
-/** Suggested macro targets from a calorie goal (30/40/30 split by default). */
-export function suggestMacroGoals(calories: number): {
-  protein: number;
-  carbs: number;
-  fat: number;
-} {
-  return {
-    protein: Math.round((calories * 0.3) / 4),
-    carbs: Math.round((calories * 0.4) / 4),
-    fat: Math.round((calories * 0.3) / 9),
-  };
-}
+// Note: the Mifflin–St Jeor calorie estimator and macro-split suggester that
+// lived here were removed with the nutrition-targets checkpoint. Targets are
+// user-defined by design — the app does not compute calorie targets from body
+// data anywhere.
 
 export const LB_PER_KG = 2.20462;
 

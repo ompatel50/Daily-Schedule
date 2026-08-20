@@ -21,7 +21,6 @@ import { getDemoStatus } from "@/server/demo";
 import { getTrashCount } from "@/server/trash";
 import { TRASH_RETENTION_DAYS } from "@/lib/soft-delete";
 import { getGoalRows, getHabitOptions, getUser } from "@/server/queries";
-import { getLatestMetricValues } from "@/server/health";
 import { scheduleSettingsFor } from "@/server/schedule";
 
 export const metadata: Metadata = { title: "Settings" };
@@ -30,16 +29,14 @@ export const dynamic = "force-dynamic";
 export default async function SettingsPage() {
   const user = await getUser();
   const settings = scheduleSettingsFor(user);
-  const [goals, habits, latest, demoStatus, recoveryCodesRemaining, trashCount] =
+  const [goals, habits, demoStatus, recoveryCodesRemaining, trashCount] =
     await Promise.all([
       getGoalRows(),
       getHabitOptions(),
-      getLatestMetricValues(),
       getDemoStatus(user.id),
       countRemainingRecoveryCodes(user.id),
       getTrashCount(),
     ]);
-  const weight = latest.get("body_weight");
   const onboarding = parseOnboardingState(user.onboardingState);
 
   return (
@@ -64,7 +61,6 @@ export default async function SettingsPage() {
             dayEndHour: user.dayEndHour,
             dayResetMinute: user.dayResetMinute,
           }}
-          latestWeight={weight?.value ?? null}
         />
 
         <GoalsPanel

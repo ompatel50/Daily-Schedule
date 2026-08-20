@@ -1332,6 +1332,12 @@ model Goal {
   /// weekly regardless of this field; see resolveGoalPeriod().
   period    String @default("daily")
 
+  /// all | training | rest — which kind of day this goal applies to. A day is
+  /// "training" when it has a completed workout (manual override in the
+  /// nutrition↔workout linkage). Lets targets vary by day type: two goals for
+  /// the same metric, one per day type. "all" is the historical behaviour.
+  dayType   String @default("all")
+
   /// Where the number comes from. The app fills goals in from data it already
   /// has rather than asking the user to tick a box it can already prove:
   /// manual | workout_count | workout_minutes | workout_distance | steps |

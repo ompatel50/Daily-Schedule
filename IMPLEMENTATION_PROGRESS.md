@@ -6170,9 +6170,9 @@ theme, cookie headers), 390 px overflow sweep clean on /review,
 | #   | Checkpoint                                    | Status |
 |-----|-----------------------------------------------|--------|
 | 1.1 | Cross-module search verification              | ✅ done |
-| 1.2 | Quick-capture everywhere                      | ⏳ |
-| 1.3 | Barcode scanning for food                     | ⏳ |
-| 1.4 | Nutrition targets                             | ⏳ |
+| 1.2 | Quick-capture everywhere                      | ✅ done |
+| 1.3 | Barcode scanning for food                     | ✅ done |
+| 1.4 | Nutrition targets                             | ✅ done |
 | 1.5 | Workout depth                                 | ⏳ |
 | 1.6 | Nutrition ↔ workout linkage                   | ⏳ |
 | 2.1 | Unified daily fact layer                      | ⏳ |
@@ -6411,3 +6411,82 @@ code pre-filled.
 * Typecheck, lint (0 errors, warning count unchanged), build green. The new
   packages added no `npm audit` advisories (the 3 documented prisma-chain
   highs remain the only ones).
+
+## Checkpoint 1.4 — nutrition targets
+
+### The audit, and the architectural decision (documented deliberately)
+
+"Logging exists; there is nothing to log against" was no longer true: the
+app already stores nutrition targets as **Goal rows** (domain `nutrition`,
+sources `calories|protein|carbs|fat|fiber|hydration` auto-measured from
+logged data, direction gte/lte/range), the nutrition page's stat cards and
+the dashboard already read them via `getGoalMap`, and the day score already
+scores them — through the goals category, because the score's documented
+architecture says nutrition/training/health ARE goals and a separate
+category would count the same record twice (src/lib/logic/day-score.ts).
+
+**Decision: keep that architecture.** Nutrition targets stay Goal rows — no
+parallel NutritionTarget model, no fourth score category, no fork of
+`computeDayScore`. Adherence feeds the existing day-score category system
+exactly as the checkpoint requires (weights, exclusions and partial credit
+all come from the one calculator), and "integration with the existing Goals
+model" is inherent rather than optional glue. What was genuinely missing —
+day-type variance, a first-class targets surface with water/fibre, and the
+wellbeing constraints — is what this checkpoint built.
+
+### What changed
+
+* **Day-type variance** — additive migration `goal_day_type`:
+  `Goal.dayType TEXT NOT NULL DEFAULT 'all'` (`all | training | rest`).
+  A day is *training* when it has a completed workout (the 1.6 linkage adds
+  the manual override). Pure gate in `src/lib/logic/goals.ts`
+  (`dayTypeOfFacts`, `goalAppliesOnDayType`) applied inside
+  `buildGoalEvaluation` against the DATE's own facts; streak synthesis
+  skips gated days so a training-only target never inflates or breaks a
+  streak across rest days. The day score shows the honest exclusion — a
+  training-day target on a rest day reads `rest_day`, never a miss.
+  `getGoalMap(date)` became day-aware: the date's variant outranks the
+  "all" fallback (one extra count query, only when a variant exists), so
+  the stat cards and dashboard measure against the set that applies.
+* **The Targets surface** — `getNutritionTargets(date)` (server view-model:
+  every nutrition/hydration goal, the date's day type, consumed per target
+  with **null for an unlogged day — unknown, never zero**) + `TargetsCard`
+  on the nutrition page: per-target neutral progress ("1,850 of 2,200 kcal
+  · 350 kcal left" / "120 kcal over" / "met" / "in range" — pure
+  `describeTargetRemaining`), which variant applies today, and an editor
+  dialog (add/remove targets for calories, protein, carbs, fat, fibre,
+  water; at least / at most / between; every day / training / rest;
+  duplicate metric+day-type refused). The dashboard's calories card hint
+  gained the same neutral remainder. Backup **v12 → v13** (`dayType` rides
+  the goals table; an older app would silently drop it — the documented
+  bump rule).
+* **Wellbeing constraints, enforced not just avoided**: the targets editor
+  states "Targets are yours to set — nothing here is suggested or computed
+  from your body." And the one place that DID compute calorie targets from
+  body weight — Settings' "Suggest nutrition goals" button (Mifflin–St Jeor
+  × activity factor writing calorie/macro goals) — was **removed**, along
+  with `estimateDailyCalories`/`suggestMacroGoals` and their tests: the
+  checkpoint's non-negotiable rules out exactly this feature, and keeping a
+  second surface that does it would make the new copy a lie. No streaks
+  are shown for targets, no over-target alerts exist, unlogged days are
+  excluded from scoring as `no_data`.
+
+### Verification
+
+* Unit **1,365 → 1,379 (net)**: goals suite +11 — day-type classification
+  and gating (incl. the gate reading the date's facts, not the week's; a
+  rest-day exclusion never reading as a miss), neutral phrasing for
+  lte/gte/range/unlogged, the target roster asserting every metric is
+  auto-measured and none manual; backup version test moved to v13;
+  estimator tests removed with the estimator.
+* Integration **+8** (tests/integration/nutrition-targets.test.ts): the
+  editor's write path with dayType; the day-aware goal map flipping between
+  variants when a workout completes; the view-model's null-for-unlogged and
+  variant flags; day-score integration (met target scores; unlogged day
+  excluded `no_data`; training-day target excluded `rest_day` until a
+  workout flips the day); the v13 export/restore round trip; cross-user
+  emptiness. Two existing tests updated for the deliberate version bump.
+* E2E: new tests/e2e/nutrition-targets.spec.ts — set an "at most" calorie
+  target through the real dialog (the user-defined statement asserted),
+  neutral progress on the card, remove it again. Full targeted set green.
+* Typecheck, lint (0 errors), build green; browser-verified.
