@@ -14,6 +14,7 @@ import {
   type ActionResult,
 } from "@/lib/validation";
 import { scheduleSettingsFor, setScheduleEnabled, writeSchedule } from "@/server/schedule";
+import { dispatchAutomationEvent, habitLogContext } from "@/server/automation";
 import { recomputeDay } from "@/server/summaries";
 
 function revalidateAll() {
@@ -128,13 +129,20 @@ export async function logHabit(input: unknown): Promise<ActionResult<{ status: s
   const habit = await prisma.habit.findFirst({ where: { id: habitId, userId: user.id } });
   if (!habit) return fail("Habit not found");
 
-  await prisma.habitLog.upsert({
+  const log = await prisma.habitLog.upsert({
     where: { habitId_date: { habitId, date } },
     create: { habitId, userId: user.id, date, status, value: value ?? null, notes: notes ?? null },
     update: { status, value: value ?? null, notes: notes ?? null },
   });
 
   await recomputeDay(user.id, date);
+  await dispatchAutomationEvent(user.id, {
+    module: "habit_log",
+    event: "created",
+    recordId: log.id,
+    context: habitLogContext({ habitName: habit.name, status, date }),
+    date,
+  });
   revalidateAll();
   return succeed({ status });
 }

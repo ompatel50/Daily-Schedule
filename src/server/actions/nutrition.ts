@@ -19,6 +19,7 @@ import {
   type ActionResult,
 } from "@/lib/validation";
 import { materializeFood } from "@/server/food";
+import { dispatchAutomationEvent, mealContext } from "@/server/automation";
 import { recomputeDay } from "@/server/summaries";
 
 /** A Prisma food row in the shape the nutrition maths expects. */
@@ -179,6 +180,13 @@ export async function logFood(
   });
 
   await recomputeDay(user.id, date);
+  await dispatchAutomationEvent(user.id, {
+    module: "meal",
+    event: "created",
+    recordId: mealId,
+    context: mealContext({ type: mealType, date }),
+    date,
+  });
   revalidateAll();
   return succeed({ mealId, duplicate: false });
 }

@@ -88,6 +88,7 @@ const MODEL_BY_TABLE: Record<BackupTable, string> = {
   goalMilestones: "GoalMilestone",
   dayTypeOverrides: "DayTypeOverride",
   anomalyPreferences: "AnomalyPreference",
+  automationRules: "AutomationRule",
   scheduleRules: "ScheduleRule",
   scheduleRuleDays: "ScheduleRuleDay",
   scheduleOverrides: "ScheduleOverride",
@@ -584,6 +585,21 @@ export async function restoreBackupForUser(
   prepare("anomalyPreferences", (row) => {
     const mapped = withId(row);
     if (!mapped) return null;
+    return own(mapped);
+  });
+
+  // Automation rules restore DISABLED with their review cleared: a rule may
+  // only run after a dry run against THIS account's data (the mandatory
+  // pre-enable review). Health/failure counters reset with it.
+  prepare("automationRules", (row) => {
+    const mapped = withId(row);
+    if (!mapped) return null;
+    mapped.enabled = false;
+    mapped.reviewedHash = null;
+    mapped.consecutiveFailures = 0;
+    mapped.disabledReason = null;
+    mapped.lastRunAt = null;
+    mapped.lastStatus = null;
     return own(mapped);
   });
 

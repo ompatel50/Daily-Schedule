@@ -155,7 +155,7 @@ describe("backup v14", () => {
       version: number;
       data: Record<string, Array<{ category?: string; muted?: boolean; dismissals?: number }>>;
     };
-    expect(file.version).toBe(14);
+    expect(file.version).toBe(15);
     expect(file.data.anomalyPreferences).toHaveLength(1);
     expect(file.data.anomalyPreferences[0]).toMatchObject({
       category: "spending",

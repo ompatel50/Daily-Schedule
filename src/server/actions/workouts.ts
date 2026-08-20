@@ -22,6 +22,7 @@ import {
   type ActionResult,
 } from "@/lib/validation";
 import { scheduleSettingsFor } from "@/server/schedule";
+import { dispatchAutomationEvent, workoutContext } from "@/server/automation";
 import { recomputeDay } from "@/server/summaries";
 
 function revalidateAll() {
@@ -97,6 +98,13 @@ export async function saveWorkout(input: unknown): Promise<ActionResult<{ id: st
   if (addToPlanner) await syncPlannerItem(user.id, workout.id);
 
   await recomputeDay(user.id, workout.date);
+  await dispatchAutomationEvent(user.id, {
+    module: "workout",
+    event: id ? "updated" : "created",
+    recordId: workout.id,
+    context: workoutContext(workout),
+    date: workout.date,
+  });
   revalidateAll();
   return succeed({ id: workout.id });
 }

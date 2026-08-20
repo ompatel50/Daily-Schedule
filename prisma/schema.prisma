@@ -116,6 +116,8 @@ model User {
   goals                    Goal[]
   dayTypeOverrides         DayTypeOverride[]
   anomalyPreferences       AnomalyPreference[]
+  automationRules          AutomationRule[]
+  automationExecutions     AutomationExecution[]
   daySummaries             CalendarDaySummary[]
   journalEntries           JournalEntry[]
   reminders                Reminder[]
@@ -1409,6 +1411,79 @@ model DayTypeOverride {
   updatedAt DateTime @updatedAt
 
   @@unique([userId, date])
+}
+
+/// A user-defined automation: "when <trigger>, if <conditions>, do
+/// <actions>". The three definition columns hold JSON validated by
+/// src/lib/logic/automation.ts (bounded condition depth, bounded action
+/// count, no delete verb exists in the vocabulary). Rules are created
+/// DISABLED; enabling requires a dry run of the exact current definition
+/// (`reviewedHash`). Repeated failures disable a rule with a reason rather
+/// than letting it fail silently forever.
+model AutomationRule {
+  id     String @id @default(cuid())
+  userId String
+  user   User   @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  name    String
+  enabled Boolean @default(false)
+
+  /// JSON AutomationTrigger
+  trigger    String
+  /// JSON ConditionNode tree, depth-bounded
+  conditions String @default("{\"all\":[]}")
+  /// JSON AutomationAction[]
+  actions    String
+
+  /// SHA-256 of the definition at the last dry run — enabling requires the
+  /// current definition to match, so no rule runs unreviewed.
+  reviewedHash String?
+
+  consecutiveFailures Int     @default(0)
+  /// Why the engine disabled this rule (null while healthy).
+  disabledReason      String?
+  lastRunAt           DateTime?
+  /// matched | no_match | error
+  lastStatus          String?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  executions AutomationExecution[]
+
+  @@index([userId, enabled])
+}
+
+/// One rule firing: what triggered it, what matched, what was done (with
+/// resulting record ids and previous values — the undo handle). Kept as an
+/// audit log; undoing stamps `undoneAt` rather than deleting the entry.
+model AutomationExecution {
+  id     String @id @default(cuid())
+  userId String
+  user   User   @relation(fields: [userId], references: [id], onDelete: Cascade)
+  ruleId String
+  rule   AutomationRule @relation(fields: [ruleId], references: [id], onDelete: Cascade)
+
+  firedAt DateTime @default(now())
+  /// JSON snapshot of the triggering event
+  trigger String
+  /// JSON: the context values the conditions matched against
+  matched String @default("{}")
+  /// JSON AutomationActionResult[]: per-action outcome, created record ids,
+  /// previous field values for reverts
+  actions String @default("[]")
+  /// success | error | undone
+  status  String
+  error   String?
+  undoneAt DateTime?
+
+  /// For tick-evaluated triggers (fact/date/anomaly): `<ruleId>:<day>`,
+  /// so a maintenance tick that runs more than once a day cannot re-fire
+  /// the same rule for the same operational day. Null for record triggers.
+  dedupKey String?
+
+  @@index([userId, ruleId, firedAt])
+  @@index([userId, dedupKey])
 }
 
 /// Per-user, per-category state for anomaly nudges: mute switch, dismissal

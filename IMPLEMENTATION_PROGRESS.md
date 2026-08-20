@@ -6179,7 +6179,7 @@ theme, cookie headers), 390 px overflow sweep clean on /review,
 | 2.2 | Correlation insights                          | ✅ done |
 | 2.3 | Spending triggers                             | ✅ done |
 | 2.4 | Anomaly nudges                                | ✅ done |
-| 2.5 | Automations: rules engine core                | ⏳ |
+| 2.5 | Automations: rules engine core                | ✅ done |
 | 2.6 | Rule builder UI, library, integration pass    | ⏳ |
 
 ## Checkpoint 1.1 — cross-module search verification
@@ -6898,3 +6898,92 @@ live in the module docstring of `src/lib/logic/daily-facts.ts`.
   observation renders with the neutral sentence + one clinician note, and
   the live dismissal loop works (toast confirms, preference row written).
 * Typecheck, lint (0 errors, 63-warning baseline), build green.
+
+## Checkpoint 2.5 — automations: rules engine core
+
+### What changed
+
+* **Models** (additive migration `automation_rules`): `AutomationRule`
+  (JSON trigger/conditions/actions columns validated by the pure module;
+  `reviewedHash` for the mandatory dry run; failure counters +
+  `disabledReason`; unique per user) and `AutomationExecution` (the audit
+  log: trigger snapshot, matched context, per-action outcomes with created
+  ids and previous values — the undo handles; `dedupKey` for
+  once-per-day tick firing).
+* **`src/lib/logic/automation.ts`** — the pure core, safety by
+  construction:
+  * Triggers: record created/updated per module (transaction, task,
+    planner block, habit log, meal, workout, health metric, inbox), a
+    DailyFact threshold, a date rule (weekdays or a specific date), and an
+    anomaly firing from 2.4. Documented scope decision: "schedule event
+    starting/ending" maps to record triggers on planner blocks (marking a
+    block done IS its end in a manual-first app) plus the date trigger —
+    no minute-level server scheduler exists and none was pretended.
+  * Conditions: field comparisons (eq/neq/contains/gt/…/in), text
+    matching, weekday and date-range filters, composable ALL/ANY with
+    `MAX_CONDITION_DEPTH = 3` and a 20-node cap — rejected at parse.
+  * Actions: set category, create task/inbox/reminder/planner-block,
+    log a habit (never overwriting an existing log), link a transaction
+    to a bill, notify (through the classic-reminder → delivery-ledger
+    path). **There is no delete verb** — `parseActions` whitelists, so
+    "rules never delete" holds by construction, and a unit test sweeps
+    the vocabulary for delete-ish verbs.
+  * Loop prevention: `selfTriggerProblem` rejects direct self-triggering
+    at save; `MAX_AUTOMATION_DEPTH = 2` bounds cascades at runtime (a
+    rule-produced record evaluates rules once more; ITS products never).
+  * `definitionFingerprint` — the dry-run-before-enable mechanism.
+* **`src/server/automation.ts`** — the executor.
+  `dispatchAutomationEvent` never throws (a broken rule cannot break a
+  save); every execution is logged with resulting record ids; a rule that
+  errors `RULE_FAILURE_LIMIT = 3` times in a row disables itself with the
+  error as its reason. Undo (`undoExecution`/`undoRuleBatch`): created
+  records go to the Trash through the ordinary soft-delete (restorable);
+  the habit-log exception is removed outright (documented — logs are not
+  trash-kept); field changes revert to the recorded previous value;
+  idempotent via `undoneAt`. Dry run replays the trigger against the last
+  30 days of real rows/facts, writing nothing.
+* **Execution wiring** — the server action path on write:
+  saveTransaction (created/updated), saveTask (created/updated),
+  createScheduleItem (+ quick-add, which delegates to it — quick-capture
+  writes trigger rules through the same path), setScheduleItemStatus
+  (updated — the block lifecycle event), logHabit, logFood, saveWorkout,
+  logHealthMetric, saveInboxItem. Tick triggers (fact/date/anomaly) run in
+  `runDailyAutomations`, folded into the EXISTING /api/reminders/run
+  maintenance tick — no new scheduler — deduplicated per rule per
+  operational day.
+* **Actions** (src/server/actions/automation.ts): save (always disabled;
+  self-trigger rejected; behavioural edits re-disable and void the
+  review), dryRun (stamps `reviewedHash`), setEnabled (refuses without a
+  matching review), delete (explicit, confirmed in UI — the USER deletes
+  rules; rules delete nothing), undo one execution / a rule's batch.
+* Backup v14 → **v15**: `automationRules` exported; on restore rules
+  arrive DISABLED with the review cleared — they must be dry-run against
+  the destination account's data before running. Execution logs are
+  deliberately not exported (documented: operational audit trail whose
+  record ids do not survive remapping).
+
+### Verification
+
+* Unit +16 (tests/automation.test.ts): trigger/condition/action parsing
+  bounds, the no-delete vocabulary sweep, self-trigger rejection (created
+  and updated forms) with the classic cross-module rules allowed,
+  condition evaluation (case-insensitivity, missing-field = no match,
+  AND/OR composition, weekday/date-range, empty-ANY-matches-nothing),
+  template clamping, fingerprint stability. Suite 1,444 → 1,460.
+* Integration +14 (tests/integration/automation.test.ts): the mandatory
+  dry-run flow (save disabled → enable refused → preview against real
+  data writes nothing → enable; behavioural edit re-disables);
+  self-trigger rejected at save; a real saveTransaction firing
+  set_category + link_bill + create_task with previous values and created
+  ids on the log; non-matching writes leaving no trace; the depth bound
+  (A→inbox→B→task, then silence — exactly 2 tasks, 1 inbox, 1 execution
+  each); undo reverting the category and trashing the task, refused the
+  second time; three failures self-disabling with the reason; tick
+  fact-threshold firing once then deduped, missing metrics never
+  crossing, anomaly trigger creating from a live observation; user
+  isolation; the v15 round trip restoring disabled-pending-review.
+  Full integration suite 572 green.
+* Typecheck, lint (0 errors, 63-warning baseline), build green;
+  browser-verified the key pages with the dispatch wiring live. (The
+  builder UI, starter library, and the measured performance numbers are
+  checkpoint 2.6.)

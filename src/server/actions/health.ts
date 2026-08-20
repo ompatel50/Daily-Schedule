@@ -18,6 +18,7 @@ import {
   succeed,
   type ActionResult,
 } from "@/lib/validation";
+import { dispatchAutomationEvent, healthMetricContext } from "@/server/automation";
 import { recomputeDay } from "@/server/summaries";
 
 function revalidateAll() {
@@ -64,6 +65,13 @@ export async function logHealthMetric(input: unknown): Promise<ActionResult<{ id
   });
 
   await recomputeDay(user.id, date);
+  await dispatchAutomationEvent(user.id, {
+    module: "health_metric",
+    event: "created",
+    recordId: metric.id,
+    context: healthMetricContext(metric),
+    date,
+  });
   revalidateAll();
   return succeed({ id: metric.id });
 }

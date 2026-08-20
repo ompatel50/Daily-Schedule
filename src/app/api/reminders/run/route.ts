@@ -1,6 +1,7 @@
 import { createHash, timingSafeEqual } from "node:crypto";
 import { NextResponse, type NextRequest } from "next/server";
 
+import { runDailyAutomations } from "@/server/automation";
 import { sweepExpiredUploads } from "@/server/health-upload/session";
 import { runScheduledReminderPush } from "@/server/push";
 import { purgeExpiredTrash } from "@/server/trash";
@@ -48,7 +49,12 @@ export async function GET(request: NextRequest): Promise<NextResponse> {
   // than the window are purged for good (src/server/trash.ts). Never fatal.
   const purgedTrash = await purgeExpiredTrash().catch(() => 0);
 
-  return NextResponse.json({ ...result, sweptUploads, purgedTrash });
+  // Tick-evaluated automation rules (fact thresholds, date rules, anomaly
+  // triggers) — once per rule per operational day, deduplicated inside the
+  // engine, never fatal.
+  const automations = await runDailyAutomations().catch(() => ({ users: 0, fired: 0 }));
+
+  return NextResponse.json({ ...result, sweptUploads, purgedTrash, automations });
 }
 
 export const dynamic = "force-dynamic";

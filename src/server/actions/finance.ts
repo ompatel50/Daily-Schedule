@@ -10,6 +10,7 @@ import { trashStamp } from "@/lib/soft-delete";
 import { FINANCE_CATEGORY_META, type FinanceCategory } from "@/lib/enums";
 import { advanceBillAfterPayment, moneyRound, transferLegs } from "@/lib/logic/finance";
 import { centsOrLegacy, centsToAmount, toCents } from "@/lib/logic/money";
+import { dispatchAutomationEvent, transactionContext } from "@/server/automation";
 import { scheduleSettingsFor } from "@/server/schedule";
 import { recomputeDay, recomputeDaysFor } from "@/server/summaries";
 import {
@@ -241,6 +242,13 @@ export async function saveTransaction(input: unknown): Promise<ActionResult<{ id
     await prisma.financeTransaction.update({ where: { id }, data: payload });
     // A moved transaction changes both days' summaries.
     await recomputeDaysFor(user.id, [existing.date, payload.date]);
+    await dispatchAutomationEvent(user.id, {
+      module: "transaction",
+      event: "updated",
+      recordId: id,
+      context: transactionContext({ ...payload, amountCents }),
+      date: payload.date,
+    });
     revalidateAll();
     return succeed({ id });
   }
@@ -249,6 +257,13 @@ export async function saveTransaction(input: unknown): Promise<ActionResult<{ id
     data: { ...payload, userId: user.id },
   });
   await recomputeDay(user.id, payload.date);
+  await dispatchAutomationEvent(user.id, {
+    module: "transaction",
+    event: "created",
+    recordId: created.id,
+    context: transactionContext(created),
+    date: created.date,
+  });
   revalidateAll();
   return succeed({ id: created.id });
 }

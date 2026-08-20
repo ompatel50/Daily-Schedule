@@ -7,6 +7,7 @@ import { PROJECT_STATUSES, type ProjectStatus } from "@/lib/enums";
 import { operationalDayOf, operationalDayOfRecord } from "@/lib/logic/operational-day";
 import { resetMinuteOf } from "@/lib/logic/schedule";
 import { trashStamp } from "@/lib/soft-delete";
+import { dispatchAutomationEvent, taskContext } from "@/server/automation";
 import { scheduleSettingsFor } from "@/server/schedule";
 import { recomputeDay, recomputeDaysFor } from "@/server/summaries";
 import { linkedBlocksToComplete, nextDueAfterCompletion } from "@/lib/logic/tasks";
@@ -191,6 +192,13 @@ export async function saveTask(input: unknown): Promise<ActionResult<{ id: strin
         [existing.dueDate, payload.dueDate].filter((day): day is string => day !== null),
       );
     }
+    await dispatchAutomationEvent(user.id, {
+      module: "task",
+      event: "updated",
+      recordId: id,
+      context: taskContext({ ...payload, status: existing.status }),
+      date: scheduleSettingsFor(user).today,
+    });
     revalidateAll();
     return succeed({ id });
   }
@@ -205,6 +213,13 @@ export async function saveTask(input: unknown): Promise<ActionResult<{ id: strin
   });
   const settings = scheduleSettingsFor(user);
   await recomputeDaysFor(user.id, taskFactDays(created, settings.timezone, resetMinuteOf(settings)));
+  await dispatchAutomationEvent(user.id, {
+    module: "task",
+    event: "created",
+    recordId: created.id,
+    context: taskContext(created),
+    date: settings.today,
+  });
   revalidateAll();
   return succeed({ id: created.id });
 }

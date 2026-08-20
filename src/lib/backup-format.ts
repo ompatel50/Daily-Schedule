@@ -72,6 +72,12 @@
  * v14 — the `anomalyPreferences` table (per-category mute + dismissal count
  *      for anomaly nudges). Bumped for the same reason as v13: an older
  *      app's restore would silently drop the table.
+ * v15 — the `automationRules` table (the rules engine's definitions). Rules
+ *      restore DISABLED with their review cleared — a rule must be dry-run
+ *      against the destination account's data before it may run there.
+ *      Execution logs are deliberately not exported: they reference record
+ *      ids that do not survive remapping, and they are an operational audit
+ *      trail, not user data.
  *
  * A v1–v12 file restores into a v13 app unchanged: the missing tables simply
  * have no rows, the new columns take their defaults (a v7 health batch arrives
@@ -94,7 +100,7 @@
  * still holds its unique keys (import keys, budget categories, journal
  * dates…) and would otherwise block the very rows being restored.
  */
-export const BACKUP_VERSION = 14;
+export const BACKUP_VERSION = 15;
 
 export interface BackupMetadata {
   /** Schema version of the backup format itself. */
@@ -151,6 +157,7 @@ export const BACKUP_TABLES = [
   "goalMilestones",
   "dayTypeOverrides",
   "anomalyPreferences",
+  "automationRules",
   "scheduleRules",
   "scheduleRuleDays",
   "scheduleOverrides",

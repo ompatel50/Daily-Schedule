@@ -52,6 +52,7 @@ export async function exportBackup(): Promise<ActionResult<BackupFile>> {
     goalMilestones,
     dayTypeOverrides,
     anomalyPreferences,
+    automationRules,
     scheduleRules,
     scheduleRuleDays,
     scheduleOverrides,
@@ -117,6 +118,7 @@ export async function exportBackup(): Promise<ActionResult<BackupFile>> {
     prisma.goalMilestone.findMany({ where: { userId: user.id } }),
     prisma.dayTypeOverride.findMany({ where: { userId: user.id } }),
     prisma.anomalyPreference.findMany({ where: { userId: user.id } }),
+    prisma.automationRule.findMany({ where: { userId: user.id } }),
     // The scheduling tables are what make a goal or habit mean anything. A
     // backup without them would restore records that apply on no date at all.
     prisma.scheduleRule.findMany({ where: { userId: user.id } }),
@@ -200,6 +202,7 @@ export async function exportBackup(): Promise<ActionResult<BackupFile>> {
     goalMilestones,
     dayTypeOverrides,
     anomalyPreferences,
+    automationRules,
     scheduleRules,
     scheduleRuleDays,
     scheduleOverrides,
