@@ -6180,7 +6180,7 @@ theme, cookie headers), 390 px overflow sweep clean on /review,
 | 2.3 | Spending triggers                             | ✅ done |
 | 2.4 | Anomaly nudges                                | ✅ done |
 | 2.5 | Automations: rules engine core                | ✅ done |
-| 2.6 | Rule builder UI, library, integration pass    | ⏳ |
+| 2.6 | Rule builder UI, library, integration pass    | ✅ done |
 
 ## Checkpoint 1.1 — cross-module search verification
 
@@ -6987,3 +6987,90 @@ live in the module docstring of `src/lib/logic/daily-facts.ts`.
   browser-verified the key pages with the dispatch wiring live. (The
   builder UI, starter library, and the measured performance numbers are
   checkpoint 2.6.)
+
+## Checkpoint 2.6 — rule builder UI, library, and integration pass
+
+### What changed
+
+* **The builder** (src/components/automation/rule-builder-dialog.tsx),
+  comprehensible without documentation: three labelled sections — When…
+  (trigger type + per-type fields), If… (field/operator/value rows with an
+  all/any toggle, weekday chips for date rules), Then… (up to five action
+  rows with per-verb fields) — and the rule's **plain-English summary
+  rendered live at the top** from the pure `describeRule` ("When a
+  transaction is created, if payee contains “planet”, set the category to
+  health and link it to its matching bill."). Definitions the simple form
+  cannot represent (hand-nested condition groups) switch to direct JSON
+  editing rather than silently flattening. The save button stays disabled
+  while the summary slot shows a validation error.
+* **The rules surface** (/settings/rules, linked from Settings): each rule
+  with its sentence, enable switch (server-guarded by the dry-run
+  requirement), last-run status + date, a "needs dry run" badge, the
+  self-disable reason when present; per-rule **Dry run** (preview dialog:
+  candidates examined, matches with rendered action previews, an Enable
+  button inside the preview — enabling happens FROM the review),
+  **History** (every execution with trigger context, outcomes, per-run
+  Undo and Undo-all), **Edit**, and a two-step **Delete**.
+* **Starter library** — four templates (merchant categorisation,
+  recurring-transaction linking to bills, post-workout habit logging,
+  low-sleep schedule protection) as `STARTER_RULES`
+  (src/lib/logic/automation-library.ts). Presented as optional cards with
+  edit hints; adding one uses the ordinary save path, so it is stored
+  DISABLED and only runs after review + dry run. A unit test parses every
+  template through the same validation as hand-built rules.
+* **Anomaly trigger wiring**: the builder offers the anomaly trigger with
+  the five 2.4 categories (engine support landed in 2.5; integration test
+  covers an observation firing a rule).
+* **Quick-capture verification**: integration test — a palette quick-add
+  ("Gym session 6pm") fires a schedule_item rule exactly once, the block's
+  category is set, and nothing cascades (field updates are not creation
+  events).
+* **Docs**: docs/quick-capture.md (the capture grammar, surface by
+  surface, with the never-lost inbox rule) and docs/automation-rules.md
+  (triggers, conditions, actions, the safety model, the starter library,
+  backups, performance) — user-facing, linked to each other.
+
+### Performance (measured)
+
+`saveTransaction` mean over 25 writes on the integration benchmark
+(Postgres 16, same box): **20.4 ms → 23.2 ms** and **16.9 ms → 25.6 ms**
+across two runs (without rules → with five enabled rules, one of which
+matched and wrote an inbox item + execution log per run — i.e. most of the
+delta is the matched rule doing real work, not evaluation). With no
+enabled rules the dispatch is a single indexed `findMany` that returns
+empty. The benchmark asserts the overhead stays under 250 ms to catch an
+accidental O(history) regression.
+
+### Verification (and the full-phase regression sweep)
+
+* Unit +5 (describeRule sentences for record/fact/anomaly triggers, the
+  starter library parsing + the four promised keys, builder field
+  metadata): suite **1,465** green (was 1,285 at the start of the master
+  update).
+* Integration +2 (quick-capture fires rules without loops; the measured
+  performance benchmark): suite **574** green (was ~485).
+* E2E +1 (tests/e2e/automation-rules.spec.ts: build in the dialog watching
+  the live summary, save disabled, dry run, enable from the preview, the
+  four starter cards, add-a-starter, delete cleanup) — and the **full E2E
+  suite: 154 passed, 1 skipped** across every module touched in both
+  phases.
+* Typecheck, lint (0 errors, 63-warning baseline), build green;
+  browser-verified the Automations page and the builder dialog
+  (screenshots: validation state, When/If/Then sections, review footer).
+
+## Master update — phase record
+
+Both phases complete. Phase 1 (capture & depth): search coverage audit,
+unified quick-capture, barcode depth, nutrition targets with the wellbeing
+constraint enforced (suggest-from-body-weight removed), workout depth,
+nutrition↔workout linkage. Phase 2 (intelligence & automation): the
+unified daily fact layer (one row per user per operational day, missing
+data explicitly null), correlation insights and spending triggers under
+one statistical-honesty bar (30-pair floor, Spearman vs scipy, BH
+correction, dominance guard, no imputation), anomaly nudges on robust
+baselines through the reminder ledger (rate-limited, dismissal-aware,
+observation-only health copy), and the rules engine (never deletes,
+dry-run-before-enable, logged, undoable, self-disabling, loop-bounded, no
+new scheduler). Backups v12 → v15 across the update, every migration
+additive. Suites over the update: unit 1,285 → 1,465; integration ~485 →
+574; E2E 154 green.

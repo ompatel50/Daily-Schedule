@@ -19,6 +19,7 @@ import {
 } from "@/server/actions/automation";
 import { exportBackup, importBackup } from "@/server/actions/backup";
 import { saveFinanceAccount, saveTransaction } from "@/server/actions/finance";
+import { quickAddScheduleItem } from "@/server/actions/planner";
 import { saveTask } from "@/server/actions/tasks";
 import { saveInboxItem } from "@/server/actions/inbox";
 import { runDailyAutomationsFor } from "@/server/automation";
@@ -391,6 +392,83 @@ describe("tick triggers", () => {
     expect((await runDailyAutomationsFor(row)).fired).toBe(1);
     const item = await prisma.inboxItem.findFirstOrThrow({ where: { userId: alice.id } });
     expect(item.title).toContain("Resting heart rate");
+  });
+});
+
+describe("quick-capture writes trigger rules, without loops", () => {
+  it("a quick-added planner block fires a schedule_item rule exactly once", async () => {
+    const settings = scheduleSettingsFor(
+      await prisma.user.findUniqueOrThrow({ where: { id: alice.id } }),
+    );
+    await enabledRule({
+      name: "Tag gym blocks",
+      trigger: '{"type":"record","module":"schedule_item","event":"created"}',
+      conditions: '{"field":"title","op":"contains","value":"gym"}',
+      actions: '[{"type":"set_category","category":"fitness"}]',
+    });
+
+    // The palette's quick-add path — the same createScheduleItem the
+    // capture dialog commits through.
+    const saved = await quickAddScheduleItem({ text: "Gym session 6pm", date: settings.today });
+    expect(saved.ok).toBe(true);
+    if (!saved.ok) return;
+
+    const block = await prisma.scheduleItem.findUniqueOrThrow({ where: { id: saved.data.id } });
+    expect(block.category).toBe("fitness");
+    // Exactly one execution: the category update is a field write, not a
+    // creation, so nothing cascades.
+    expect(await prisma.automationExecution.count({ where: { userId: alice.id } })).toBe(1);
+    expect(await prisma.scheduleItem.count({ where: { userId: alice.id } })).toBe(1);
+  });
+});
+
+describe("performance: rule evaluation must not slow ordinary writes", () => {
+  it("measures saveTransaction with no rules vs five enabled rules", async () => {
+    const accountId = await checkingAccount();
+    const ROUNDS = 25;
+
+    const measure = async (offset: number) => {
+      const start = performance.now();
+      for (let index = 0; index < ROUNDS; index += 1) {
+        await saveTransaction({
+          accountId,
+          date: "2026-08-10",
+          amount: -(1 + offset + index),
+          payee: `Bench ${offset}-${index}`,
+          category: "other",
+        });
+      }
+      return (performance.now() - start) / ROUNDS;
+    };
+
+    const baseline = await measure(0);
+
+    // Five enabled rules: four that never match, one that does.
+    for (let index = 0; index < 4; index += 1) {
+      await enabledRule({
+        name: `Miss ${index}`,
+        trigger: TRANSACTION_TRIGGER,
+        conditions: `{"field":"payee","op":"contains","value":"no-such-payee-${index}"}`,
+        actions: '[{"type":"create_inbox","title":"never"}]',
+      });
+    }
+    await enabledRule({
+      name: "Hit",
+      trigger: TRANSACTION_TRIGGER,
+      conditions: '{"field":"payee","op":"contains","value":"bench"}',
+      actions: '[{"type":"create_inbox","title":"Seen {{payee}}"}]',
+    });
+
+    const withRules = await measure(1000);
+
+    // The numbers are logged for the progress record; the assertion only
+    // guards against something egregious (an accidental O(history) read).
+    process.stdout.write(
+      `\n[automation-perf] saveTransaction mean: ${baseline.toFixed(1)}ms without rules, ` +
+        `${withRules.toFixed(1)}ms with 5 enabled rules (1 matching)\n`,
+    );
+    expect(withRules - baseline).toBeLessThan(250);
+    expect(await prisma.inboxItem.count({ where: { userId: alice.id } })).toBe(ROUNDS);
   });
 });
 

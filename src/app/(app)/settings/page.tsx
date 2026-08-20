@@ -1,6 +1,6 @@
 import type { Metadata } from "next";
 import Link from "next/link";
-import { Database, Keyboard, Trash2 } from "lucide-react";
+import { Database, Keyboard, Trash2, Workflow } from "lucide-react";
 
 import { AssistantPanel } from "@/components/settings/assistant-panel";
 import { BackupPanel } from "@/components/settings/backup-panel";
@@ -139,6 +139,27 @@ export default async function SettingsPage() {
               className="inline-flex min-h-9 items-center rounded-md border px-3 text-sm font-medium text-foreground transition-colors hover:bg-accent"
             >
               View your data
+            </Link>
+          </div>
+        </SectionCard>
+
+        <SectionCard
+          title="Automations"
+          icon={Workflow}
+          accent="text-domain-goal"
+          description="If-this-then-that rules over your own data"
+        >
+          <div className="flex flex-wrap items-center justify-between gap-3 text-sm text-muted-foreground">
+            <p>
+              Categorise merchants, link recurring charges to bills, log habits after workouts,
+              protect short-sleep days. Rules never delete anything, log every run, and only
+              enable after a dry run against your real data.
+            </p>
+            <Link
+              href="/settings/rules"
+              className="inline-flex min-h-9 items-center rounded-md border px-3 text-sm font-medium text-foreground transition-colors hover:bg-accent"
+            >
+              Open automations
             </Link>
           </div>
         </SectionCard>

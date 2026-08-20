@@ -45,6 +45,8 @@ import {
   type RecordEvent,
   type RecordModule,
   type RuleDefinition,
+  definitionFingerprint,
+  describeRule,
   evaluateConditions,
   parseRuleDefinition,
   renderTemplate,
@@ -700,6 +702,107 @@ async function executeAction(
       };
     }
   }
+}
+
+// --- read models --------------------------------------------------------------
+
+export interface AutomationRuleView {
+  id: string;
+  name: string;
+  enabled: boolean;
+  /** Plain-English sentence, or the parse error for a corrupt definition. */
+  summary: string;
+  valid: boolean;
+  /** True when the current definition has been dry-run (may enable). */
+  reviewed: boolean;
+  trigger: string;
+  conditions: string;
+  actions: string;
+  lastRunAt: string | null;
+  lastStatus: string | null;
+  disabledReason: string | null;
+  executionCount: number;
+}
+
+export async function getAutomationOverview(userId: string): Promise<AutomationRuleView[]> {
+  const rules = await prisma.automationRule.findMany({
+    where: { userId },
+    orderBy: { createdAt: "desc" },
+    include: { _count: { select: { executions: true } } },
+  });
+  return rules.map((rule) => {
+    let summary = "";
+    let valid = true;
+    try {
+      summary = describeRule(parseRuleDefinition(rule));
+    } catch (error) {
+      summary = `Invalid definition: ${message(error)}`;
+      valid = false;
+    }
+    return {
+      id: rule.id,
+      name: rule.name,
+      enabled: rule.enabled,
+      summary,
+      valid,
+      reviewed: rule.reviewedHash !== null && rule.reviewedHash === definitionFingerprint(rule),
+      trigger: rule.trigger,
+      conditions: rule.conditions,
+      actions: rule.actions,
+      lastRunAt: rule.lastRunAt?.toISOString() ?? null,
+      lastStatus: rule.lastStatus,
+      disabledReason: rule.disabledReason,
+      executionCount: rule._count.executions,
+    };
+  });
+}
+
+export interface AutomationExecutionView {
+  id: string;
+  firedAt: string;
+  status: string;
+  error: string | null;
+  matched: string;
+  outcomes: Array<{ summary: string }>;
+  undoneAt: string | null;
+}
+
+export async function getRuleExecutions(
+  userId: string,
+  ruleId: string,
+  take = 30,
+): Promise<AutomationExecutionView[]> {
+  const executions = await prisma.automationExecution.findMany({
+    where: { userId, ruleId },
+    orderBy: { firedAt: "desc" },
+    take,
+  });
+  return executions.map((execution) => {
+    let matched = "";
+    let outcomes: Array<{ summary: string }> = [];
+    try {
+      const context = JSON.parse(execution.matched) as Record<string, unknown>;
+      matched = Object.entries(context)
+        .filter(([, value]) => value !== null && value !== "")
+        .slice(0, 4)
+        .map(([key, value]) => `${key}: ${value}`)
+        .join(" · ");
+      outcomes = (JSON.parse(execution.actions) as ActionOutcome[]).map((outcome) => ({
+        summary: outcome.summary,
+      }));
+    } catch {
+      // A corrupt log row renders empty rather than breaking the page.
+    }
+    return {
+      id: execution.id,
+      firedAt: execution.firedAt.toISOString(),
+      status: execution.status,
+      error: execution.error,
+      matched,
+      outcomes,
+      undoneAt: execution.undoneAt?.toISOString() ?? null,
+    };
+  });
 }
 
 // --- undo ---------------------------------------------------------------------

@@ -417,6 +417,138 @@ export function renderTemplate(template: string, context: EventContext): string 
     .slice(0, 200);
 }
 
+// --- plain language -----------------------------------------------------------
+
+const MODULE_LABELS: Record<RecordModule, string> = {
+  transaction: "a transaction",
+  task: "a task",
+  schedule_item: "a planner block",
+  habit_log: "a habit log",
+  meal: "a meal",
+  workout: "a workout",
+  health_metric: "a health reading",
+  inbox: "an inbox item",
+};
+
+const FACT_LABELS: Record<FactMetric, string> = {
+  score: "the day score",
+  sleepHours: "sleep",
+  spendCents: "spending",
+  plannedMinutes: "planned time",
+  calories: "calories logged",
+  steps: "steps",
+  workoutCount: "workouts",
+  tasksCompleted: "tasks completed",
+  habitsMissed: "habits missed",
+};
+
+const WEEKDAY_NAMES = ["Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday"];
+
+function describeTrigger(trigger: AutomationTrigger): string {
+  switch (trigger.type) {
+    case "record":
+      return `When ${MODULE_LABELS[trigger.module]} is ${trigger.event}`;
+    case "fact":
+      return `When yesterday's ${FACT_LABELS[trigger.metric]} is ${trigger.direction} ${trigger.value}`;
+    case "date": {
+      if (trigger.date) return `On ${trigger.date}`;
+      if (trigger.weekdays && trigger.weekdays.length > 0) {
+        return `Every ${trigger.weekdays.map((day) => WEEKDAY_NAMES[day]).join(", ")}`;
+      }
+      return "Every day";
+    }
+    case "anomaly":
+      return trigger.category
+        ? `When a ${trigger.category.replace("_", " ")} observation appears`
+        : "When any anomaly observation appears";
+  }
+}
+
+const OP_LABELS: Record<ConditionOp, string> = {
+  eq: "is",
+  neq: "is not",
+  contains: "contains",
+  not_contains: "doesn't contain",
+  gt: "is over",
+  gte: "is at least",
+  lt: "is under",
+  lte: "is at most",
+  in: "is one of",
+};
+
+function describeCondition(node: ConditionNode): string {
+  if ("all" in node) {
+    const parts = node.all.map(describeCondition).filter(Boolean);
+    return parts.join(" and ");
+  }
+  if ("any" in node) {
+    const parts = node.any.map(describeCondition).filter(Boolean);
+    return parts.length > 0 ? `(${parts.join(" or ")})` : "";
+  }
+  if ("weekday" in node) {
+    return `it's a ${node.weekday.map((day) => WEEKDAY_NAMES[day]).join("/")}`;
+  }
+  if ("dateRange" in node) {
+    const { from, to } = node.dateRange;
+    if (from && to) return `between ${from} and ${to}`;
+    if (from) return `from ${from}`;
+    if (to) return `until ${to}`;
+    return "";
+  }
+  const value = Array.isArray(node.value) ? node.value.join(", ") : String(node.value);
+  return `${node.field} ${OP_LABELS[node.op]} “${value}”`;
+}
+
+function describeAction(action: AutomationAction): string {
+  switch (action.type) {
+    case "set_category":
+      return `set the category to ${action.category}`;
+    case "create_task":
+      return `create the task “${action.title}”`;
+    case "create_inbox":
+      return `capture “${action.title}” to the Inbox`;
+    case "create_reminder":
+      return `set a reminder “${action.title}”`;
+    case "create_block":
+      return `add “${action.title}” to the planner`;
+    case "log_habit":
+      return `log ${action.habit} as done`;
+    case "link_bill":
+      return action.bill ? `link it to the ${action.bill} bill` : "link it to its matching bill";
+    case "notify":
+      return `send the notification “${action.title}”`;
+  }
+}
+
+/**
+ * The one plain-English sentence the builder shows at the top: "When a
+ * transaction is created, if payee contains “planet”, set the category to
+ * health and link it to its matching bill."
+ */
+export function describeRule(definition: RuleDefinition): string {
+  const trigger = describeTrigger(definition.trigger);
+  const conditions = describeCondition(definition.conditions);
+  const actions = definition.actions.map(describeAction);
+  const actionText =
+    actions.length <= 1
+      ? actions[0]
+      : `${actions.slice(0, -1).join(", ")} and ${actions[actions.length - 1]}`;
+  return `${trigger}${conditions ? `, if ${conditions}` : ""}, ${actionText}.`;
+}
+
+/** The condition/template fields each record module exposes — what the
+ * builder offers in its field dropdown. */
+export const MODULE_FIELDS: Record<RecordModule, string[]> = {
+  transaction: ["payee", "category", "amount", "direction", "date", "notes"],
+  task: ["title", "priority", "status", "dueDate", "notes"],
+  schedule_item: ["title", "category", "status", "date", "startMinute"],
+  habit_log: ["habit", "status", "date"],
+  meal: ["mealType", "date"],
+  workout: ["name", "workoutType", "status", "date"],
+  health_metric: ["metric", "value", "unit", "date"],
+  inbox: ["title", "notes"],
+};
+
 // --- definition hashing (dry-run-before-enable) -------------------------------
 
 /**

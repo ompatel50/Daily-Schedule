@@ -9,7 +9,14 @@ import {
   parseRuleDefinition,
   selfTriggerProblem,
 } from "@/lib/logic/automation";
-import { dryRunDefinition, undoExecution, undoRuleBatch, type DryRunResult } from "@/server/automation";
+import {
+  dryRunDefinition,
+  getRuleExecutions,
+  undoExecution,
+  undoRuleBatch,
+  type AutomationExecutionView,
+  type DryRunResult,
+} from "@/server/automation";
 import { fail, fromZod, succeed, type ActionResult } from "@/lib/validation";
 
 function revalidateAll() {
@@ -136,6 +143,16 @@ export async function deleteAutomationRule(id: string): Promise<ActionResult<nul
   await prisma.automationRule.deleteMany({ where: { id, userId: user.id } });
   revalidateAll();
   return succeed(null);
+}
+
+/** A rule's execution history, newest first — the per-rule audit view. */
+export async function listAutomationExecutions(
+  ruleId: string,
+): Promise<ActionResult<AutomationExecutionView[]>> {
+  const user = await getCurrentUser();
+  const rule = await prisma.automationRule.findFirst({ where: { id: ruleId, userId: user.id } });
+  if (!rule) return fail("Rule not found");
+  return succeed(await getRuleExecutions(user.id, ruleId));
 }
 
 export async function undoAutomationExecution(id: string): Promise<ActionResult<null>> {

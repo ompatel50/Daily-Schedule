@@ -4,7 +4,10 @@ import {
   ACTION_TYPES,
   MAX_ACTIONS_PER_RULE,
   MAX_CONDITION_DEPTH,
+  MODULE_FIELDS,
+  RECORD_MODULES,
   definitionFingerprint,
+  describeRule,
   evaluateConditions,
   parseActions,
   parseConditions,
@@ -13,6 +16,7 @@ import {
   renderTemplate,
   selfTriggerProblem,
 } from "@/lib/logic/automation";
+import { STARTER_RULES } from "@/lib/logic/automation-library";
 
 /**
  * The rules engine's pure core: definition validation (bounded, whitelisted,
@@ -202,6 +206,69 @@ describe("templates", () => {
     );
     expect(renderTemplate("{{missing}} kept tidy", {})).toBe("kept tidy");
     expect(renderTemplate("x".repeat(500), {}).length).toBeLessThanOrEqual(200);
+  });
+});
+
+describe("plain-language summaries", () => {
+  it("reads as one sentence: trigger, conditions, actions", () => {
+    const definition = parseRuleDefinition({
+      trigger: '{"type":"record","module":"transaction","event":"created"}',
+      conditions: '{"field":"payee","op":"contains","value":"planet"}',
+      actions:
+        '[{"type":"set_category","category":"health"},{"type":"link_bill"}]',
+    });
+    expect(describeRule(definition)).toBe(
+      "When a transaction is created, if payee contains “planet”, set the category to health and link it to its matching bill.",
+    );
+  });
+
+  it("describes fact, date and anomaly triggers", () => {
+    expect(
+      describeRule(
+        parseRuleDefinition({
+          trigger: '{"type":"fact","metric":"sleepHours","direction":"below","value":6}',
+          conditions: '{"all":[]}',
+          actions: '[{"type":"create_block","title":"Wind down early"}]',
+        }),
+      ),
+    ).toBe("When yesterday's sleep is below 6, add “Wind down early” to the planner.");
+    expect(
+      describeRule(
+        parseRuleDefinition({
+          trigger: '{"type":"anomaly","category":"resting_hr"}',
+          conditions: '{"all":[]}',
+          actions: '[{"type":"create_inbox","title":"Note it"}]',
+        }),
+      ),
+    ).toMatch(/^When a resting hr observation appears, capture/);
+  });
+});
+
+describe("the starter library", () => {
+  it("every template parses through the same validation as a hand-built rule", () => {
+    for (const starter of STARTER_RULES) {
+      const definition = parseRuleDefinition(starter);
+      expect(selfTriggerProblem(definition)).toBeNull();
+      expect(describeRule(definition)).toMatch(/^When |^Every |^On /);
+    }
+  });
+
+  it("covers the four promised templates", () => {
+    const keys = STARTER_RULES.map((starter) => starter.key);
+    expect(keys).toEqual([
+      "merchant-categorisation",
+      "recurring-transaction-linking",
+      "post-workout-habit",
+      "low-sleep-protection",
+    ]);
+  });
+});
+
+describe("builder field metadata", () => {
+  it("lists condition fields for every record module", () => {
+    for (const module of RECORD_MODULES) {
+      expect(MODULE_FIELDS[module].length).toBeGreaterThan(0);
+    }
   });
 });
 
