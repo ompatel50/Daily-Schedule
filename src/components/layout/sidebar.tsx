@@ -29,7 +29,7 @@ export function Sidebar({ userName }: { userName: string }) {
       <div className="p-3">
         <Button className="w-full justify-start gap-2" onClick={() => openQuickAdd()}>
           <Plus />
-          Quick add
+          Capture
           <kbd className="ml-auto rounded border border-primary-foreground/20 px-1.5 py-0.5 text-[10px] font-medium">
             N
           </kbd>

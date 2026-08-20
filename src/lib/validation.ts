@@ -35,7 +35,7 @@ import { normalizeTagNames, TAG_NAME_MAX, TASK_TAG_LIMIT } from "./logic/tasks";
 
 /** Every server action validates its input through one of these schemas. */
 
-const dayKey = z
+export const dayKey = z
   .string()
   .regex(/^\d{4}-\d{2}-\d{2}$/, "Expected a YYYY-MM-DD date");
 

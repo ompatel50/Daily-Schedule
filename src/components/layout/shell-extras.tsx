@@ -15,6 +15,6 @@ export const CommandPalette = dynamic(
 );
 
 export const QuickAddDialog = dynamic(
-  () => import("@/components/planner/quick-add-dialog").then((mod) => mod.QuickAddDialog),
+  () => import("@/components/capture/capture-dialog").then((mod) => mod.CaptureDialog),
   { ssr: false },
 );

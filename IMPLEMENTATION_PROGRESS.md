@@ -6268,3 +6268,82 @@ Reminder `(userId, enabled)` + `(userId, deletedAt)`.
 * Typecheck, lint, full unit + integration suites green; browser-verified
   (palette groups for the new sources, ranking, keyboard navigation,
   reminder anchor).
+
+## Checkpoint 1.2 — quick-capture everywhere
+
+### Shape
+
+* **Pure grammar** — `src/lib/logic/capture.ts`. `parseCapture(input, {baseDate,
+  nowMinute})` classifies one line into planner / task / expense / income /
+  health / nutrition / workout / habit / inbox and returns a typed draft plus
+  `alternates` (non-empty = ambiguous, the UI must ask). `parseCaptureAs`
+  re-reads the same text under a user-chosen intent. The planner grammar is
+  untouched and remains the default for unmarked text — `parseQuickAdd` was
+  only refactored to EXPORT its three token extractors (`extractPriority`,
+  `extractHashTokens`, `extractDateToken`) so the new parsers share them
+  instead of duplicating; its 16 tests pass unchanged and a capture test
+  asserts byte-identical planner output.
+* **Intent markers**, leading-verb based: `todo|task|remember to` → task;
+  `got paid|received|earned|refund*|income` (checked BEFORE `paid`) → income;
+  `spent|bought|paid` or a leading signed amount → expense; a health alias
+  (`weight|bw|resting hr|rhr|steps|slept|sleep|water|hydration|glucose|blood
+  pressure|bp|body fat|hrv…`, longest first, every target asserted to be a
+  MANUAL_ENTRY_METRIC) followed by a reading → health; `ate|had` → nutrition
+  (items split on commas/"and", quantities incl. attached units "100g",
+  meal word or wall-clock inference); cardio verbs with distance/duration →
+  workout; `NxM [weight]` shorthand → strength workout; `did|skipped` →
+  habit; `note|inbox` prefix → inbox. A recognised verb whose numbers are
+  missing ("spent a lovely day", "ran errands") routes to INBOX with the raw
+  text — never force-fit. "did bench 3x8 135" surfaces habit + workout as an
+  explicit disambiguation.
+* **Server** — `src/server/actions/capture.ts`. `previewCapture` resolves
+  what only the database can: habit candidates (contains-either-way, with
+  the day's already-logged status), food candidates per phrase (LOCAL
+  catalogue only — preview keystrokes never fan out to external providers;
+  naive singular fallback so "eggs" finds "Egg"), the account list with a
+  last-used default. `commitCapture` is a zod-validated ROUTER: every branch
+  calls the module's existing action (`createScheduleItem`, `saveTask`,
+  `saveTransaction`, `logHealthMetric`, `logFood` per item with client
+  idempotency keys, `saveWorkout` with expanded set rows, `logHabit`,
+  `saveInboxItem`) — no second write path, so ownership guards, validation,
+  `recomputeDay` and revalidation all come from the one implementation.
+  Unit handling: bare workout weights resolve via the user's unitSystem,
+  explicit `kg|lb` win (lbToKg); explicit health units convert through the
+  one health unit table (`toCanonical`/`toDisplay`), never ad-hoc math.
+* **UI** — `src/components/capture/capture-dialog.tsx` replaces the planner
+  quick-add dialog behind the same store state, `n` shortcut, palette action
+  ("Capture anything") and the always-visible topbar button (the mobile
+  affordance; label now "Capture", sidebar button likewise). Live parse per
+  keystroke; the intent is shown with a change-Select; ambiguity renders
+  choice buttons and blocks commit; EVERY parsed field is editable (per-
+  intent field grids over a field-override map, render-time reset per the
+  react.dev pattern). Habit and food resolution is debounced 300 ms through
+  `previewCapture`; unresolved foods and unknown habits block commit with a
+  plain way out (pick a match, remove the item, or switch to Inbox). The
+  planner commit button keeps its historical "Add item" label.
+* Planner capture still ignores #tags exactly as text quick-add always did —
+  now stated in the dialog instead of silent.
+
+### Verification
+
+* Unit **1,293 → 1,365**: tests/capture.test.ts — a 40-row fixture table of
+  realistic phrasings across all nine intents, near-misses that must land in
+  Inbox, the planner byte-compatibility check, per-intent field parsing
+  (money, health units, sleep durations, bp, food quantities, cardio/strength
+  numbers), ambiguity + parseCaptureAs, and the alias→manual-metric roster
+  assertion. quick-add tests unchanged (16).
+* Integration **+17**: tests/integration/capture.test.ts — routing per intent
+  through the real actions (task with tags, expense/income cents dual-write,
+  imperial and explicit-unit health conversion, non-manual metric refusal,
+  food resolution + logFood snapshot + idempotency-key retry, strength
+  expansion with lb→kg and the planner mirror, habit fuzzy preview with
+  logged-status and cross-user refusal, inbox raw-text, planner block, and
+  the historical `quickAddScheduleItem` regression).
+* E2E: new tests/e2e/capture.spec.ts — `n` → todo → Task surface; planner
+  text behaving as before with editable Start/End; a near-miss landing in
+  Inbox with the raw text; the phone-width topbar Capture button opening the
+  dialog. Existing planner specs keep passing (the "Add item" label was
+  deliberately preserved).
+* Typecheck, lint (0 errors; 2 new warnings, both instances of the two
+  documented warn-level react-hooks rules in their established dialog/search
+  patterns), build green; browser-verified.

@@ -144,8 +144,8 @@ export function CommandPalette() {
     () => [
       {
         id: "quick-add",
-        label: "Quick add to planner",
-        keywords: "quick add task schedule item new",
+        label: "Capture anything",
+        keywords: "quick add capture task schedule item expense food workout habit new",
         icon: <Plus />,
         shortcut: "N",
         action: () => openQuickAdd(),
