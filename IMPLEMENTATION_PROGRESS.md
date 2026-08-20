@@ -6176,7 +6176,7 @@ theme, cookie headers), 390 px overflow sweep clean on /review,
 | 1.5 | Workout depth                                 | ✅ done |
 | 1.6 | Nutrition ↔ workout linkage                   | ✅ done |
 | 2.1 | Unified daily fact layer                      | ✅ done |
-| 2.2 | Correlation insights                          | ⏳ |
+| 2.2 | Correlation insights                          | ✅ done |
 | 2.3 | Spending triggers                             | ⏳ |
 | 2.4 | Anomaly nudges                                | ⏳ |
 | 2.5 | Automations: rules engine core                | ⏳ |
@@ -6709,4 +6709,65 @@ live in the module docstring of `src/lib/logic/daily-facts.ts`.
   (10 tests) re-run green over the new wiring; browser-verified /,
   /calendar, /finance, /tasks, /nutrition, /today on the production build
   (no console errors beyond the self-hosted Vercel-insights 404).
+* Typecheck, lint (0 errors, 63-warning baseline), build green.
+
+## Checkpoint 2.2 — correlation insights
+
+### What changed
+
+* **`src/lib/logic/correlations.ts`** — the pure statistical engine, with
+  every honesty rule enforced in code and named by a documented constant:
+  * `CORRELATION_CANDIDATES` — the explicit candidate set (13 pairs:
+    sleep↔score, sleep↔training volume, sleep↔habit completion,
+    training-day↔habits/score, planner load↔tasks/score, nutrition-target
+    adherence↔steps/active calories, hydration↔score, and three lag-1
+    "next morning" pairs: steps→sleep, training→sleep, training→resting
+    HR). Nothing outside this list is ever tested; adding a pair is a code
+    change that grows the correction.
+  * `MIN_PAIRED_OBSERVATIONS = 30` — below the floor a pair is *pending*
+    ("not enough data yet"), never a hedged weak insight.
+  * Spearman rank correlation (average-rank ties) with the two-tailed
+    t-approximation — **pinned against scipy to 8–10 decimal places** in
+    the unit suite, including tie handling. Effect size (ρ) reported on
+    every finding with a strength band.
+  * `benjaminiHochberg` q-values across every pair actually tested;
+    findings surface only at q ≤ `CORRELATION_FDR` (0.05). The unit suite
+    includes a raw-p ≈ 0.02 noise pair that the correction kills.
+  * `MAX_DOMINANT_SHARE = 0.9` — a guard browser verification surfaced:
+    47 zero-task days plus one active day gave Spearman ρ = +1.00. A pair
+    where one value takes > 90 % of either side now carries no evidence
+    (p = 1, still counted by the correction).
+  * Missing stays missing: a day where either side is null drops from that
+    pair; the descriptive group means are computed over the SAME pairs the
+    statistic used. Sentences are built by `describeFinding` /
+    `describeSplit` / `describeEvidence` — correlational verbs only
+    ("moved together"), sample size and window on every finding.
+* **`getCorrelationReport(userId, today)`** (src/server/insights.ts): one
+  bounded indexed read of the last `CORRELATION_WINDOW_DAYS = 180` daily
+  facts → the pure engine. All server-side, user-scoped, nothing external.
+* **`CorrelationsCard`** (src/components/insights/correlations-card.tsx),
+  mounted on /insights: findings with headline, group-means sentence,
+  "ρ = +0.96 (strong) · 45 paired days · last 180 days" evidence line and
+  Inspect links into each variable's module page; the empty state is
+  honest and specific (either "n pairs have data but nothing clears the
+  bar" or "not enough data yet" with per-pair progress toward 30).
+
+### Verification
+
+* Unit +16 (tests/correlations.test.ts): Spearman vs scipy (clean ranking,
+  ties, the 40-day fixture at p = 1.38e-9), t-tail vs scipy, BH against
+  the standard worked example (raw p = 0.039 → q = 0.21, suppressed),
+  min-sample gating at exactly 29 vs 30, never-impute pairing, lag
+  alignment across a history gap (42 pairs from 44 days), the dominance
+  guard, binary group means, empty history, and a language test asserting
+  no causal/prescriptive phrasing. Suite 1,405 → 1,421.
+* Integration +4 (tests/integration/correlations.test.ts): honest
+  fresh-account state through the real read path, a stored association
+  surfacing with sample and window, the 180-day window bound (out-of-window
+  rows never join), user isolation.
+* E2E +1 (tests/e2e/insights.spec.ts): the card renders exactly one honest
+  state, with evidence lines and no causal phrasing.
+* Browser-verified on the production build with seeded correlated data:
+  findings render with correct sentences and links; the ρ = +1.00 artifact
+  is gone after the dominance guard (screenshot-verified before/after).
 * Typecheck, lint (0 errors, 63-warning baseline), build green.
