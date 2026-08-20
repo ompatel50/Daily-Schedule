@@ -889,6 +889,12 @@ model WorkoutSet {
   targetReps     Int?
   targetWeightKg Float?
 
+  /// Superset/circuit key ("A", "B", …) carried on the SET so grouping
+  /// survives without the template and works for ad-hoc sessions. Stamped
+  /// from the template at session start; editable mid-session. Null =
+  /// ungrouped — every row before this column existed.
+  supersetGroup String?
+
   /// Defaults true so a workout logged after the fact is complete on arrival —
   /// which is how every row before Phase 10 was written. A session creates its
   /// sets with `false` and ticks them off.

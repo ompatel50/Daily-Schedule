@@ -24,6 +24,7 @@ import { fail, fromZod, succeed, type ActionResult } from "@/lib/validation";
 import {
   applyProgressionSchema,
   completeSetSchema,
+  setExerciseGroupSchema,
   setExerciseRestSchema,
   startSessionSchema,
   addSessionSetSchema,
@@ -192,6 +193,7 @@ export async function startSession(input: unknown): Promise<
         setNumber: set.setNumber,
         reps: set.reps,
         weightKg: set.weightKg,
+        supersetGroup: set.supersetGroup,
         restSec: set.restSec,
         sortOrder: set.sortOrder,
       })),
@@ -226,6 +228,7 @@ export async function startSession(input: unknown): Promise<
           targetReps: set.targetReps,
           targetWeightKg: set.targetWeightKg,
           restSec: set.restSec,
+          supersetGroup: set.supersetGroup,
           // The difference from logging after the fact: real work outstanding.
           completed: false,
           completedAt: null,
@@ -420,6 +423,33 @@ export async function setExerciseRest(input: unknown): Promise<ActionResult<null
 }
 
 /**
+ * Put an exercise into (or take it out of) a superset group, mid-session.
+ * Written on the sets themselves so ad-hoc sessions can superset without a
+ * template, and the grouping survives into "repeat this workout".
+ */
+export async function setExerciseGroup(input: unknown): Promise<ActionResult<null>> {
+  const parsed = setExerciseGroupSchema.safeParse(input);
+  if (!parsed.success) return fromZod(parsed.error);
+
+  const user = await getCurrentUser();
+  const workout = await prisma.workout.findFirst({
+    where: { id: parsed.data.workoutId, userId: user.id, status: "in_progress" },
+    select: { id: true },
+  });
+  if (!workout) return fail("That session is not open");
+
+  await prisma.workoutSet.updateMany({
+    where: {
+      workoutId: workout.id,
+      exercise: { equals: parsed.data.exercise, mode: "insensitive" },
+    },
+    data: { supersetGroup: parsed.data.group },
+  });
+  revalidateAll();
+  return succeed(null);
+}
+
+/**
  * Write a suggested weight onto an exercise's outstanding targets.
  *
  * Only reachable from an explicit "apply" tap — a suggestion is an estimate,
@@ -540,6 +570,7 @@ async function closeSession(
     id: set.id,
     exercise: set.exercise,
     setNumber: set.setNumber,
+    supersetGroup: set.supersetGroup,
     reps: set.reps,
     weightKg: set.weightKg,
     durationSec: set.durationSec,

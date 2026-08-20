@@ -14,6 +14,7 @@ import {
   describeSetTarget,
   elapsedMinutes,
   formatRest,
+  groupsFromSets,
   isSessionComplete,
   restSecAfterSet,
   restState,
@@ -24,6 +25,7 @@ import {
   type SessionExerciseBlock,
   type SessionSet,
 } from "@/lib/logic/session";
+import { showSystemNotification } from "@/lib/client-notifications";
 import { formatDuration } from "@/lib/date";
 import { totalVolume } from "@/lib/logic/workouts";
 import { cn, formatNumber } from "@/lib/utils";
@@ -36,6 +38,7 @@ import {
   finishSession,
   getSessionGuide,
   removeSessionSet,
+  setExerciseGroup,
   setExerciseRest,
   setSessionRest,
   uncompleteSet,
@@ -99,14 +102,21 @@ export function SessionPanel({ session }: { session: SessionView }) {
   }, [session.id]);
 
   const progress = sessionProgress(session.sets);
-  const blocks = sessionBlocks(session.sets, guide.groups);
+  // Sets carry their own superset keys (stamped from the template at session
+  // start, editable mid-session). Once any set has one, the sets are the
+  // whole truth — merging the template back in would resurrect a group the
+  // user explicitly cleared. The template map only covers sessions opened
+  // before keys were stamped on sets.
+  const setGroups = groupsFromSets(session.sets);
+  const groups = Object.keys(setGroups).length > 0 ? setGroups : guide.groups;
+  const blocks = sessionBlocks(session.sets, groups);
   const elapsed = now ? elapsedMinutes(session.startedAt, null, now) : 0;
   // Group-aware: inside a superset round this is null, so no timer runs
   // between the round's exercises.
   const restSec = restSecAfterSet(
     progress.lastCompleted,
     session.sets,
-    guide.groups,
+    groups,
     session.restSecDefault,
   );
   const rest = now
@@ -170,14 +180,17 @@ export function SessionPanel({ session }: { session: SessionView }) {
     const body = next ? `Next: ${next.exercise}, set ${next.setNumber}` : "All sets are done";
     setRestCue(`Rest over. ${body}.`);
     toast.info("Rest over", { description: body });
-    if ("Notification" in window && Notification.permission === "granted") {
-      try {
-        new Notification("Rest over", { body });
-      } catch {
-        // Some mobile browsers only notify via a service worker; the toast
-        // above already carried the cue.
-      }
-    }
+    // The shared PWA-correct path: SW registration first (an installed PWA
+    // only supports that; the bare constructor throws there), constructor
+    // fallback in plain tabs. Fires from a backgrounded tab too — throttled
+    // timers land the cue late, never lost; a closed tab cannot be reached
+    // (nothing on this platform schedules a push for an arbitrary instant,
+    // and the daily cron cannot hit a 90-second window — documented).
+    void showSystemNotification("Rest over", {
+      body,
+      tag: `rest-over-${owner}`,
+      icon: "/icons/icon-192.png",
+    });
   }, [rest.resting]);
 
   function run(key: string, fn: () => Promise<{ ok: boolean; error?: string }>, success?: string) {
@@ -229,6 +242,30 @@ export function SessionPanel({ session }: { session: SessionView }) {
                 )
               }
             />
+            {/* Ad-hoc supersets: same letter on two exercises pairs them into
+                an alternating block — no template, no edit dialog needed. */}
+            <select
+              aria-label={`Superset group for ${entry.exercise}`}
+              className="h-6 rounded border bg-background px-1 text-xs text-muted-foreground"
+              value={groups[entry.exercise] ?? ""}
+              disabled={pending !== null}
+              onChange={(event) =>
+                run(`group-${entry.exercise}`, () =>
+                  setExerciseGroup({
+                    workoutId: session.id,
+                    exercise: entry.exercise,
+                    group: event.target.value || null,
+                  }),
+                )
+              }
+            >
+              <option value="">no group</option>
+              {["A", "B", "C", "D"].map((letter) => (
+                <option key={letter} value={letter}>
+                  {letter}
+                </option>
+              ))}
+            </select>
             <span className="tabular text-xs text-muted-foreground">
               {entry.done}/{entry.sets.length}
             </span>

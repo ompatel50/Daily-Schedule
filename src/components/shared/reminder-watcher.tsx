@@ -3,6 +3,7 @@
 import * as React from "react";
 import { toast } from "sonner";
 
+import { showSystemNotification } from "@/lib/client-notifications";
 import { isDeliverable, type ReminderOccurrence } from "@/lib/logic/reminders";
 import { deliverReminderAction, getReminderFeedAction } from "@/server/actions/reminders";
 
@@ -29,32 +30,15 @@ import { deliverReminderAction, getReminderFeedAction } from "@/server/actions/r
 
 const FEED_REFRESH_MS = 5 * 60 * 1000;
 
-/** Show the system notification — SW registration first, constructor after. */
-async function showSystemNotification(occurrence: ReminderOccurrence): Promise<void> {
-  if (typeof Notification === "undefined" || Notification.permission !== "granted") return;
-  const options: NotificationOptions = {
+/** Show the system notification via the one shared, PWA-correct helper. */
+async function showOccurrenceNotification(occurrence: ReminderOccurrence): Promise<void> {
+  await showSystemNotification(occurrence.title, {
     body: occurrence.message ?? undefined,
     // The occurrence key as the OS-level tag: even if two surfaces raced past
     // the ledger somehow, the platform collapses them into one notification.
     tag: occurrence.key,
     icon: "/icons/icon-192.png",
-  };
-  try {
-    const registration = "serviceWorker" in navigator
-      ? await navigator.serviceWorker.getRegistration()
-      : undefined;
-    if (registration) {
-      await registration.showNotification(occurrence.title, options);
-      return;
-    }
-  } catch {
-    // Fall through to the constructor.
-  }
-  try {
-    new Notification(occurrence.title, options);
-  } catch {
-    // Installed PWA without a usable registration: the toast already showed.
-  }
+  });
 }
 
 export function ReminderWatcher({ initial }: { initial?: ReminderOccurrence[] }) {
@@ -119,7 +103,7 @@ export function ReminderWatcher({ initial }: { initial?: ReminderOccurrence[] })
             description: occurrence.message ?? undefined,
             duration: 10000,
           });
-          void showSystemNotification(occurrence);
+          void showOccurrenceNotification(occurrence);
         })();
       }
     }

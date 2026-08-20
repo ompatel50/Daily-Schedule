@@ -6173,7 +6173,7 @@ theme, cookie headers), 390 px overflow sweep clean on /review,
 | 1.2 | Quick-capture everywhere                      | ✅ done |
 | 1.3 | Barcode scanning for food                     | ✅ done |
 | 1.4 | Nutrition targets                             | ✅ done |
-| 1.5 | Workout depth                                 | ⏳ |
+| 1.5 | Workout depth                                 | ✅ done |
 | 1.6 | Nutrition ↔ workout linkage                   | ⏳ |
 | 2.1 | Unified daily fact layer                      | ⏳ |
 | 2.2 | Correlation insights                          | ⏳ |
@@ -6490,3 +6490,74 @@ wellbeing constraints — is what this checkpoint built.
   target through the real dialog (the user-defined statement asserted),
   neutral progress on the card, remove it again. Full targeted set green.
 * Typecheck, lint (0 errors), build green; browser-verified.
+
+## Checkpoint 1.5 — workout depth
+
+### The audit, before any change
+
+The task statement predates the hosted-upgrade work: most of this checkpoint
+already existed. **Rest timers** — `setSessionRest` HAS a UI (the session
+panel's "Default rest" RestControl), plus per-exercise overrides
+(`setExerciseRest`), a visible countdown DERIVED from `completedAt` stamps
+(`restState` — survives reload/navigation by construction, no ticking
+state), and an edge-triggered rest-over cue. **Session flow** — the live
+panel advances through blocks, logs against targets, and handles deviation
+(add/remove set, over/under-target outcomes, progression estimates applied
+only by explicit tap). **Supersets** — template exercises carry `group` +
+`restSec` (editor inputs exist), `planSetsFromTemplate` round-robins
+grouped exercises, `sessionBlocks` folds them, and `restSecAfterSet` keeps
+the timer silent inside a round. **Templates** therefore already cover
+superset and rest configuration. Genuinely missing: grouping only lived in
+template JSON (nothing for ad-hoc sessions, no mid-session regroup), no
+per-exercise progression view anywhere, and the rest-over notification used
+`new Notification` — which throws inside an installed PWA (the exact defect
+Phase 11 fixed for reminders).
+
+### What changed
+
+* **Set-level superset groups** — additive migration
+  `workout_set_superset_group`: `WorkoutSet.supersetGroup TEXT?` (rides
+  backup v13; existing rows null = ungrouped, existing workouts unaffected).
+  `planSetsFromTemplate` stamps real groups (a lone exercise with a letter
+  is not a superset) onto created set rows; "repeat workout" carries them
+  forward; new `setExerciseGroup` action (open-session + ownership guarded)
+  regroups mid-session from a small per-exercise selector in the panel —
+  ad-hoc sessions can superset with no template and no edit dialog. The
+  panel now derives its group map from the sets themselves
+  (`groupsFromSets`); once any set carries a key the sets are the whole
+  truth, so clearing a template's group sticks (the template map only
+  covers sessions opened before stamping existed).
+* **Per-exercise progression** — pure `exerciseProgression` folds completed
+  sets into one point per day (top set, best Epley 1RM, reps, volume;
+  bodyweight days are null weight, never zero) + `getExerciseProgression`
+  action (completed sets of completed workouts, one-year window, capped —
+  O(window sets), stated in its docstring) + `ProgressionCard` on the
+  workouts page: exercise picker, top-set/est-1RM `TrendLineChart` in the
+  user's display unit, session/volume/best summary line.
+* **PWA-correct rest-over notification** — new shared
+  `src/lib/client-notifications.ts` (`showSystemNotification`: SW
+  registration first — the only path an installed PWA supports — bare
+  constructor fallback), now used by BOTH the reminder watcher (refactored
+  onto it, behaviour identical) and the session panel's rest-over cue, with
+  an OS-level tag per rest so duplicates collapse. Documented honestly in
+  code: a backgrounded tab lands the cue late but never lost; a CLOSED tab
+  cannot be reached — nothing on this platform schedules a Web Push for an
+  arbitrary instant and the daily cron cannot hit a 90-second window, so
+  pretending otherwise would be the pretend-scheduling Phase 11 removed.
+
+### Verification
+
+* Unit **1,379 → 1,382 files-measured total**: session suite +3 grouping tests — template stamping (round-robin
+  with keys, lone-letter not a superset, pinned byte-identical ungrouped
+  expansion), `groupsFromSets` + set-level precedence through
+  `sessionBlocks`, group survival through `planSetsFromWorkout`; +3
+  progression shaping (per-day folding with best-1RM-from-lighter-set,
+  null-not-zero bodyweight days, date ordering).
+* Integration **+4** (tests/integration/workout-depth.test.ts): template →
+  real set rows stamped in round-robin order; mid-session regroup +
+  clearing sticking; refusal on closed and foreign sessions; the
+  progression query excluding incomplete sets, planned workouts and other
+  users.
+* E2E: rest-timer.spec.ts (the session round trip) green against the
+  rebuilt app; full unit suite green. Typecheck, lint (0 errors), build
+  green; browser-verified.

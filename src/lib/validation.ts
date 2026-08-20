@@ -306,6 +306,17 @@ export const setExerciseRestSchema = z.object({
   restSec: z.number().int().min(0).max(3600).nullable(),
 });
 
+/** Superset key for one exercise's sets; null takes it out of its group. */
+export const setExerciseGroupSchema = z.object({
+  workoutId: z.string().min(1),
+  exercise: z.string().trim().min(1, "Exercise is required").max(120),
+  group: z
+    .string()
+    .trim()
+    .regex(/^[A-Z]$/, "One letter, A–Z")
+    .nullable(),
+});
+
 /**
  * Writing a progression estimate onto an exercise's outstanding targets. Only
  * ever sent from an explicit "apply" tap — suggestions never apply themselves.
