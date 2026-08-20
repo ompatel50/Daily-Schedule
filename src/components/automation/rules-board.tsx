@@ -255,8 +255,8 @@ export function RulesBoard({
               </p>
               {preview.result.matches.length === 0 ? (
                 <p className="rounded-lg border border-dashed px-3 py-4 text-sm text-muted-foreground">
-                  No matches in the window. The rule can still be enabled — it simply hasn't had
-                  anything to act on recently.
+                  No matches in the window. The rule can still be enabled — it simply
+                  hasn&apos;t had anything to act on recently.
                 </p>
               ) : (
                 <ul className="space-y-1.5">
@@ -300,7 +300,7 @@ export function RulesBoard({
             <div className="space-y-2">
               {history.entries.length === 0 ? (
                 <p className="rounded-lg border border-dashed px-3 py-4 text-sm text-muted-foreground">
-                  This rule hasn't run yet.
+                  This rule hasn&apos;t run yet.
                 </p>
               ) : (
                 <>

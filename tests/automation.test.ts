@@ -266,8 +266,8 @@ describe("the starter library", () => {
 
 describe("builder field metadata", () => {
   it("lists condition fields for every record module", () => {
-    for (const module of RECORD_MODULES) {
-      expect(MODULE_FIELDS[module].length).toBeGreaterThan(0);
+    for (const recordModule of RECORD_MODULES) {
+      expect(MODULE_FIELDS[recordModule].length).toBeGreaterThan(0);
     }
   });
 });

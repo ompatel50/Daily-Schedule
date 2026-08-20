@@ -7074,3 +7074,11 @@ dry-run-before-enable, logged, undoable, self-disabling, loop-bounded, no
 new scheduler). Backups v12 → v15 across the update, every migration
 additive. Suites over the update: unit 1,285 → 1,465; integration ~485 →
 574; E2E 154 green.
+
+Post-sweep fix: CI caught 4 lint errors a local `tail`-filtered lint run
+had masked (three unescaped apostrophes in the new rules UI JSX, one
+`module` loop variable in a test tripping `no-assign-module-variable`).
+Fixed; the lint baseline is now 0 errors / 64 warnings (the one addition
+is a `react-hooks/set-state-in-effect` warning on the builder dialog's
+open-reset effect — the same warn-level rule class as the documented
+existing instances).

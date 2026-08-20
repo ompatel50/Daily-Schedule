@@ -396,7 +396,8 @@ export function RuleBuilderDialog({
         {advanced ? (
           <div className="space-y-2">
             <p className="text-xs text-muted-foreground">
-              This rule uses nested conditions the simple form can't show — edit the JSON directly.
+              This rule uses nested conditions the simple form can&apos;t show — edit the JSON
+              directly.
             </p>
             {(["trigger", "conditions", "actions"] as const).map((key) => (
               <div key={key} className="space-y-1">
