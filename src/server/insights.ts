@@ -10,6 +10,7 @@ import {
   computeCorrelations,
 } from "@/lib/logic/correlations";
 import { type ScheduleSettings, getStatusForDate } from "@/lib/logic/schedule";
+import { type SpendingReport, computeSpendingReport } from "@/lib/logic/spending";
 import { getHabitViews } from "@/server/habits";
 import { loadSchedules, toSchedulable } from "@/server/schedule";
 import { getDailyFacts, getSummaries } from "@/server/summaries";
@@ -81,6 +82,17 @@ export async function getCorrelationReport(
   const from = shiftDay(today, -(CORRELATION_WINDOW_DAYS - 1));
   const facts = await getDailyFacts(userId, from, today);
   return computeCorrelations(facts, { from, to: today });
+}
+
+/**
+ * The finance-specific correlation pass — same bounded window, same pure
+ * rigour (see src/lib/logic/spending.ts), same privacy posture: one
+ * server-side read of this user's own rows.
+ */
+export async function getSpendingReport(userId: string, today: DayKey): Promise<SpendingReport> {
+  const from = shiftDay(today, -(CORRELATION_WINDOW_DAYS - 1));
+  const facts = await getDailyFacts(userId, from, today);
+  return computeSpendingReport(facts, { from, to: today });
 }
 
 export async function getWeeklyReview(

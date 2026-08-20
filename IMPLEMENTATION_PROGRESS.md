@@ -6177,7 +6177,7 @@ theme, cookie headers), 390 px overflow sweep clean on /review,
 | 1.6 | Nutrition ↔ workout linkage                   | ✅ done |
 | 2.1 | Unified daily fact layer                      | ✅ done |
 | 2.2 | Correlation insights                          | ✅ done |
-| 2.3 | Spending triggers                             | ⏳ |
+| 2.3 | Spending triggers                             | ✅ done |
 | 2.4 | Anomaly nudges                                | ⏳ |
 | 2.5 | Automations: rules engine core                | ⏳ |
 | 2.6 | Rule builder UI, library, integration pass    | ⏳ |
@@ -6771,3 +6771,58 @@ live in the module docstring of `src/lib/logic/daily-facts.ts`.
   findings render with correct sentences and links; the ρ = +1.00 artifact
   is gone after the dominance guard (screenshot-verified before/after).
 * Typecheck, lint (0 errors, 63-warning baseline), build green.
+
+## Checkpoint 2.3 — spending triggers
+
+### What changed
+
+* **`src/lib/logic/spending.ts`** — the finance-specific correlation pass,
+  REUSING the 2.2 statistics (`spearman`, `benjaminiHochberg`, the floor,
+  FDR and dominance-guard constants are imported, not re-derived — the
+  "same statistical bar" requirement enforced by construction). Specific to
+  finance:
+  * **Category level, not just totals**: total daily spend plus per-category
+    series are tested separately. Categories qualify by activity —
+    `qualifyingFloor(days)` = max(8 active days, enough that zeros stay
+    inside the dominance guard) — capped to the top
+    `SPENDING_CATEGORY_LIMIT = 5` by spend, so the tested set stays
+    explicit and bounded rather than category × context exploding.
+  * **The tracked-history gate** (`SPENDING_TRACKED_MIN_DAYS = 10` days
+    with a transaction in the window): the daily-facts caveat enforced — a
+    zero-spend day is only a real observation for someone who records
+    money here; below the gate the report is `untracked` and nothing is
+    computed.
+  * **Explicit context set** (`SPENDING_CONTEXTS`): planned time (schedule
+    density), training days, sleep, weekends, days with meals logged.
+    Documented omissions: time-of-day (the ledger stores dates; an entry
+    timestamp measures typing, not spending) and travel days (no schema
+    signal) are not tested rather than proxied badly.
+  * **Descriptive and neutral**: group means in currency ("Your dining
+    spend averaged $36.76 on weekend days (25) and $8.35 on weekday days
+    (61)"), correlational verbs, no moralising and no savings advice — the
+    unit suite asserts the copy never matches advice/moralising patterns.
+* **`getSpendingReport(userId, today)`** (src/server/insights.ts): same
+  bounded 180-day read of the daily facts, all server-side and user-scoped.
+* **`SpendingPatternsCard`** (src/components/finance/spending-patterns-card.tsx)
+  on /finance: findings with the evidence line and Inspect links; honest
+  untracked and nothing-significant states. Card description states
+  "descriptive associations … never causes and never advice".
+
+### Verification
+
+* Unit +6 (tests/spending.test.ts): the tracked gate (9 ledger days →
+  untracked; empty history → untracked, never a zero-spend "pattern"),
+  weekend↔dining surfacing at category level in cents while steady
+  groceries stay suppressed, rarely-active categories held out by the
+  qualifying floor, missing contexts dropped (60 of 90 sleep days pair),
+  and the neutral-language assertions. Suite 1,421 → 1,427.
+* Integration +3 (tests/integration/spending.test.ts): fresh account
+  untracked through the real read path, stored weekend–dining association
+  surfacing with n = 84, user isolation.
+* E2E +1 (tests/e2e/spending-patterns.spec.ts): the card renders one
+  honest state with no advisory copy.
+* Browser-verified on the production build with seeded ledger days:
+  total and category-level weekend findings render with correct group
+  means, ρ, n, window and links (screenshot).
+* Typecheck, lint (0 errors, 63-warning baseline), build green; full unit
+  suite 1,427 green.

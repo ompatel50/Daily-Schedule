@@ -384,7 +384,8 @@ export function computeCorrelations(
   };
 }
 
-function strengthOf(rho: number): CorrelationStrength {
+/** Plain-language effect-size band for a ρ (shared with the spending report). */
+export function strengthOf(rho: number): CorrelationStrength {
   const size = Math.abs(rho);
   if (size >= 0.6) return "strong";
   if (size >= 0.35) return "moderate";
@@ -426,14 +427,14 @@ function splitOf(
 }
 
 /** The share of the sample taken by its most common value. */
-function dominantShare(values: number[]): number {
+export function dominantShare(values: number[]): number {
   if (values.length === 0) return 1;
   const counts = new Map<number, number>();
   for (const value of values) counts.set(value, (counts.get(value) ?? 0) + 1);
   return Math.max(...counts.values()) / values.length;
 }
 
-function median(values: number[]): number {
+export function median(values: number[]): number {
   const sorted = [...values].sort((a, b) => a - b);
   const middle = Math.floor(sorted.length / 2);
   return sorted.length % 2 === 0 ? (sorted[middle - 1] + sorted[middle]) / 2 : sorted[middle];
