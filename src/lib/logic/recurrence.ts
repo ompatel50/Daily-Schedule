@@ -272,6 +272,26 @@ export function truncateRuleBefore(rule: RecurrenceRule, splitDay: DayKey): Recu
 }
 
 /**
+ * The rule after the series' START moves forward to `newAnchor` — "delete all
+ * previous occurrences only", the mirror of `truncateRuleBefore`. `newAnchor`
+ * is itself an occurrence of the series, so the pattern and the end date are
+ * unchanged: every later occurrence still lands on exactly the same days.
+ * Anchor-derived fields are pinned against the OLD anchor so the rule cannot
+ * drift when its anchor moves, and a `count` loses the occurrences left
+ * behind — what remains is what the user can still see ahead of them.
+ */
+export function advanceRuleTo(
+  rule: RecurrenceRule,
+  anchor: DayKey,
+  newAnchor: DayKey,
+): RecurrenceRule {
+  const pinned = materializeAnchorFields(rule, anchor);
+  if (!pinned.count) return pinned;
+  const dropped = expandRule(rule, anchor, anchor, shiftDay(newAnchor, -1)).length;
+  return { ...pinned, count: Math.max(1, pinned.count - dropped) };
+}
+
+/**
  * The occurrence slots a series is missing inside `[from, to]`: every day the
  * rule generates there, minus slots already represented by a row (materialised,
  * edited or moved — identity comes from `originalDate`), minus slots the user

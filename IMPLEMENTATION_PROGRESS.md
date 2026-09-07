@@ -7082,3 +7082,86 @@ Fixed; the lint baseline is now 0 errors / 64 warnings (the one addition
 is a `react-hooks/set-state-in-effect` warning on the builder dialog's
 open-reset effect — the same warn-level rule class as the documented
 existing instances).
+
+## Follow-up — the fourth delete scope: "Delete all previous occurrences only"
+
+The recurring-item delete chooser offered three scopes (this occurrence, this
+and all future, the entire series). It now offers a fourth, the mirror image
+of "this and all future": **Delete all previous occurrences only** trims the
+series from the START. Everything the user sees *before* the selected
+occurrence goes; that occurrence and its whole tail stay, in one series, with
+their per-occurrence overrides intact.
+
+### Semantics, against the real schema
+
+Recurrence here is *materialised*: one parent row holds the rule and its own
+operational day IS the series' start date, plus one row per occurrence
+(`seriesId`, slot identity in `originalDate`, deleted slots remembered in the
+parent's `skipDates`). So "trim the history" almost always removes the parent
+row itself, and the series has to be handed over first — exactly the promotion
+"delete this occurrence" already performs on a first occurrence:
+
+* The selected occurrence becomes the series parent (`seriesId: null`, the
+  rule moved onto it). Its own fields — completion, notes, a custom time, an
+  exception edit — are deliberately untouched, and every surviving occurrence
+  is re-pointed at it, so the series stays ONE series with one rule.
+* The rule is re-anchored by a new pure helper, `advanceRuleTo(rule, anchor,
+  newAnchor)` in `src/lib/logic/recurrence.ts` — the mirror of
+  `truncateRuleBefore`. The pattern and the (inclusive) end date are
+  unchanged: the new anchor is itself an occurrence, so every later day still
+  matches, and weekly/monthly alignment is preserved. Anchor-derived fields
+  are pinned from the OLD anchor (an implicit "every week" cannot drift), and
+  a `count` loses exactly the occurrences left behind, never dropping below 1.
+* Slots of removed rows that still sit *after* the new start are recorded in
+  `skipDates` (an occurrence moved back into the past is removed while its
+  slot is still ahead); slots before it are dropped rather than carried as
+  junk, because nothing generates before the anchor. Regeneration therefore
+  cannot refill a trimmed day — `extendSeriesFor` returns 0 straight after.
+* The old rule holder leaves exactly as a first-occurrence delete leaves it:
+  a detached exception (rule cleared, re-pointed at the new parent), so a
+  restore from Trash yields one sane block, never a second rule holder.
+* **Soft delete, like the other three scopes**: rows get a `deletedAt` stamp
+  and their reminders are stamped with them, so everything lands in
+  Settings → Trash and restores together. Nothing is hard-deleted.
+* On the FIRST occurrence there is nothing earlier: the action is a no-op
+  (`deleted: 0`, no writes), and the option is not offered in the first place.
+* `previous` is delete-only. `updateScheduleItem` rejects it outright rather
+  than letting an unknown scope fall through to "all occurrences" and rewrite
+  history; the assistant's proposal schemas still accept only `one`/`future`,
+  so the new scope stays a deliberate in-app action, like "the entire series".
+
+### UI
+
+`deleteScopeChoices(occurrenceLabel, hasPreviousOccurrences)` gained the
+option, in the same voice as the other three ("Delete all previous occurrences
+only — Starts the series at Tuesday, Aug 18. Everything before it goes; this
+occurrence and every later one are kept."). Both call sites — the row menu and
+the edit dialog — pass `Boolean(item.seriesId)`: only an occurrence row has
+anything before it, since the parent row IS the first occurrence.
+
+**Ordering: last.** The first three escalate outward from the selected
+occurrence (this one → this one onward → all of it); putting the rarer,
+backward-looking option above them would displace the narrowest and safest
+choice from the top of a destructive list, and change what existing users'
+muscle memory hits. Dropping it entirely on a first occurrence follows
+`editScopeChoices`, which already omits the scopes a rule change makes
+meaningless, rather than showing a disabled row.
+
+### Verification
+
+* Unit +1 (`advanceRuleTo`: pattern and end date survive the move, expansion
+  from the new anchor is identical, anchor fields pinned, `count` arithmetic):
+  suite **1,466** green.
+* Integration +3 in `tests/integration/recurring-series.test.ts`: a mid-series
+  delete (history trashed not purged, promotion, overrides preserved on the
+  target and in the tail, one series, regeneration a no-op), an occurrence
+  dragged back behind the cut (its slot is tombstoned, so regeneration never
+  returns it), and the first-occurrence no-op: suite **577** green.
+* E2E: `tests/e2e/planner-recurrence.spec.ts` now asserts the option is absent
+  on a first occurrence and, on a mid-series occurrence, that the two days
+  behind it go, it stays across a fresh planner open, and the split-off tail
+  keeps its re-timed hour — full spec green against the production build.
+* Typecheck, lint (0 errors, same 2-warning baseline on the touched files),
+  production build green.
+* Docs: docs/planner-recurrence.md (delete scopes + the chooser's ordering
+  rule) and the README's recurrence bullet.

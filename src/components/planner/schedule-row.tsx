@@ -348,13 +348,22 @@ export function ScheduleRow({
           onOpenChange={setDeleteChooserOpen}
           mode="delete"
           occurrenceLabel={formatDay(item.operationalDate, "EEEE, MMM d")}
-          choices={deleteScopeChoices(formatDay(item.operationalDate, "EEEE, MMM d"))}
+          choices={deleteScopeChoices(
+            formatDay(item.operationalDate, "EEEE, MMM d"),
+            // Every occurrence row has at least the series parent before it;
+            // the parent itself is the first occurrence, with nothing earlier.
+            Boolean(item.seriesId),
+          )}
           pending={pending}
           onChoose={(scope) => {
             setDeleteChooserOpen(false);
             act(
               () => deleteScheduleItem(item.id, scope),
-              scope === "one" ? "Occurrence moved to Trash" : "Series moved to Trash",
+              scope === "one"
+                ? "Occurrence moved to Trash"
+                : scope === "previous"
+                  ? "Earlier occurrences moved to Trash"
+                  : "Series moved to Trash",
             );
           }}
         />

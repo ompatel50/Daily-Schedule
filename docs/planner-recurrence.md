@@ -219,6 +219,24 @@ that does not mention the end date inherits it.
   occurrence there is no history to keep, so the whole series goes.
 - **Delete the entire series** — the explicit, long-standing whole-history
   option, kept in the in-app chooser only. The assistant never gets it.
+- **Delete all previous occurrences only** — the mirror of "this and all
+  future": it trims the series from the START instead of the end. Every row
+  the user sees *before* the selected occurrence is removed; that occurrence
+  and its whole tail stay, in one series, with their per-occurrence overrides
+  (completions, notes, custom times, exceptions) untouched. Because the parent
+  row *is* the series' start date, removing it hands the series to the
+  selected occurrence — the same promotion "delete this occurrence" performs
+  on the first occurrence, re-anchored by `advanceRuleTo`: the pattern and the
+  end date are unchanged (the new anchor is itself an occurrence, so every
+  later day still matches), anchor-derived fields are pinned from the old
+  anchor, and a `count` loses exactly the occurrences left behind. Slots of
+  removed rows that still sit after the new start are recorded in `skipDates`,
+  so regeneration cannot refill a trimmed day; slots before it need no
+  tombstone because nothing generates before the anchor. On the first
+  occurrence there is nothing earlier: the option is not offered at all, and
+  the action is a no-op if it is called anyway. It is an in-app scope only —
+  like "the entire series", the assistant never gets it, and it is rejected
+  outright for *edits* rather than silently widened.
 
 Non-recurring items never see a scope question — edit and delete stay one
 step.
@@ -231,7 +249,10 @@ selected occurrence's date named, destructive styling only for deletion,
 Cancel focused first so no destructive default), a compact centred dialog on
 desktop. Same wording and semantics on both. If the recurrence rule itself was
 changed, only "this and all future" is offered — that is what a rule change
-means.
+means. On a delete, "delete all previous occurrences only" is listed last (the
+first three escalate outward from the selected occurrence; the narrowest,
+safest choice keeps the top of the list) and is dropped on a first occurrence,
+where it would delete nothing.
 
 ### Conflict preview when editing
 

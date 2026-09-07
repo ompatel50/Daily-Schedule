@@ -298,9 +298,11 @@ export function ScheduleItemDialog({
       const result = await deleteScheduleItem(item.id!, deleteScope);
       if (result.ok) {
         toast.success(
-          result.data.deleted > 1
-            ? `Moved ${result.data.deleted} items to Trash`
-            : "Item moved to Trash",
+          result.data.deleted === 0
+            ? "Nothing to delete"
+            : result.data.deleted > 1
+              ? `Moved ${result.data.deleted} items to Trash`
+              : "Item moved to Trash",
         );
         setChooser(null);
         onOpenChange(false);
@@ -657,7 +659,9 @@ export function ScheduleItemDialog({
       occurrenceLabel={occurrenceLabel}
       choices={
         chooser === "delete"
-          ? deleteScopeChoices(occurrenceLabel)
+          ? // Only an occurrence row has anything before it: the parent row
+            // IS the series' first occurrence.
+            deleteScopeChoices(occurrenceLabel, Boolean(item?.seriesId))
           : editScopeChoices(occurrenceLabel, ruleChanged)
       }
       note={chooserNote}

@@ -65,8 +65,22 @@ export function editScopeChoices(occurrenceLabel: string, ruleChanged: boolean):
   return choices;
 }
 
-export function deleteScopeChoices(occurrenceLabel: string): ScopeChoice[] {
-  return [
+/**
+ * `hasPreviousOccurrences` is false on the series' first occurrence, where
+ * "all previous" would delete nothing: the option is left out rather than
+ * offered as a no-op — the same way `editScopeChoices` drops the scopes a
+ * rule change makes meaningless.
+ *
+ * Ordering: the backward-looking scope comes LAST. The first three escalate
+ * outward from the selected occurrence — this one, this one onward, all of
+ * it — and putting the rarer, backward option ahead of them would displace
+ * the narrowest (and safest) choice from the top of a destructive list.
+ */
+export function deleteScopeChoices(
+  occurrenceLabel: string,
+  hasPreviousOccurrences = false,
+): ScopeChoice[] {
+  const choices: ScopeChoice[] = [
     {
       scope: "one",
       label: "Delete this occurrence",
@@ -83,6 +97,14 @@ export function deleteScopeChoices(occurrenceLabel: string): ScopeChoice[] {
       description: "Removes every occurrence, including the past. This cannot be undone.",
     },
   ];
+  if (hasPreviousOccurrences) {
+    choices.push({
+      scope: "previous",
+      label: "Delete all previous occurrences only",
+      description: `Starts the series at ${occurrenceLabel}. Everything before it goes; this occurrence and every later one are kept.`,
+    });
+  }
+  return choices;
 }
 
 export function SeriesScopeChooser({
