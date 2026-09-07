@@ -38,13 +38,20 @@ test("the review page rolls an unfinished task into next week", async ({ page })
   const salt = String(Date.now()).slice(-6);
   const title = `RVW task ${salt}`;
 
-  // A task due today = unfinished this week.
+  // An open task due on or before the review week's last day = unfinished
+  // this week. The date is deliberately a couple of days back rather than the
+  // UTC "today": the review week is bounded by the user's OPERATIONAL day
+  // (their timezone plus the 4 AM reset), which can be a calendar day behind
+  // UTC — a UTC Monday morning is still last week for a New York account
+  // before 4 AM, so a task dated "today" belongs to the NEXT week and the
+  // page is right not to list it. Anything already behind that boundary is
+  // unfinished in every timezone, at every hour.
   await page.goto("/tasks?new=1");
   const dialog = page.getByRole("dialog");
   await expect(dialog).toBeVisible();
   await dialog.getByLabel("Title").fill(title);
-  const today = new Date().toISOString().slice(0, 10);
-  await dialog.getByLabel("Due date (optional)").fill(today);
+  const due = new Date(Date.now() - 2 * 86_400_000).toISOString().slice(0, 10);
+  await dialog.getByLabel("Due date (optional)").fill(due);
   await dialog.getByRole("button", { name: "Create task" }).click();
   await expect(dialog).toBeHidden();
 

@@ -272,12 +272,14 @@ test.describe("recurring series scopes (desktop)", () => {
     await page.goto(`/planner?date=${days[3]}`);
     await rowAction(page, title, "Delete…");
     const firstOccurrence = page.getByRole("dialog", { name: "Delete recurring item" });
-    await expect(
-      firstOccurrence.getByRole("button", { name: /Delete all previous occurrences only/ }),
-    ).toHaveCount(0);
+    // Wait for the chooser to be open before asserting an absence, so the
+    // absence cannot pass vacuously on a dialog that has not rendered yet.
     await expect(
       firstOccurrence.getByRole("button", { name: /Delete this occurrence/ }),
     ).toBeVisible();
+    await expect(
+      firstOccurrence.getByRole("button", { name: /Delete all previous occurrences only/ }),
+    ).toHaveCount(0);
     await firstOccurrence.getByRole("button", { name: "Cancel", exact: true }).click();
     await expect(firstOccurrence).toBeHidden();
 
