@@ -13,6 +13,7 @@ import {
 } from "@/lib/logic/operational-day";
 import { resetMinuteOf } from "@/lib/logic/schedule";
 import {
+  advanceRuleTo,
   materializeAnchorFields,
   parseRule,
   parseSkipDates,
@@ -298,6 +299,9 @@ export async function updateScheduleItem(
   input: unknown,
   scope: SeriesScope = "one",
 ): Promise<ActionResult<{ id: string; updated: number }>> {
+  // `previous` is a delete-only scope: an edit has no backward-only meaning,
+  // and silently widening it to the whole series would rewrite history.
+  if (scope === "previous") return fail("An edit cannot apply to previous occurrences only");
   const parsed = scheduleItemSchema.safeParse(input);
   if (!parsed.success) return fromZod(parsed.error);
   if (!parsed.data.id) return fail("Missing item id");
@@ -746,10 +750,10 @@ export async function reorderScheduleItems(
 }
 
 /**
- * Trash one occurrence, this one and every later one, or the whole series.
- * Deletes are SOFT — rows get a `deletedAt` stamp and move to Settings →
- * Trash; the series bookkeeping around them is unchanged, so regeneration
- * can never quietly refill what the user removed:
+ * Trash one occurrence, every earlier one, this one and every later one, or
+ * the whole series. Deletes are SOFT — rows get a `deletedAt` stamp and move
+ * to Settings → Trash; the series bookkeeping around them is unchanged, so
+ * regeneration can never quietly refill what the user removed:
  *
  *  * `one` on an occurrence stamps the row AND records its slot in the
  *    parent's `skipDates`. `one` on the FIRST occurrence promotes the next
@@ -761,6 +765,15 @@ export async function reorderScheduleItems(
  *  * `future` terminates the series at the selected occurrence: the parent's
  *    rule gains an `until` on the day before (so nothing regenerates), and
  *    every row from that day on is stamped. History before it is untouched.
+ *
+ *  * `previous` is its mirror — it trims the series from the START. Every row
+ *    the user sees before the selected occurrence is stamped; the selected
+ *    one and its tail stay, in the same series, with their overrides intact.
+ *    Because the parent row IS the series' start date, removing it hands the
+ *    series to the selected occurrence (same promotion as `one` on the first
+ *    occurrence, re-anchored by `advanceRuleTo`), so the rule can no longer
+ *    generate anything before it. From the first occurrence there is nothing
+ *    earlier and nothing happens.
  *
  *  * `all` stamps the entire series including history — the long-standing
  *    explicit option, kept for exactly that explicit choice.
@@ -796,7 +809,101 @@ export async function deleteScheduleItem(
     return result.count;
   };
 
-  if (scope === "one" || !isSeriesRow) {
+  if (scope === "previous") {
+    const parent = item.seriesId
+      ? await prisma.scheduleItem.findFirst({ where: { id: item.seriesId, userId: user.id } })
+      : item;
+    /** The boundary the user means: the day they see this occurrence under. */
+    const selectedDay = operationalDayOfRecord(item, reset);
+    const siblings = parent
+      ? await prisma.scheduleItem.findMany({ where: { seriesId: parent.id, userId: user.id } })
+      : [];
+    // Everything the user sees before this day goes; an occurrence moved
+    // forward past it reads as part of the tail and stays.
+    const removing = (parent ? [parent, ...siblings] : []).filter(
+      (row) => row.id !== item.id && operationalDayOfRecord(row, reset) < selectedDay,
+    );
+
+    if (parent && removing.length > 0) {
+      const parentRule = parseRule(parent.recurrenceRule);
+      const removesParent = removing.some((row) => row.id === parent.id);
+      const anchorSlot = slotOfOccurrence(parent, reset);
+      // The parent row IS the series' start date, so trimming the history
+      // takes it with them — the selected occurrence has to take the series
+      // over before it goes, re-anchored on its own slot. The pattern and the
+      // end date survive that move untouched (`advanceRuleTo`).
+      const newAnchor = removesParent && parentRule ? slotOfOccurrence(item, reset) : anchorSlot;
+      const promotedRule =
+        removesParent && parentRule ? advanceRuleTo(parentRule, anchorSlot, newAnchor) : null;
+      // A removed row's slot must stay unfillable. Slots after the new start
+      // are remembered on the parent — an occurrence moved back into the past
+      // is removed here while its slot is still ahead of the anchor — and
+      // earlier ones are dropped rather than carried as junk: nothing
+      // generates before the anchor in the first place.
+      const keptSkips = [
+        ...parseSkipDates(parent.skipDates),
+        ...removing.map((row) => slotOfOccurrence(row, reset)),
+      ].filter((day) => day > newAnchor);
+      touched.push(...removing.map((row) => operationalDayOfRecord(row, reset)));
+
+      await prisma.$transaction(async (tx) => {
+        if (promotedRule) {
+          // Same series, same pattern, a later start. The occurrence's own
+          // fields — completion, notes, a custom time — are untouched.
+          await tx.scheduleItem.update({
+            where: { id: item.id },
+            data: {
+              seriesId: null,
+              isException: false,
+              recurrenceRule: serializeRule(promotedRule),
+              skipDates: serializeSkipDates(keptSkips),
+            },
+          });
+          await tx.scheduleItem.updateMany({
+            where: { seriesId: parent.id, id: { not: item.id }, userId: user.id },
+            data: { seriesId: item.id },
+          });
+        } else if (!removesParent) {
+          // The parent survives (the user is on the first occurrence and an
+          // occurrence moved behind it is what goes): its start is unchanged,
+          // only the vacated slots need remembering.
+          await tx.scheduleItem.update({
+            where: { id: parent.id },
+            data: { skipDates: serializeSkipDates(keptSkips) },
+          });
+        }
+
+        deleted = await stampRows(
+          tx,
+          removing.filter((row) => row.id !== parent.id).map((row) => row.id),
+        );
+
+        if (removesParent) {
+          // The old rule holder leaves exactly as it does on a
+          // first-occurrence delete: a detached exception with nothing to
+          // resurrect, its slot still occupied under the new parent.
+          await tx.scheduleItem.update({
+            where: { id: parent.id },
+            data: promotedRule
+              ? {
+                  deletedAt: stamp,
+                  recurrenceRule: null,
+                  skipDates: null,
+                  seriesId: item.id,
+                  isException: true,
+                  originalDate: parent.originalDate ?? anchorSlot,
+                }
+              : { deletedAt: stamp },
+          });
+          await tx.reminder.updateMany({
+            where: { scheduleItemId: parent.id, userId: user.id },
+            data: { deletedAt: stamp },
+          });
+          deleted += 1;
+        }
+      });
+    }
+  } else if (scope === "one" || !isSeriesRow) {
     if (item.seriesId) {
       // An occurrence of a series: remember the slot so it stays deleted.
       const slot = slotOfOccurrence(item, reset);

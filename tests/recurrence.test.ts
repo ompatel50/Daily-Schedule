@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 
 import {
+  advanceRuleTo,
   describeRecurrence,
   describeRulePattern,
   describeRuleRange,
@@ -243,6 +244,39 @@ describe("series-split helpers", () => {
     // One later is pulled in.
     const later: RecurrenceRule = { freq: "daily", interval: 1, until: "2026-12-11" };
     expect(truncateRuleBefore(later, "2026-10-05").until).toBe("2026-10-04");
+  });
+
+  it("advances the series' start without moving a single later occurrence", () => {
+    // 2026-08-24 is a Monday; the series runs Mon/Wed/Fri to Dec 11.
+    const rule: RecurrenceRule = {
+      freq: "weekly",
+      interval: 1,
+      byWeekday: [1, 3, 5],
+      until: "2026-12-11",
+    };
+    const advanced = advanceRuleTo(rule, "2026-08-24", "2026-09-07");
+    // The pattern and the (inclusive) end date are the point of the mirror:
+    // trimming the history must not touch what is still ahead.
+    expect(advanced.byWeekday).toEqual([1, 3, 5]);
+    expect(advanced.until).toBe("2026-12-11");
+    expect(expandRule(advanced, "2026-09-07", "2026-09-07", "2026-09-14")).toEqual(
+      expandRule(rule, "2026-08-24", "2026-09-07", "2026-09-14"),
+    );
+
+    // Anchor-derived fields are pinned against the OLD anchor, so an implicit
+    // "every week on the anchor's weekday" cannot drift when the anchor moves.
+    const implicit: RecurrenceRule = { freq: "weekly", interval: 1, byWeekday: [] };
+    expect(advanceRuleTo(implicit, "2026-08-24", "2026-09-07").byWeekday).toEqual([1]);
+    const monthly: RecurrenceRule = { freq: "monthly", interval: 1 };
+    expect(advanceRuleTo(monthly, "2026-08-24", "2026-10-24").byMonthDay).toBe(24);
+
+    // A `count` loses exactly the occurrences left behind — never below one.
+    const counted: RecurrenceRule = { freq: "daily", interval: 1, count: 10 };
+    expect(advanceRuleTo(counted, "2026-08-24", "2026-08-27").count).toBe(7);
+    expect(advanceRuleTo(counted, "2026-08-24", "2026-08-24").count).toBe(10);
+    expect(advanceRuleTo(counted, "2026-08-24", "2027-08-24").count).toBe(1);
+    expect(advanceRuleTo({ freq: "daily", interval: 1 }, "2026-08-24", "2026-08-27").count)
+      .toBeUndefined();
   });
 
   it("compares rules by meaning, not by field order", () => {

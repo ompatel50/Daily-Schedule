@@ -147,9 +147,12 @@ export type PlannerCopyInput = z.infer<typeof plannerCopySchema>;
 
 /**
  * How far an edit or a delete reaches on a recurring item: just this
- * occurrence, this one and everything after it, or the whole series.
+ * occurrence, everything before it, this one and everything after it, or the
+ * whole series. `previous` is delete-only — it trims the series from the
+ * start, the mirror image of `future` trimming it from the end, and an edit
+ * has no backward-only meaning.
  */
-export const seriesScopeSchema = z.enum(["one", "future", "all"]);
+export const seriesScopeSchema = z.enum(["one", "previous", "future", "all"]);
 export type SeriesScope = z.infer<typeof seriesScopeSchema>;
 
 /** The edit dialog's live "would this double-book?" check. Read-only. */

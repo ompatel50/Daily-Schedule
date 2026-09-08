@@ -154,8 +154,10 @@ The planner **shapes** the schedule; Today **runs** it and the dashboard
   history stays as it was, the selected occurrence starts a new series that inherits the original
   end date unless you change it, and this is also where the pattern itself can change (weekdays,
   interval, extend/shorten the end date, bounded ↔ open-ended, or stop repeating). Deleting one
-  occurrence stays deleted — the series remembers the removed day. Non-recurring items never see a
-  scope question. Full semantics: [`docs/planner-recurrence.md`](docs/planner-recurrence.md).
+  occurrence stays deleted — the series remembers the removed day — and deleting can also trim the
+  series from either end: **this and all future** (history kept) or **all previous occurrences
+  only** (the selected occurrence and everything after it kept, with their edits). Non-recurring
+  items never see a scope question. Full semantics: [`docs/planner-recurrence.md`](docs/planner-recurrence.md).
 * **Overlap warnings**: two blocks competing for the same minutes are flagged on the day list.
   It is a warning, not a block — sometimes double-booking is deliberate. Blocks are half-open
   intervals `[start, end)`, so back-to-back blocks that merely touch never overlap, and a

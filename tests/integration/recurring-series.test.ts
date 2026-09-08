@@ -10,6 +10,7 @@ import {
   deleteScheduleItem,
   moveScheduleItem,
   previewScheduleItemConflicts,
+  setScheduleItemStatus,
   updateScheduleItem,
 } from "@/server/actions/planner";
 import { extendSeriesFor } from "@/server/series";
@@ -646,6 +647,135 @@ describe("delete scopes", () => {
     expect(
       await prisma.scheduleItem.count({ where: { OR: [{ id }, { seriesId: id }] } }),
     ).toBe(0);
+  });
+
+  it("delete all previous: history goes, this occurrence and its tail stay in one series", async () => {
+    const start = shiftDay(today(), 2);
+    const id = await createSeries(
+      baseItem({ date: start, recurrenceRule: JSON.stringify({ freq: "daily", interval: 1 }) }),
+    );
+    const rows = await seriesRows(id);
+    const total = rows.length;
+    const cutDay = shiftDay(start, 5);
+    const target = rows.find((row) => operationalDayOfRecord(row, 240) === cutDay)!;
+
+    // Overrides on both sides of the cut: one in the history that goes, one
+    // on the occurrence the user acted on, one in the tail that stays.
+    const pastDone = rows.find((row) => operationalDayOfRecord(row, 240) === shiftDay(start, 1))!;
+    expect((await setScheduleItemStatus(pastDone.id, "done")).ok).toBe(true);
+    expect((await setScheduleItemStatus(target.id, "done")).ok).toBe(true);
+    const kept = rows.find((row) => operationalDayOfRecord(row, 240) === shiftDay(start, 7))!;
+    expect(
+      (
+        await updateScheduleItem(
+          baseItem({
+            id: kept.id,
+            title: "Long run",
+            date: shiftDay(start, 7),
+            startMinute: 6 * 60,
+            endMinute: 8 * 60,
+            recurrenceRule: null,
+          }),
+          "one",
+        )
+      ).ok,
+    ).toBe(true);
+
+    const result = await deleteScheduleItem(target.id, "previous");
+    expect(result.ok).toBe(true);
+    // start … start+4 — the parent and four occurrences.
+    if (result.ok) expect(result.data.deleted).toBe(5);
+
+    // The occurrence the user acted on now holds the series: same pattern,
+    // a later start, its own completion untouched.
+    const newParent = await prisma.scheduleItem.findUniqueOrThrow({ where: { id: target.id } });
+    expect(newParent.seriesId).toBeNull();
+    expect(newParent.status).toBe("done");
+    expect(parseRule(newParent.recurrenceRule)).toEqual(parseRule(rows[0].recurrenceRule));
+
+    // The old rule holder went to the TRASH, detached exactly as a
+    // first-occurrence delete leaves it — no second rule holder on restore.
+    expect(await prisma.scheduleItem.findFirst({ where: { id } })).toBeNull();
+    const trashedParent = await prismaIncludingTrashed.scheduleItem.findUniqueOrThrow({
+      where: { id },
+    });
+    expect(trashedParent.deletedAt).not.toBeNull();
+    expect(trashedParent.recurrenceRule).toBeNull();
+    expect(trashedParent.isException).toBe(true);
+    expect(trashedParent.seriesId).toBe(target.id);
+
+    // The history is soft-deleted, never hard-deleted…
+    const trashedHistory = await prismaIncludingTrashed.scheduleItem.findUniqueOrThrow({
+      where: { id: pastDone.id },
+    });
+    expect(trashedHistory.deletedAt).not.toBeNull();
+
+    // …and nothing before the cut survives, while the whole tail does, under
+    // the one series, with its per-occurrence edits intact.
+    const remaining = await seriesRows(target.id);
+    expect(remaining).toHaveLength(total - 5);
+    expect(
+      remaining.every((row) => operationalDayOfRecord(row, 240) >= cutDay),
+    ).toBe(true);
+    expect(
+      remaining.every((row) => row.id === target.id || row.seriesId === target.id),
+    ).toBe(true);
+    const override = await prisma.scheduleItem.findUniqueOrThrow({ where: { id: kept.id } });
+    expect(override.title).toBe("Long run");
+    expect(override.startMinute).toBe(6 * 60);
+    expect(override.isException).toBe(true);
+
+    // Regeneration cannot refill the removed history — the series starts here.
+    expect(await extendSeriesFor(alice.id)).toBe(0);
+    expect(await seriesRows(target.id)).toHaveLength(total - 5);
+  });
+
+  it("delete all previous remembers a moved-back occurrence's slot, so it never returns", async () => {
+    const start = shiftDay(today(), 2);
+    const id = await createSeries(
+      baseItem({ date: start, recurrenceRule: JSON.stringify({ freq: "daily", interval: 1 }) }),
+    );
+    const rows = await seriesRows(id);
+    // A late occurrence dragged back into the past: what the user SEES is
+    // before the cut, so it goes — but its slot is still ahead of the new
+    // start, and only a tombstone stops regeneration refilling it.
+    const moved = rows.find((row) => operationalDayOfRecord(row, 240) === shiftDay(start, 7))!;
+    expect(
+      (await moveScheduleItem(moved.id, shiftDay(start, 1), undefined, { confirm: true })).ok,
+    ).toBe(true);
+
+    const cutDay = shiftDay(start, 3);
+    const target = rows.find((row) => operationalDayOfRecord(row, 240) === cutDay)!;
+    const result = await deleteScheduleItem(target.id, "previous");
+    expect(result.ok).toBe(true);
+    // The parent, start+1, start+2 and the moved row.
+    if (result.ok) expect(result.data.deleted).toBe(4);
+
+    const newParent = await prisma.scheduleItem.findUniqueOrThrow({ where: { id: target.id } });
+    expect(parseSkipDates(newParent.skipDates)).toEqual([shiftDay(start, 7)]);
+    expect(await extendSeriesFor(alice.id)).toBe(0);
+    expect(
+      await prisma.scheduleItem.count({ where: { seriesId: target.id, originalDate: shiftDay(start, 7) } }),
+    ).toBe(0);
+  });
+
+  it("delete all previous on the FIRST occurrence changes nothing", async () => {
+    const start = shiftDay(today(), 2);
+    const id = await createSeries(
+      baseItem({ date: start, recurrenceRule: JSON.stringify({ freq: "daily", interval: 1 }) }),
+    );
+    const before = await seriesRows(id);
+
+    const result = await deleteScheduleItem(id, "previous");
+    expect(result.ok).toBe(true);
+    if (result.ok) expect(result.data.deleted).toBe(0);
+
+    const after = await seriesRows(id);
+    expect(after.map((row) => row.id)).toEqual(before.map((row) => row.id));
+    const parent = await prisma.scheduleItem.findUniqueOrThrow({ where: { id } });
+    expect(parent.recurrenceRule).toBe(before[0].recurrenceRule);
+    expect(parent.skipDates).toBeNull();
+    expect(await extendSeriesFor(alice.id)).toBe(0);
   });
 
   it("delete the entire series stays available and complete", async () => {

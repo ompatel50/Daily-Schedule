@@ -266,6 +266,43 @@ test.describe("recurring series scopes (desktop)", () => {
     await page.goto(`/planner?date=${addDays(until, 3)}`);
     await expect(rows(page, title)).toHaveCount(0);
 
+    // --- delete ALL PREVIOUS ------------------------------------------------
+    // Offered only where there is history: the split made days[3] a series'
+    // FIRST occurrence, so the option is not there at all.
+    await page.goto(`/planner?date=${days[3]}`);
+    await rowAction(page, title, "Delete…");
+    const firstOccurrence = page.getByRole("dialog", { name: "Delete recurring item" });
+    // Wait for the chooser to be open before asserting an absence, so the
+    // absence cannot pass vacuously on a dialog that has not rendered yet.
+    await expect(
+      firstOccurrence.getByRole("button", { name: /Delete this occurrence/ }),
+    ).toBeVisible();
+    await expect(
+      firstOccurrence.getByRole("button", { name: /Delete all previous occurrences only/ }),
+    ).toHaveCount(0);
+    await firstOccurrence.getByRole("button", { name: "Cancel", exact: true }).click();
+    await expect(firstOccurrence).toBeHidden();
+
+    // The old series' last day still has two occurrences behind it: they go,
+    // it stays — the mirror of "this and all future".
+    await page.goto(`/planner?date=${days[2]}`);
+    await rowAction(page, title, "Delete…");
+    await page
+      .getByRole("dialog", { name: "Delete recurring item" })
+      .getByRole("button", { name: /Delete all previous occurrences only/ })
+      .click();
+    await expect(rows(page, title)).toHaveCount(1);
+    for (const day of [days[0], days[1]]) {
+      await page.goto(`/planner?date=${day}`);
+      await expect(rows(page, title)).toHaveCount(0);
+    }
+    // A fresh planner open re-runs generation; the history stays removed…
+    await page.goto(`/planner?date=${days[2]}`);
+    await expect(rows(page, title)).toHaveCount(1);
+    // …and the split-off tail is untouched, at its re-timed hour.
+    await page.goto(`/planner?date=${days[3]}`);
+    await expect(rows(page, title).getByText("1:00 PM – 2:00 PM")).toBeVisible();
+
     // --- delete ONE occurrence (the second Wednesday) ----------------------
     await page.goto(`/planner?date=${days[4]}`);
     await rowAction(page, title, "Delete…");
@@ -298,14 +335,16 @@ test.describe("recurring series scopes (desktop)", () => {
       .getByRole("button", { name: /Delete the entire series/ })
       .click();
     await expect(rows(page, title)).toHaveCount(0);
-    await page.goto(`/planner?date=${anchor}`);
+    // What is left of the old series now starts at days[2] — its history was
+    // trimmed above, so that is where the remaining row lives.
+    await page.goto(`/planner?date=${days[2]}`);
     await rowAction(page, title, "Delete…");
     await page
       .getByRole("dialog", { name: "Delete recurring item" })
       .getByRole("button", { name: /Delete the entire series/ })
       .click();
     await expect(rows(page, title)).toHaveCount(0);
-    for (const day of [days[1], days[2]]) {
+    for (const day of [anchor, days[1]]) {
       await page.goto(`/planner?date=${day}`);
       await expect(rows(page, title)).toHaveCount(0);
     }
